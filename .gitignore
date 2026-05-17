@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+
+# Build / dist
+build/
+dist/
+wheels/
+*.whl
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Odyssey runtime artifacts (user home dir + local checkpoint dirs)
+*.db
+*.db-journal
+*.db-wal
+.odyssey/
+
+# Local reference material that lived in this directory before the
+# OSS repo was bootstrapped here. Not part of the project; kept on
+# disk for now in case anything is still wanted out of it.
+Legacy Mission Service/

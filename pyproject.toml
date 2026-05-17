@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lovell-odyssey"
+version = "0.0.1"
+description = "Open-source framework for defining, running, and benchmarking robot training missions."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Lovell AI", email = "odyssey@lovell.ai" }]
+keywords = ["robotics", "machine-learning", "vla", "benchmark", "orchestration"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "click>=8.1,<9.0",
+    "pyyaml>=6.0,<7.0",
+    "aiosqlite>=0.19,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.5.0",
+    "mypy>=1.8",
+    "types-PyYAML",
+]
+# Optional providers / runners — kept out of base install so the wheel
+# stays light. Users opt in per-feature.
+huggingface = [
+    "huggingface-hub>=0.20",
+    "datasets>=2.16",
+]
+robosuite = [
+    "robosuite>=1.4",
+    "mujoco>=3.0",
+]
+openvla = [
+    "transformers>=4.40",
+    "peft>=0.8",
+    "torch>=2.1",
+]
+
+[project.scripts]
+odyssey = "odyssey.cli.main:cli"
+
+[project.urls]
+Homepage = "https://odyssey.lovell.ai"
+Documentation = "https://docs.odyssey.lovell.ai"
+Repository = "https://github.com/lovell/odyssey"
+Issues = "https://github.com/lovell/odyssey/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/odyssey"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line too long — formatter handles this
+]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/odyssey"]
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]

@@ -1,0 +1,66 @@
+# OpenVLA quickstart mission.
+#
+# Trains the OpenVLA 7B model with LoRA on a slice of Bridge V2, then
+# evaluates the resulting adapter against the Robosuite "Lift" benchmark.
+#
+# Hardware: 24 GB GPU (RTX 4090-class or better).
+# Time budget: ~10 minutes on a single 4090.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: openvla-bridge-lift
+  description: 10-minute quickstart — OpenVLA LoRA fine-tune on Bridge V2, eval on Robosuite Lift.
+  tags: [quickstart, openvla, robosuite]
+
+objective: |
+  Demonstrate that an OpenVLA 7B model fine-tuned with LoRA on a small
+  Bridge V2 slice can pick up a cube in the Robosuite Lift environment.
+
+acceptance_criteria: |
+  At least one successful lift across 10 evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+
+tasks:
+  - name: finetune-openvla
+    kind: training
+    training_type: demonstration
+    target_agent_id: pilot
+    target_agent_role: PILOT
+    target_model_type: VLA
+    model:
+      source: huggingface
+      base: openvla/openvla-7b
+    dataset:
+      source: huggingface
+      ref: lerobot/bridge_v2
+      partial: 1000
+      format: lerobot
+    config:
+      method: peft_lora
+      lora_rank: 8
+      lora_alpha: 16
+      batch_size: 2
+      learning_rate: 5.0e-5
+      epochs: 1
+
+  - name: eval-on-robosuite-lift
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: Lift
+    target_agent_id: pilot
+    target_agent_role: PILOT
+    target_model_type: VLA
+    num_episodes: 10
+    model:
+      source: from_task
+      from_task: finetune-openvla
+
+leaderboard:
+  publish: false   # Backend not live yet in v0.1.0-alpha.
+
+graph:
+  contribute: false   # Backend not live yet in v0.1.0-alpha.
