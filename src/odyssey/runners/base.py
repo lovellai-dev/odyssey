@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from odyssey.engine.records import MissionRun, TaskRun
@@ -34,6 +35,10 @@ class TaskContext:
     mission: MissionRun
     publisher: EventPublisher
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Per-task working directory where checkpoints, logs, and other
+    # artifacts should land. The engine creates this dir before invoking
+    # the runner. None only in tests that don't go through the engine.
+    output_dir: Path | None = None
 
     def cancelled(self) -> bool:
         return self.cancel_event.is_set()

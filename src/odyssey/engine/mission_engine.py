@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from odyssey.engine.errors import (
@@ -84,16 +86,27 @@ class MissionEngine:
         persistence: Persistence,
         runners: RunnerRegistry,
         event_publisher: EventPublisher,
+        working_dir: Path | None = None,
     ):
         self._persistence = persistence
         self._runners = runners
         self._publisher = event_publisher
+        # Per-mission working dirs live under here. Lazy-init to a tempdir
+        # on first use if the caller didn't supply one — keeps tests cheap.
+        self._working_dir = working_dir
         # One cancel-event per active mission. Lets cancel_mission() reach
         # into a running start_mission() coroutine without coupling to it.
         self._cancel_events: dict[str, asyncio.Event] = {}
 
     async def initialize(self) -> None:
         await self._persistence.initialize()
+
+    def _task_output_dir(self, mission_id: str, task_id: str) -> Path:
+        if self._working_dir is None:
+            self._working_dir = Path(tempfile.mkdtemp(prefix="odyssey-"))
+        out = self._working_dir / mission_id / task_id
+        out.mkdir(parents=True, exist_ok=True)
+        return out
 
     # ------------------------------------------------------------------
     # Mission CRUD
@@ -238,6 +251,7 @@ class MissionEngine:
             mission=mission,
             publisher=self._publisher,
             cancel_event=cancel_event,
+            output_dir=self._task_output_dir(mission.id, task.id),
         )
 
         try:
