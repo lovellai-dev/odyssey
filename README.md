@@ -18,8 +18,8 @@ that land in later releases.
 ## Install
 
 ```bash
-git clone https://github.com/lovell/odyssey.git
-cd odyssey
+git clone https://github.com/femtechie/lovell-odyssey.git
+cd lovell-odyssey
 pip install -e .
 ```
 

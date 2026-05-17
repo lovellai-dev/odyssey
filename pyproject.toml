@@ -60,10 +60,9 @@ openvla = [
 odyssey = "odyssey.cli.main:cli"
 
 [project.urls]
-Homepage = "https://odyssey.lovell.ai"
-Documentation = "https://docs.odyssey.lovell.ai"
-Repository = "https://github.com/lovell/odyssey"
-Issues = "https://github.com/lovell/odyssey/issues"
+Homepage = "https://github.com/femtechie/lovell-odyssey"
+Repository = "https://github.com/femtechie/lovell-odyssey"
+Issues = "https://github.com/femtechie/lovell-odyssey/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/odyssey"]
