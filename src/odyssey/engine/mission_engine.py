@@ -1,0 +1,385 @@
+"""MissionEngine — the orchestrator.
+
+Drives a Mission spec through its lifecycle:
+
+  DRAFT --create-> persisted record
+        --start--> QUEUED --auto--> ACTIVE --execute tasks-->
+                                              COMPLETED | FAILED | CANCELLED
+
+Per design §5, the engine speaks to persistence, runners, and events only
+through ABCs. The constructor takes those collaborators; the engine does
+no I/O of its own.
+
+Scope B caveats:
+  * Tasks execute sequentially in spec order. Parallel execution comes
+    when the design's ``execution.parallelism`` is honored.
+  * No materialized profile loading yet — deadlines, quality gates, and
+    evaluation predicates from the materializer are wired in Week 3+.
+  * No watchdog timers; CC has them but they need the materialized profile.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from odyssey.engine.errors import (
+    InvalidStateTransitionError,
+    MissionNotFoundError,
+    NoRunnerForTaskError,
+)
+from odyssey.engine.lifecycle import (
+    MissionStatus,
+    TaskStatus,
+    can_transition_mission,
+    can_transition_task,
+    is_terminal_mission,
+    is_terminal_task,
+)
+from odyssey.engine.records import MissionRun, TaskRun
+from odyssey.persistence.base import Persistence
+from odyssey.runners.base import TaskContext
+from odyssey.runners.registry import RunnerRegistry
+from odyssey.spec.mission import Mission
+from odyssey.spec.tasks import EvaluationTask
+from odyssey.telemetry.events import MissionEventType, TaskEventType
+from odyssey.telemetry.publishers.base import EventPublisher
+
+logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _mission_payload(run: MissionRun) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "mission_id": run.id,
+        "name": run.spec.metadata.name,
+        "status": run.status.value,
+    }
+    if run.overall_grade is not None:
+        payload["overall_grade"] = run.overall_grade
+    if run.error_message:
+        payload["error_message"] = run.error_message
+    return payload
+
+
+def _task_payload(mission: MissionRun, task: TaskRun) -> dict[str, Any]:
+    return {
+        "mission_id": mission.id,
+        "task_id": task.id,
+        "task_name": task.spec.name,
+        "task_kind": task.spec.kind,
+        "status": task.status.value,
+    }
+
+
+class MissionEngine:
+    def __init__(
+        self,
+        *,
+        persistence: Persistence,
+        runners: RunnerRegistry,
+        event_publisher: EventPublisher,
+    ):
+        self._persistence = persistence
+        self._runners = runners
+        self._publisher = event_publisher
+        # One cancel-event per active mission. Lets cancel_mission() reach
+        # into a running start_mission() coroutine without coupling to it.
+        self._cancel_events: dict[str, asyncio.Event] = {}
+
+    async def initialize(self) -> None:
+        await self._persistence.initialize()
+
+    # ------------------------------------------------------------------
+    # Mission CRUD
+    # ------------------------------------------------------------------
+
+    async def create_mission(self, spec: Mission) -> MissionRun:
+        run = MissionRun.from_spec(spec)
+        await self._persistence.save_mission(run)
+        await self._publisher.publish(
+            MissionEventType.CREATED.value, _mission_payload(run)
+        )
+        return run
+
+    async def get_mission(self, mission_id: str) -> MissionRun:
+        run = await self._persistence.get_mission(mission_id)
+        if run is None:
+            raise MissionNotFoundError(mission_id)
+        return run
+
+    async def list_missions(
+        self,
+        *,
+        status: MissionStatus | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[MissionRun]:
+        return await self._persistence.list_missions(
+            status=status.value if status else None,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def delete_mission(self, mission_id: str) -> bool:
+        return await self._persistence.delete_mission(mission_id)
+
+    # ------------------------------------------------------------------
+    # Mission lifecycle
+    # ------------------------------------------------------------------
+
+    async def start_mission(self, mission_id: str) -> MissionRun:
+        """Drive the mission from DRAFT to a terminal state.
+
+        Blocks until all tasks finish (or a failure/cancel cuts the run
+        short). For background execution the caller wraps this in their
+        own ``asyncio.create_task``.
+        """
+        run = await self.get_mission(mission_id)
+        if run.status != MissionStatus.DRAFT:
+            raise InvalidStateTransitionError(
+                "mission", run.status, MissionStatus.QUEUED
+            )
+
+        cancel_event = asyncio.Event()
+        self._cancel_events[mission_id] = cancel_event
+        try:
+            await self._transition_mission(
+                run, MissionStatus.QUEUED, MissionEventType.QUEUED
+            )
+            run.started_at = _utcnow()
+            await self._transition_mission(
+                run, MissionStatus.ACTIVE, MissionEventType.STARTED
+            )
+
+            for task in run.tasks:
+                if cancel_event.is_set():
+                    break
+                await self._execute_task(run, task, cancel_event)
+                # Honor execution.on_task_failure — the spec default is
+                # "stop", which short-circuits the remaining tasks. Anything
+                # left PENDING is finalized in _finalize_mission.
+                if (
+                    task.status == TaskStatus.FAILED
+                    and run.spec.execution.on_task_failure == "stop"
+                ):
+                    break
+
+            await self._finalize_mission(run, cancel_event)
+        finally:
+            self._cancel_events.pop(mission_id, None)
+
+        return run
+
+    async def cancel_mission(self, mission_id: str) -> MissionRun:
+        run = await self.get_mission(mission_id)
+        if is_terminal_mission(run.status):
+            return run
+
+        ev = self._cancel_events.get(mission_id)
+        if ev is not None:
+            ev.set()
+
+        # Mark all non-terminal tasks CANCELLED so the persisted state
+        # reflects reality even if start_mission isn't currently running.
+        for task in run.tasks:
+            if not is_terminal_task(task.status):
+                task.status = TaskStatus.CANCELLED
+                task.completed_at = _utcnow()
+
+        run.status = MissionStatus.CANCELLED
+        run.completed_at = _utcnow()
+        await self._persistence.save_mission(run)
+        await self._publisher.publish(
+            MissionEventType.CANCELLED.value, _mission_payload(run)
+        )
+        return run
+
+    # ------------------------------------------------------------------
+    # Task execution
+    # ------------------------------------------------------------------
+
+    async def _execute_task(
+        self,
+        mission: MissionRun,
+        task: TaskRun,
+        cancel_event: asyncio.Event,
+    ) -> None:
+        await self._transition_task(
+            mission, task, TaskStatus.QUEUED, TaskEventType.QUEUED
+        )
+        task.started_at = _utcnow()
+        await self._transition_task(
+            mission, task, TaskStatus.IN_PROGRESS, TaskEventType.STARTED
+        )
+        await self._persistence.update_task(
+            mission.id, task.id, started_at=task.started_at
+        )
+
+        try:
+            runner = self._runners.select(task.spec)
+        except NoRunnerForTaskError as e:
+            await self._finalize_task(
+                mission,
+                task,
+                TaskStatus.FAILED,
+                error_code="no_runner_registered",
+                error_message=str(e),
+            )
+            return
+
+        ctx = TaskContext(
+            task=task,
+            mission=mission,
+            publisher=self._publisher,
+            cancel_event=cancel_event,
+        )
+
+        try:
+            result = await runner.run(ctx)
+        except Exception as e:
+            logger.exception(
+                "Runner %r raised for task %s — marking FAILED",
+                runner.name,
+                task.id,
+            )
+            await self._finalize_task(
+                mission,
+                task,
+                TaskStatus.FAILED,
+                error_code="runner_exception",
+                error_message=str(e)[:500],
+            )
+            return
+
+        if cancel_event.is_set():
+            await self._finalize_task(
+                mission,
+                task,
+                TaskStatus.CANCELLED,
+                error_code="cancelled",
+                result_summary=result or {},
+            )
+            return
+
+        await self._finalize_task(
+            mission,
+            task,
+            TaskStatus.COMPLETED,
+            result_summary=result or {},
+        )
+
+    async def _finalize_mission(
+        self,
+        run: MissionRun,
+        cancel_event: asyncio.Event,
+    ) -> None:
+        if cancel_event.is_set():
+            terminal = MissionStatus.CANCELLED
+            event = MissionEventType.CANCELLED
+            # Any task that never had a chance to run should be persisted as
+            # CANCELLED. Without this, _finalize_mission's full-record save
+            # below would overwrite cancel_mission's bookkeeping with the
+            # stale PENDING values from this coroutine's local copy.
+            for task in run.tasks:
+                if not is_terminal_task(task.status):
+                    task.status = TaskStatus.CANCELLED
+                    task.completed_at = _utcnow()
+        elif any(t.status == TaskStatus.FAILED for t in run.tasks):
+            terminal = MissionStatus.FAILED
+            event = MissionEventType.FAILED
+        else:
+            terminal = MissionStatus.COMPLETED
+            event = MissionEventType.COMPLETED
+            scores = [
+                t.result_summary["performance_score"]
+                for t in run.tasks
+                if isinstance(t.spec, EvaluationTask)
+                and isinstance(
+                    t.result_summary.get("performance_score"), (int, float)
+                )
+            ]
+            if scores:
+                run.overall_grade = sum(scores) / len(scores)
+
+        run.status = terminal
+        run.completed_at = _utcnow()
+        await self._persistence.save_mission(run)
+        await self._publisher.publish(event.value, _mission_payload(run))
+
+    # ------------------------------------------------------------------
+    # Transition helpers
+    # ------------------------------------------------------------------
+
+    async def _transition_mission(
+        self,
+        run: MissionRun,
+        new_status: MissionStatus,
+        event_type: MissionEventType,
+    ) -> None:
+        if not can_transition_mission(run.status, new_status):
+            raise InvalidStateTransitionError("mission", run.status, new_status)
+        run.status = new_status
+        await self._persistence.save_mission(run)
+        await self._publisher.publish(event_type.value, _mission_payload(run))
+
+    async def _transition_task(
+        self,
+        mission: MissionRun,
+        task: TaskRun,
+        new_status: TaskStatus,
+        event_type: TaskEventType,
+    ) -> None:
+        if not can_transition_task(task.status, new_status):
+            raise InvalidStateTransitionError("task", task.status, new_status)
+        task.status = new_status
+        await self._persistence.update_task(mission.id, task.id, status=new_status)
+        await self._publisher.publish(event_type.value, _task_payload(mission, task))
+
+    async def _finalize_task(
+        self,
+        mission: MissionRun,
+        task: TaskRun,
+        terminal_status: TaskStatus,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        result_summary: dict[str, Any] | None = None,
+    ) -> None:
+        task.status = terminal_status
+        task.completed_at = _utcnow()
+        if error_code is not None:
+            task.error_code = error_code
+        if error_message is not None:
+            task.error_message = error_message
+        if result_summary is not None:
+            task.result_summary = result_summary
+
+        update_fields: dict[str, Any] = {
+            "status": terminal_status,
+            "completed_at": task.completed_at,
+        }
+        if error_code is not None:
+            update_fields["error_code"] = error_code
+        if error_message is not None:
+            update_fields["error_message"] = error_message
+        if result_summary is not None:
+            update_fields["result_summary"] = result_summary
+        await self._persistence.update_task(mission.id, task.id, **update_fields)
+
+        event_type = {
+            TaskStatus.COMPLETED: TaskEventType.COMPLETED,
+            TaskStatus.FAILED: TaskEventType.FAILED,
+            TaskStatus.CANCELLED: TaskEventType.CANCELLED,
+        }[terminal_status]
+        payload = _task_payload(mission, task)
+        if result_summary:
+            payload["result_summary"] = result_summary
+        if error_message:
+            payload["error_message"] = error_message
+        await self._publisher.publish(event_type.value, payload)

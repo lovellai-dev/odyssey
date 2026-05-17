@@ -1,6 +1,13 @@
-"""Runner registry and built-in runners.
+"""Runner ABC, registry, and built-in runners."""
 
-Placeholder package. The subprocess runner (lifted from
-`lai-inference/.../subprocess_runner.py`), the OpenVLA training runner,
-and the Robosuite eval runner land in Week 2-3.
-"""
+from odyssey.runners.base import WILDCARD_TYPE, Runner, TaskContext
+from odyssey.runners.cpu_mock import CPUMockRunner
+from odyssey.runners.registry import RunnerRegistry
+
+__all__ = [
+    "WILDCARD_TYPE",
+    "CPUMockRunner",
+    "Runner",
+    "RunnerRegistry",
+    "TaskContext",
+]
