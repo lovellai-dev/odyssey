@@ -101,13 +101,14 @@ def run(
 
     persistence = SqlitePersistence(str(db_path))
     runners = _build_runners(use_mock=use_mock_runner)
-    providers = _build_providers()  # noqa: F841 — wired into runners in Batch 4
+    providers = _build_providers()
     publisher = StdoutEventPublisher()
     engine = MissionEngine(
         persistence=persistence,
         runners=runners,
         event_publisher=publisher,
         working_dir=work_dir,
+        providers=providers,
     )
 
     final = asyncio.run(_run_mission(engine, spec))

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from odyssey.engine.records import MissionRun, TaskRun
+from odyssey.providers.registry import ProviderRegistry
 from odyssey.spec.tasks import TaskKind
 from odyssey.telemetry.events import TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
@@ -39,6 +40,11 @@ class TaskContext:
     # artifacts should land. The engine creates this dir before invoking
     # the runner. None only in tests that don't go through the engine.
     output_dir: Path | None = None
+    # Provider registry the engine was configured with. Runners that need
+    # to resolve / fetch models or datasets should use this rather than
+    # talking to providers directly. None when the engine was built
+    # without providers (the CPU-mock-only test setup).
+    providers: ProviderRegistry | None = None
 
     def cancelled(self) -> bool:
         return self.cancel_event.is_set()

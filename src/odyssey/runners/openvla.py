@@ -32,6 +32,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from odyssey.providers.base import ResolvedModel
 from odyssey.runners.base import (
     WILDCARD_TYPE,
     Runner,
@@ -42,6 +43,7 @@ from odyssey.runners.subprocess import (
     output_path,
     run_training_subprocess,
 )
+from odyssey.spec.refs import HFModelRef
 from odyssey.spec.tasks import EvaluationTask, TaskKind, TrainingTask, TrainingType
 
 logger = logging.getLogger(__name__)
@@ -159,6 +161,26 @@ def build_openvla_argv(
     return argv
 
 
+async def _resolve_and_fetch_hf_model(
+    context: TaskContext, ref: HFModelRef, dest: Path
+) -> Path:
+    """Resolve + fetch an HF model via the engine's ProviderRegistry."""
+    assert context.providers is not None  # checked by caller
+    provider = context.providers.for_model_ref(ref)
+    await context.emit_progress(
+        "model_loading",
+        step="resolve_hf",
+        step_label=f"{ref.base}@{ref.revision or 'HEAD'}",
+    )
+    resolved: ResolvedModel = await provider.resolve(ref)
+    await context.emit_progress(
+        "model_loading",
+        step="fetch_hf",
+        step_label=f"{resolved.identifier}@{resolved.revision[:8]}",
+    )
+    return await provider.fetch(resolved, dest)
+
+
 def _resolve_finetune_script() -> str:
     repo_path = os.getenv("OPENVLA_REPO_PATH", _DEFAULT_REPO_PATH)
     script_path = os.path.join(repo_path, _FINETUNE_SCRIPT_REL)
@@ -224,10 +246,22 @@ class OpenVLARunner(Runner):
         output_dir = output_path(context)
         script_path = _resolve_finetune_script()
 
+        # If a provider registry is wired AND the model ref is HF, fetch
+        # the model locally first and substitute the path into config so
+        # build_openvla_argv picks it up via the config-override branch.
+        # Falls through to the env-var / HF-id behavior when no provider
+        # registry is set (the CPU-mock / offline test path).
+        config = dict(spec.config)
+        if context.providers is not None and isinstance(spec.model, HFModelRef):
+            resolved_path = await _resolve_and_fetch_hf_model(
+                context, spec.model, output_dir / "model"
+            )
+            config["vla_path"] = str(resolved_path)
+
         process_spec = TrainingProcessSpec(
             script_path=script_path,
             argv_extra=build_openvla_argv(
-                task=spec,
+                task=spec.model_copy(update={"config": config}),
                 output_dir=output_dir,
                 run_id=context.task.id,
             ),

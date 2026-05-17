@@ -10,7 +10,9 @@ from __future__ import annotations
 import click
 
 from odyssey import __version__
+from odyssey.cli.commands.list import list_
 from odyssey.cli.commands.run import run
+from odyssey.cli.commands.status import status
 from odyssey.cli.commands.validate import validate
 
 
@@ -22,6 +24,8 @@ def cli() -> None:
 
 cli.add_command(validate)
 cli.add_command(run)
+cli.add_command(list_)
+cli.add_command(status)
 
 
 if __name__ == "__main__":

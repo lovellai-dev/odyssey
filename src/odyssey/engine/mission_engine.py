@@ -42,6 +42,7 @@ from odyssey.engine.lifecycle import (
 )
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.persistence.base import Persistence
+from odyssey.providers.registry import ProviderRegistry
 from odyssey.runners.base import TaskContext
 from odyssey.runners.registry import RunnerRegistry
 from odyssey.spec.mission import Mission
@@ -87,6 +88,7 @@ class MissionEngine:
         runners: RunnerRegistry,
         event_publisher: EventPublisher,
         working_dir: Path | None = None,
+        providers: ProviderRegistry | None = None,
     ):
         self._persistence = persistence
         self._runners = runners
@@ -94,6 +96,10 @@ class MissionEngine:
         # Per-mission working dirs live under here. Lazy-init to a tempdir
         # on first use if the caller didn't supply one — keeps tests cheap.
         self._working_dir = working_dir
+        # Threaded into every TaskContext so runners can resolve+fetch
+        # models / datasets without holding their own registry. Optional —
+        # runners that don't need providers (CPU mock) ignore it.
+        self._providers = providers
         # One cancel-event per active mission. Lets cancel_mission() reach
         # into a running start_mission() coroutine without coupling to it.
         self._cancel_events: dict[str, asyncio.Event] = {}
@@ -252,6 +258,7 @@ class MissionEngine:
             publisher=self._publisher,
             cancel_event=cancel_event,
             output_dir=self._task_output_dir(mission.id, task.id),
+            providers=self._providers,
         )
 
         try:
