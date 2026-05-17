@@ -1,4 +1,22 @@
-"""Provider ABCs + registry + built-in providers.
+"""Provider ABCs + registry + (to come) built-in providers."""
 
-Placeholder package. Local, HuggingFace, and OXE providers land in Week 2-3.
-"""
+from odyssey.providers.base import (
+    DatasetProvider,
+    ModelProvider,
+    ResolvedDataset,
+    ResolvedModel,
+    ResolvedRobot,
+    RobotProvider,
+)
+from odyssey.providers.registry import ProviderNotRegisteredError, ProviderRegistry
+
+__all__ = [
+    "DatasetProvider",
+    "ModelProvider",
+    "ProviderNotRegisteredError",
+    "ProviderRegistry",
+    "ResolvedDataset",
+    "ResolvedModel",
+    "ResolvedRobot",
+    "RobotProvider",
+]
