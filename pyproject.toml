@@ -94,6 +94,13 @@ strict = true
 files = ["src/odyssey"]
 warn_unused_configs = true
 
+# Optional extras (HuggingFace, robosuite) — their packages don't ship
+# inline type stubs, and we don't want to make the base install require
+# them. Ignore the missing-imports complaint for these names.
+[[tool.mypy.overrides]]
+module = ["huggingface_hub", "datasets", "robosuite"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
