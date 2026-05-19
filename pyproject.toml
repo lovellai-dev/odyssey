@@ -55,6 +55,9 @@ openvla = [
     "peft>=0.8",
     "torch>=2.1",
 ]
+all = [
+    "lovell-odyssey[huggingface,openvla,robosuite]",
+]
 
 [project.scripts]
 odyssey = "odyssey.cli.main:cli"

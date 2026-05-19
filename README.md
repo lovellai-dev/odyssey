@@ -152,18 +152,22 @@ one agent — will become possible when the agent cap lifts.
 ```bash
 git clone https://github.com/lovellai-dev/odyssey.git
 cd odyssey
-pip install -e .
+pip install -e .              # CLI, validate, mock runs (lightweight)
+pip install -e ".[all]"       # real training + evaluation (torch, robosuite…)
+pip install -e ".[all,dev]"   # + pytest, ruff, mypy
 ```
 
 The base install pulls in pydantic, click, pyyaml, and aiosqlite — enough to
 run `validate`, `list`, `status`, and `run --use-mock-runner` against any
-mission spec. Real training and evaluation runners need their own extras:
+mission spec without a GPU. `.[all]` adds everything needed for real training
+and evaluation runs.
+
+You can also install extras individually if you only need part of the stack:
 
 ```bash
 pip install -e ".[huggingface]"   # HF model + dataset providers
 pip install -e ".[openvla]"       # OpenVLA training runner deps
 pip install -e ".[robosuite]"     # Robosuite evaluation runner deps
-pip install -e ".[dev]"           # pytest, ruff, mypy
 ```
 
 ## 60-second smoke test (no GPU, no network)
