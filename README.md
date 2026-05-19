@@ -162,17 +162,10 @@ run `validate`, `list`, `status`, and `run --use-mock-runner` against any
 mission spec without a GPU. `.[all]` adds everything needed for real training
 and evaluation runs.
 
-You can also install extras individually if you only need part of the stack:
-
-```bash
-pip install -e ".[huggingface]"   # HF model + dataset providers
-pip install -e ".[openvla]"       # OpenVLA training runner deps
-pip install -e ".[robosuite]"     # Robosuite evaluation runner deps
-```
-
 ## 60-second smoke test (no GPU, no network)
 
 ```bash
+# Validate the mission spec
 $ odyssey validate examples/quickstart-openvla/mission.yaml
 OK  examples/quickstart-openvla/mission.yaml
   spec version : 0.1
@@ -180,6 +173,7 @@ OK  examples/quickstart-openvla/mission.yaml
   robot        : embodiment=franka_panda
   tasks        : 1 training, 1 evaluation
 
+# Run the full mission with a CPU mock (no GPU needed)
 $ odyssey run examples/quickstart-openvla/mission.yaml --use-mock-runner
 {"ts": "...", "event": "mission.created", ...}
 {"ts": "...", "event": "mission.queued", ...}
@@ -190,9 +184,11 @@ $ odyssey run examples/quickstart-openvla/mission.yaml --use-mock-runner
 COMPLETED  c1756bad855e45cc9a95b5b0566c948b
   overall_grade : 1.000
 
+# List all missions from the local DB
 $ odyssey list
 c1756bad855e  COMPLETED   openvla-bridge-lift   2026-05-17T23:18:34+00:00  grade=1.000
 
+# Show details for a specific mission (prefix match)
 $ odyssey status c1756bad
 COMPLETED  c1756bad855e45cc9a95b5b0566c948b
   name         : openvla-bridge-lift
