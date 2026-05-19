@@ -150,8 +150,8 @@ one agent — will become possible when the agent cap lifts.
 ## Install
 
 ```bash
-git clone https://github.com/femtechie/lovell-odyssey.git
-cd lovell-odyssey
+git clone https://github.com/lovellai-dev/odyssey.git
+cd odyssey
 pip install -e .
 ```
 
