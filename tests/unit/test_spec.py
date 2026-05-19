@@ -1,8 +1,9 @@
 """Unit tests for the mission spec module.
 
 Covers the validators that matter most: cardinality, name uniqueness,
-RobotSpec exactly-one, from_task ordering. Plus a smoke test that the
-shipped example loads cleanly.
+RobotSpec exactly-one-embodiment + agent loadout, training agent_id
+resolution, eval-is-last. Plus a smoke test that the shipped example
+loads cleanly.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from odyssey.spec import (
+    AgentRole,
+    AgentSpec,
     EvaluationTask,
     EvaluationType,
     HFModelRef,
@@ -24,7 +27,6 @@ from odyssey.spec import (
     load_mission,
 )
 from odyssey.spec.loader import LoadError
-from odyssey.spec.refs import FromTaskModelRef
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
@@ -34,12 +36,28 @@ EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
 # Builders to keep test bodies short
 # ---------------------------------------------------------------------------
 
+def _agent(id_: str = "pilot") -> AgentSpec:
+    return AgentSpec(
+        id=id_,
+        role=AgentRole.PILOT,
+        model=HFModelRef(base="openvla/openvla-7b"),
+    )
+
+
+def _robot(**overrides: object) -> RobotSpec:
+    fields: dict[str, object] = {
+        "embodiment": "franka_panda",
+        "agents": [_agent()],
+    }
+    fields.update(overrides)
+    return RobotSpec(**fields)
+
+
 def _training_task(name: str = "train-one", **overrides: object) -> TrainingTask:
     fields: dict[str, object] = {
         "name": name,
         "training_type": TrainingType.DEMONSTRATION,
-        "model": HFModelRef(base="openvla/openvla-7b"),
-        "target_agent_id": "pilot",
+        "agent_id": "pilot",
     }
     fields.update(overrides)
     return TrainingTask(**fields)
@@ -50,19 +68,17 @@ def _eval_task(name: str = "eval-one", **overrides: object) -> EvaluationTask:
         "name": name,
         "evaluation_type": EvaluationType.ROBOSUITE,
         "benchmark_name": "Lift",
-        "model": HFModelRef(base="openvla/openvla-7b"),
-        "target_agent_id": "pilot",
     }
     fields.update(overrides)
     return EvaluationTask(**fields)
 
 
-def _mission(tasks: list) -> Mission:
+def _mission(tasks: list, *, robot: RobotSpec | None = None) -> Mission:
     return Mission(
         metadata=MissionMetadata(name="msn"),
         objective="objective",
         acceptance_criteria="acceptance",
-        robot=RobotSpec(embodiment="franka_panda"),
+        robot=robot if robot is not None else _robot(),
         tasks=tasks,
     )
 
@@ -75,6 +91,7 @@ def test_valid_minimal_mission_parses() -> None:
     m = _mission([_training_task(), _eval_task()])
     assert m.odysseyVersion.value == "0.1"
     assert len(m.tasks) == 2
+    assert m.robot.agents[0].id == "pilot"
 
 
 def test_shipped_example_loads() -> None:
@@ -83,6 +100,7 @@ def test_shipped_example_loads() -> None:
     assert mission.metadata.name == "openvla-bridge-lift"
     assert sum(1 for t in mission.tasks if t.kind == "training") == 1
     assert sum(1 for t in mission.tasks if t.kind == "evaluation") == 1
+    assert mission.robot.agents[0].id == "pilot"
 
 
 # ---------------------------------------------------------------------------
@@ -116,54 +134,82 @@ def test_duplicate_task_names_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# RobotSpec exactly-one
+# Eval must be last
 # ---------------------------------------------------------------------------
 
-def test_robotspec_requires_exactly_one() -> None:
+def test_eval_first_rejected() -> None:
+    with pytest.raises(ValidationError, match="last entry"):
+        _mission([_eval_task("ev"), _training_task("tr")])
+
+
+def test_eval_between_trainings_rejected() -> None:
+    with pytest.raises(ValidationError, match="last entry"):
+        _mission(
+            [
+                _training_task("t1"),
+                _eval_task("ev"),
+                _training_task("t2"),
+            ]
+        )
+
+
+def test_eval_last_accepted_with_multiple_trainings() -> None:
+    m = _mission(
+        [
+            _training_task("t1"),
+            _training_task("t2"),
+            _eval_task("ev"),
+        ]
+    )
+    assert m.tasks[-1].kind == "evaluation"
+
+
+# ---------------------------------------------------------------------------
+# RobotSpec exactly-one-embodiment + loadout
+# ---------------------------------------------------------------------------
+
+def test_robotspec_requires_exactly_one_embodiment() -> None:
     with pytest.raises(ValidationError, match="exactly one"):
-        RobotSpec()  # nothing set
+        RobotSpec(agents=[_agent()])  # nothing of embodiment/urdf/id set
     with pytest.raises(ValidationError, match="exactly one"):
-        RobotSpec(embodiment="franka_panda", urdf="/tmp/x.urdf")  # two set
+        RobotSpec(
+            embodiment="franka_panda",
+            urdf="/tmp/x.urdf",
+            agents=[_agent()],
+        )
 
 
-def test_robotspec_accepts_each_variant() -> None:
-    assert RobotSpec(embodiment="franka_panda").embodiment == "franka_panda"
-    assert RobotSpec(urdf="/tmp/x.urdf").urdf == "/tmp/x.urdf"
-    assert RobotSpec(id="robot-123").id == "robot-123"
+def test_robotspec_accepts_each_embodiment_variant() -> None:
+    assert RobotSpec(embodiment="franka_panda", agents=[_agent()]).embodiment == "franka_panda"
+    assert RobotSpec(urdf="/tmp/x.urdf", agents=[_agent()]).urdf == "/tmp/x.urdf"
+    assert RobotSpec(id="robot-123", agents=[_agent()]).id == "robot-123"
+
+
+def test_robotspec_requires_at_least_one_agent() -> None:
+    with pytest.raises(ValidationError):
+        RobotSpec(embodiment="franka_panda", agents=[])
+
+
+def test_robotspec_caps_agents_at_one_today() -> None:
+    with pytest.raises(ValidationError):
+        RobotSpec(
+            embodiment="franka_panda",
+            agents=[_agent("pilot"), _agent("co-pilot")],
+        )
 
 
 # ---------------------------------------------------------------------------
-# from_task ordering
+# Training agent_id must resolve
 # ---------------------------------------------------------------------------
 
-def test_from_task_ref_to_later_task_rejected() -> None:
-    # eval task references a training task that comes AFTER it.
-    eval_first = _eval_task(
-        "eval-first",
-        model=FromTaskModelRef(from_task="train-later"),
-    )
-    train_later = _training_task("train-later")
-    with pytest.raises(ValidationError, match="later task"):
-        _mission([eval_first, train_later])
+def test_training_agent_id_must_resolve_to_robot_agent() -> None:
+    with pytest.raises(ValidationError, match="not in the robot's loadout"):
+        _mission([_training_task(agent_id="nobody"), _eval_task()])
 
 
-def test_from_task_ref_to_unknown_task_rejected() -> None:
-    eval_task = _eval_task(
-        "eval-bad",
-        model=FromTaskModelRef(from_task="does-not-exist"),
-    )
-    with pytest.raises(ValidationError, match="unknown task"):
-        _mission([_training_task("train-one"), eval_task])
-
-
-def test_from_task_ref_to_earlier_task_accepted() -> None:
-    train = _training_task("train-first")
-    eval_after = _eval_task(
-        "eval-after",
-        model=FromTaskModelRef(from_task="train-first"),
-    )
-    m = _mission([train, eval_after])
-    assert isinstance(m.tasks[1].model, FromTaskModelRef)
+def test_training_agent_id_to_known_agent_accepted() -> None:
+    m = _mission([_training_task(agent_id="pilot"), _eval_task()])
+    assert m.tasks[0].agent_id == "pilot"
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +233,8 @@ def test_loader_wraps_validation_error(tmp_path: Path) -> None:
     invalid = tmp_path / "invalid.yaml"
     invalid.write_text(
         "metadata:\n  name: x\nobjective: o\nacceptance_criteria: a\n"
-        "robot:\n  embodiment: franka_panda\ntasks: []\n",
+        "robot:\n  embodiment: franka_panda\n  agents: []\n"
+        "tasks: []\n",
         encoding="utf-8",
     )
     with pytest.raises(LoadError, match="spec validation failed"):

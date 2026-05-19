@@ -25,15 +25,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from odyssey.spec.mission import RobotSpec
 from odyssey.spec.refs import DatasetRef, DatasetSource, ModelRef
 
 # ---------------------------------------------------------------------------
 # Resolved-* records — what providers hand back to the engine / runners.
 # ---------------------------------------------------------------------------
+# ResolvedRobot is a Pydantic model because it lives on MissionRun and
+# round-trips through SqlitePersistence's JSON-blob storage. ResolvedModel
+# and ResolvedDataset stay dataclasses for now — they're consumed
+# transiently by runners and never persisted.
 
-@dataclass
-class ResolvedRobot:
+class ResolvedRobot(BaseModel):
     """The robot as understood by whichever provider resolved it."""
 
     provider: str
@@ -41,7 +46,7 @@ class ResolvedRobot:
     embodiment: str | None = None
     urdf_path: str | None = None
     external_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass

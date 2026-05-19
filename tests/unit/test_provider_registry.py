@@ -22,15 +22,30 @@ from odyssey.providers import (
     ResolvedRobot,
     RobotProvider,
 )
+from odyssey.spec.agents import AgentRole, AgentSpec
 from odyssey.spec.mission import RobotSpec
 from odyssey.spec.refs import (
     DatasetRef,
     DatasetSource,
-    FromTaskModelRef,
     HFModelRef,
     LovellModelRef,
     ModelRef,
 )
+
+
+def _stub_agent() -> AgentSpec:
+    return AgentSpec(
+        id="pilot",
+        role=AgentRole.PILOT,
+        model=HFModelRef(base="openvla/openvla-7b"),
+    )
+
+
+def _robot(**fields: Any) -> RobotSpec:
+    """RobotSpec for routing tests — supplies a placeholder loadout so
+    the spec validates."""
+    fields.setdefault("agents", [_stub_agent()])
+    return RobotSpec(**fields)
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -107,29 +122,29 @@ def test_robot_local_handler_for_embodiment_spec() -> None:
     reg = ProviderRegistry()
     local = _StubRobotProvider("local")
     reg.register_robot(local, handles="local")
-    assert reg.for_robot_spec(RobotSpec(embodiment="franka")) is local
+    assert reg.for_robot_spec(_robot(embodiment="franka_panda")) is local
 
 
 def test_robot_local_handler_for_urdf_spec() -> None:
     reg = ProviderRegistry()
     local = _StubRobotProvider("local")
     reg.register_robot(local, handles="local")
-    assert reg.for_robot_spec(RobotSpec(urdf="/tmp/x.urdf")) is local
+    assert reg.for_robot_spec(_robot(urdf="/tmp/x.urdf")) is local
 
 
 def test_robot_lovell_handler_for_id_spec() -> None:
     reg = ProviderRegistry()
     lovell = _StubRobotProvider("lovell")
     reg.register_robot(lovell, handles="lovell")
-    assert reg.for_robot_spec(RobotSpec(id="r-1")) is lovell
+    assert reg.for_robot_spec(_robot(id="r-1")) is lovell
 
 
 def test_robot_missing_handler_raises() -> None:
     reg = ProviderRegistry()
     with pytest.raises(ProviderNotRegisteredError, match="kind='local'"):
-        reg.for_robot_spec(RobotSpec(embodiment="franka"))
+        reg.for_robot_spec(_robot(embodiment="franka_panda"))
     with pytest.raises(ProviderNotRegisteredError, match="kind='lovell'"):
-        reg.for_robot_spec(RobotSpec(id="r-1"))
+        reg.for_robot_spec(_robot(id="r-1"))
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +155,6 @@ def test_robot_missing_handler_raises() -> None:
     ("ref", "source"),
     [
         (HFModelRef(base="openvla/openvla-7b"), "huggingface"),
-        (FromTaskModelRef(from_task="train"), "from_task"),
         (LovellModelRef(model_id="m", version="1"), "lovell"),
     ],
 )
@@ -197,4 +211,4 @@ def test_re_registering_robot_kind_replaces_previous() -> None:
     second = _StubRobotProvider("second")
     reg.register_robot(first, handles="local")
     reg.register_robot(second, handles="local")
-    assert reg.for_robot_spec(RobotSpec(embodiment="franka")) is second
+    assert reg.for_robot_spec(_robot(embodiment="franka_panda")) is second

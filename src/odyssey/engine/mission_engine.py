@@ -46,7 +46,7 @@ from odyssey.providers.registry import ProviderRegistry
 from odyssey.runners.base import TaskContext
 from odyssey.runners.registry import RunnerRegistry
 from odyssey.spec.mission import Mission
-from odyssey.spec.tasks import EvaluationTask
+from odyssey.spec.tasks import EvaluationTask, TrainingTask
 from odyssey.telemetry.events import MissionEventType, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
 
@@ -120,6 +120,17 @@ class MissionEngine:
 
     async def create_mission(self, spec: Mission) -> MissionRun:
         run = MissionRun.from_spec(spec)
+
+        # If a provider registry is wired, resolve the robot up front so
+        # an unknown embodiment or missing URDF fails at create-time
+        # rather than mid-execution. Engines built without providers
+        # (test / CPU-mock paths) leave ``resolved_robot`` as None and
+        # runners that need a resolved robot can fail later with a
+        # clearer message than "no providers registered."
+        if self._providers is not None:
+            provider = self._providers.for_robot_spec(spec.robot)
+            run.resolved_robot = await provider.resolve(spec.robot)
+
         await self._persistence.save_mission(run)
         await self._publisher.publish(
             MissionEventType.CREATED.value, _mission_payload(run)
@@ -252,6 +263,15 @@ class MissionEngine:
             )
             return
 
+        # Resolve agent + starting checkpoint for training tasks so the
+        # runner doesn't have to know about the per-agent chain. Eval
+        # tasks walk the loadout themselves (today: one agent).
+        agent = None
+        starting_checkpoint = None
+        if isinstance(task.spec, TrainingTask):
+            agent = mission.agent_by_id(task.spec.agent_id)
+            starting_checkpoint = mission.latest_checkpoint_for(task.spec.agent_id)
+
         ctx = TaskContext(
             task=task,
             mission=mission,
@@ -259,6 +279,8 @@ class MissionEngine:
             cancel_event=cancel_event,
             output_dir=self._task_output_dir(mission.id, task.id),
             providers=self._providers,
+            agent=agent,
+            starting_checkpoint=starting_checkpoint,
         )
 
         try:

@@ -1,6 +1,6 @@
 """The Mission spec — top-level Pydantic model for `mission.yaml`.
 
-Per design §2 v0.3.2:
+Per design §2 v0.3.2 (with the agent-aware spec correction):
 
   * `odysseyVersion` is the spec version, evolving independently from the
     framework version.
@@ -8,9 +8,12 @@ Per design §2 v0.3.2:
     matching the CC missions-table NOT NULL columns. These are the inputs
     the mission materializer extracts structured artifacts from.
   * Mission cardinality: at least one training task, exactly one evaluation
-    task. Enforced at load time, not at execution time.
-  * Task names are unique within a mission.
-  * `model.from_task` refs must point to earlier tasks.
+    task, and the evaluation task is the last entry in ``tasks[]``.
+  * A robot carries a loadout of agents (today: exactly one). Every
+    training task names the agent it updates via ``agent_id``, which
+    must resolve to an entry in ``robot.agents``.
+  * Task names are unique within a mission; agent ids are unique within
+    the robot's loadout.
 """
 
 from __future__ import annotations
@@ -20,11 +23,11 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from odyssey.spec.agents import AgentSpec
 from odyssey.spec.execution import ExecutionSpec
 from odyssey.spec.graph import GraphSpec
 from odyssey.spec.leaderboard import LeaderboardSpec
-from odyssey.spec.refs import FromTaskModelRef
-from odyssey.spec.tasks import TaskSpec
+from odyssey.spec.tasks import TaskSpec, TrainingTask
 
 _NAME_PATTERN = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
 
@@ -44,19 +47,41 @@ class MissionMetadata(BaseModel):
 
 
 class RobotSpec(BaseModel):
-    """Exactly one of embodiment / urdf / id must be set."""
+    """A robot: an embodiment plus a loadout of agents.
+
+    Exactly one of ``embodiment`` (catalog name), ``urdf`` (local file
+    path), or ``id`` (a robot registered in a Lovell account) names the
+    embodiment. ``agents`` is the loadout — today exactly one entry;
+    when SPECIALISTs ship the upper bound lifts. The single agent
+    today is the PILOT (running a Vision-Language-Action model with
+    physical authority over the actuators).
+
+    See the Lovell robot-brain paper for the fuller agent shape that
+    v0.0.x's ``AgentSpec`` does not yet model (persona, goals, success
+    criteria, materialized artifacts).
+    """
 
     embodiment: str | None = None
     urdf: str | None = None
     id: str | None = None
+    agents: list[AgentSpec] = Field(min_length=1, max_length=1)
 
     @model_validator(mode="after")
-    def _exactly_one(self) -> RobotSpec:
+    def _exactly_one_embodiment(self) -> RobotSpec:
         set_count = sum(x is not None for x in (self.embodiment, self.urdf, self.id))
         if set_count != 1:
             raise ValueError(
                 "RobotSpec requires exactly one of: embodiment, urdf, id"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _agent_ids_unique(self) -> RobotSpec:
+        # Trivial for ``max_length=1`` today; forward-compat for when
+        # multi-agent loadouts ship and operators can declare several.
+        ids = [a.id for a in self.agents]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Agent ids must be unique within a robot")
         return self
 
 
@@ -99,18 +124,25 @@ class Mission(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _from_task_refs_resolve(self) -> Mission:
-        index_by_name = {t.name: i for i, t in enumerate(self.tasks)}
-        for i, task in enumerate(self.tasks):
-            ref = task.model
-            if isinstance(ref, FromTaskModelRef):
-                if ref.from_task not in index_by_name:
-                    raise ValueError(
-                        f"Task {task.name!r} references unknown task {ref.from_task!r}"
-                    )
-                if index_by_name[ref.from_task] >= i:
-                    raise ValueError(
-                        f"Task {task.name!r} references later task {ref.from_task!r} "
-                        "(must be earlier)"
-                    )
+    def _eval_is_last(self) -> Mission:
+        # Evaluation runs the robot after every training task has
+        # completed. Today execution follows spec order (sequential, no
+        # depends_on graph walk), so eval-last is enforced positionally.
+        if self.tasks and self.tasks[-1].kind != "evaluation":
+            raise ValueError(
+                "Evaluation task must be the last entry in tasks[]; "
+                f"got {self.tasks[-1].kind!r} ({self.tasks[-1].name!r}) last."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _training_agent_ids_resolve(self) -> Mission:
+        known_agent_ids = {a.id for a in self.robot.agents}
+        for task in self.tasks:
+            if isinstance(task, TrainingTask) and task.agent_id not in known_agent_ids:
+                raise ValueError(
+                    f"Training task {task.name!r} targets agent "
+                    f"{task.agent_id!r}, which is not in the robot's loadout "
+                    f"(known: {sorted(known_agent_ids)})"
+                )
         return self

@@ -1,12 +1,13 @@
-"""Model and dataset references used inside task specs.
+"""Model and dataset references.
 
-Per design §2:
+Model references live on ``AgentSpec.model`` (the agent's base
+checkpoint). Two sources today: HuggingFace Hub and Lovell-hosted
+model management. The framework no longer carries a ``from_task``
+ref — chaining is implicit through the per-agent checkpoint walk
+performed by ``MissionRun.latest_checkpoint_for``.
 
-  * `ModelRef` is a discriminated union over three sources (huggingface,
-    from_task, lovell). The runner consumes whichever variant the YAML
-    declared.
-  * `DatasetRef` carries a source enum + opaque ref string the provider
-    interprets. Optional split / format / partial-episodes fields.
+``DatasetRef`` carries a source enum + opaque ref string the provider
+interprets. Optional split / format / partial-episodes fields.
 """
 
 from __future__ import annotations
@@ -26,13 +27,6 @@ class HFModelRef(BaseModel):
     revision: str | None = None
 
 
-class FromTaskModelRef(BaseModel):
-    """A model produced by an earlier task in the same mission."""
-
-    source: Literal["from_task"] = "from_task"
-    from_task: str
-
-
 class LovellModelRef(BaseModel):
     source: Literal["lovell"] = "lovell"
     model_id: str
@@ -40,7 +34,7 @@ class LovellModelRef(BaseModel):
 
 
 ModelRef = Annotated[
-    HFModelRef | FromTaskModelRef | LovellModelRef,
+    HFModelRef | LovellModelRef,
     Field(discriminator="source"),
 ]
 

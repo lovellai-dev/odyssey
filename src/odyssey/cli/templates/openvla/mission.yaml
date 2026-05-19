@@ -10,7 +10,7 @@ odysseyVersion: "0.1"
 kind: Mission
 
 metadata:
-  name: openvla-bridge-lift
+  name: {{ name }}
   description: 10-minute quickstart — OpenVLA LoRA fine-tune on Bridge V2, eval on Robosuite Lift.
   tags: [quickstart, openvla, robosuite]
 

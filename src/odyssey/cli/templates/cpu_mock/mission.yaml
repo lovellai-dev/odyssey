@@ -1,0 +1,52 @@
+# CPU-mock smoke mission.
+#
+# Drives the engine through a full lifecycle with no GPU, no network,
+# and no real training. Pair with --use-mock-runner:
+#
+#     odyssey run mission.yaml --use-mock-runner
+#
+# Useful as a sanity check after installing odyssey, and as a fixture
+# for testing your own runners against a known-good spec.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: {{ name }}
+  description: CPU-mock smoke mission — no GPU, no network.
+  tags: [smoke, mock]
+
+objective: |
+  Verify the Odyssey engine drives a mission through its full lifecycle
+  using only the CPU mock runner.
+
+acceptance_criteria: |
+  Both tasks reach COMPLETED and the mission's overall_grade is set.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b
+
+tasks:
+  - name: mock-training
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    config: {}
+
+  - name: mock-evaluation
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: Lift
+    num_episodes: 3
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false

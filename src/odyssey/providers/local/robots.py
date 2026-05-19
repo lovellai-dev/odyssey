@@ -10,6 +10,14 @@ Two paths:
 
 A spec with only ``id`` set isn't ours — the registry routes those to the
 Lovell-mode provider.
+
+Scope note: this provider resolves the embodiment layer. In the Lovell
+architecture a robot also has a loadout of agents (PILOT + SPECIALISTs)
+that v0.0.x doesn't yet model in ``RobotSpec``, so there's no agent
+layer for the provider to walk into here. When loadout-aware missions
+ship, the local provider (for inline-declared loadouts) or a sibling
+Lovell-mode provider (for hosted loadouts), or both, will extend to
+resolve them — that decision hasn't been made yet.
 """
 
 from __future__ import annotations
@@ -19,17 +27,25 @@ from pathlib import Path
 from odyssey.providers.base import ResolvedRobot, RobotProvider
 from odyssey.spec.mission import RobotSpec
 
+# Scoped to embodiments at least one shipped runner can actually drive
+# end-to-end. Today that means the arms Robosuite's built-in robot
+# models cover (``ROBOSUITE_ROBOT_NAMES`` in runners/robosuite.py is the
+# matching translation table). Quadrupeds (unitree_go2/h1), mobile bases
+# (tiago, stretch3), and arms Robosuite doesn't ship (ur10e) were
+# removed in this trim — they accepted with a green spec, then produced
+# identical default-Panda eval runs that misled users about what was
+# being simulated. Re-add a name here only when a runner exists that
+# honors it; for unsupported robots, ``urdf:`` still works.
 KNOWN_EMBODIMENTS: frozenset[str] = frozenset(
     {
-        "franka_panda",
-        "ur5e",
-        "ur10e",
+        "franka_panda",   # alias of "panda" — common in OpenVLA / LeRobot specs
         "panda",
+        "sawyer",
+        "iiwa",
+        "jaco",
         "kinova_gen3",
-        "unitree_go2",
-        "unitree_h1",
-        "tiago",
-        "stretch3",
+        "ur5e",
+        "baxter",
     }
 )
 

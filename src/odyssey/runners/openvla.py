@@ -44,7 +44,7 @@ from odyssey.runners.subprocess import (
     run_training_subprocess,
 )
 from odyssey.spec.refs import HFModelRef
-from odyssey.spec.tasks import EvaluationTask, TaskKind, TrainingTask, TrainingType
+from odyssey.spec.tasks import TaskKind, TrainingTask, TrainingType
 
 logger = logging.getLogger(__name__)
 
@@ -112,26 +112,35 @@ def _path_env_for_hf_id(hf_id: str) -> str | None:
 def build_openvla_argv(
     *,
     task: TrainingTask,
+    agent_model_base: str | None,
     output_dir: Path,
     run_id: str,
 ) -> list[str]:
     """Build the OpenVLA draccus CLI argv.
 
     Resolution order for ``vla_path``:
-      1. ``task.config["vla_path"]`` (operator override)
-      2. ``<HF_ID>_PATH`` env var derived from the model ref's HF base
-      3. The HF base string itself (treated as an HF hub id; first call
-         triggers a download)
+      1. ``task.config["vla_path"]`` (operator override, also where the
+         runner injects a starting-checkpoint path or a fetched HF dir)
+      2. ``<HF_ID>_PATH`` env var derived from the agent's HF base id
+      3. ``agent_model_base`` itself (treated as an HF hub id; first
+         call triggers a download)
+
+    ``agent_model_base`` is the HF base id pulled off the agent's model
+    ref (``AgentSpec.model.base`` for an HFModelRef). ``None`` when the
+    agent's model isn't an HF ref — in which case ``vla_path`` must
+    have been pre-filled by the runner via the config override.
     """
     config = task.config or {}
-    # Resolve vla_path:
-    vla_path = config.get("vla_path") or _path_env_for_hf_id(
-        getattr(task.model, "base", "")
-    ) or getattr(task.model, "base", None)
+    vla_path = (
+        config.get("vla_path")
+        or (_path_env_for_hf_id(agent_model_base) if agent_model_base else None)
+        or agent_model_base
+    )
     if not vla_path:
         raise RuntimeError(
-            "OpenVLA runner: cannot resolve vla_path. Set task.config['vla_path'] "
-            "or use a HuggingFace model ref with a base id."
+            "OpenVLA runner: cannot resolve vla_path. The agent's model "
+            "must be a HuggingFace ref, or the runner must pre-fill "
+            "task.config['vla_path'] from a starting checkpoint."
         )
 
     dataset_id = config.get("data_root_dir")
@@ -240,28 +249,44 @@ class OpenVLARunner(Runner):
             raise TypeError(
                 f"OpenVLARunner expects TrainingTask, got {type(spec).__name__}"
             )
-        if isinstance(spec, EvaluationTask):  # defensive (mypy narrowing)
-            raise TypeError("evaluation tasks not supported")
+        if context.agent is None:
+            raise RuntimeError(
+                "OpenVLARunner: TaskContext.agent is None — training tasks "
+                "must be invoked through the engine, which resolves the "
+                "agent from spec.robot.agents[task.agent_id]."
+            )
 
         output_dir = output_path(context)
         script_path = _resolve_finetune_script()
 
-        # If a provider registry is wired AND the model ref is HF, fetch
-        # the model locally first and substitute the path into config so
-        # build_openvla_argv picks it up via the config-override branch.
-        # Falls through to the env-var / HF-id behavior when no provider
-        # registry is set (the CPU-mock / offline test path).
+        # Decide what vla_path the subprocess should start from:
+        #   1. A prior training task on this agent already produced a
+        #      checkpoint → start from that local path.
+        #   2. The agent's base model is an HF ref and we have a
+        #      provider registry → fetch it locally first.
+        #   3. Otherwise fall through to build_openvla_argv's env-var
+        #      / HF-id resolution against the agent's base model.
         config = dict(spec.config)
-        if context.providers is not None and isinstance(spec.model, HFModelRef):
+        agent_model_base: str | None = None
+        if context.starting_checkpoint is not None:
+            config.setdefault("vla_path", context.starting_checkpoint)
+        elif (
+            context.providers is not None
+            and isinstance(context.agent.model, HFModelRef)
+        ):
             resolved_path = await _resolve_and_fetch_hf_model(
-                context, spec.model, output_dir / "model"
+                context, context.agent.model, output_dir / "model"
             )
-            config["vla_path"] = str(resolved_path)
+            config.setdefault("vla_path", str(resolved_path))
+
+        if isinstance(context.agent.model, HFModelRef):
+            agent_model_base = context.agent.model.base
 
         process_spec = TrainingProcessSpec(
             script_path=script_path,
             argv_extra=build_openvla_argv(
                 task=spec.model_copy(update={"config": config}),
+                agent_model_base=agent_model_base,
                 output_dir=output_dir,
                 run_id=context.task.id,
             ),
@@ -283,6 +308,7 @@ class OpenVLARunner(Runner):
             )
         return {
             "checkpoint_path": str(run_subdir),
+            "agent_id": context.agent.id,
             "training_config": spec.config,
             "training_type": (
                 spec.training_type.value

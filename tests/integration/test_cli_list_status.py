@@ -12,6 +12,8 @@ from odyssey.engine.lifecycle import MissionStatus
 from odyssey.engine.records import MissionRun
 from odyssey.persistence import SqlitePersistence
 from odyssey.spec import (
+    AgentRole,
+    AgentSpec,
     EvaluationTask,
     EvaluationType,
     HFModelRef,
@@ -28,20 +30,26 @@ def _spec(name: str) -> Mission:
         metadata=MissionMetadata(name=name),
         objective="o",
         acceptance_criteria="a",
-        robot=RobotSpec(embodiment="franka_panda"),
+        robot=RobotSpec(
+            embodiment="franka_panda",
+            agents=[
+                AgentSpec(
+                    id="pilot",
+                    role=AgentRole.PILOT,
+                    model=HFModelRef(base="openvla/openvla-7b"),
+                ),
+            ],
+        ),
         tasks=[
             TrainingTask(
                 name="train",
                 training_type=TrainingType.DEMONSTRATION,
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
+                agent_id="pilot",
             ),
             EvaluationTask(
                 name="eval",
                 evaluation_type=EvaluationType.ROBOSUITE,
                 benchmark_name="Lift",
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
             ),
         ],
     )

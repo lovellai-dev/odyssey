@@ -15,8 +15,8 @@ from odyssey.providers.huggingface import HFDatasetProvider, HFModelProvider
 from odyssey.spec.refs import (
     DatasetRef,
     DatasetSource,
-    FromTaskModelRef,
     HFModelRef,
+    LovellModelRef,
 )
 
 
@@ -73,7 +73,7 @@ async def test_model_resolve_pins_requested_revision() -> None:
 async def test_model_resolve_rejects_non_hf_ref() -> None:
     provider = HFModelProvider(api=_FakeHfApi())
     with pytest.raises(TypeError, match="non-HF ref"):
-        await provider.resolve(FromTaskModelRef(from_task="earlier"))
+        await provider.resolve(LovellModelRef(model_id="m", version="1"))
 
 
 async def test_model_resolve_raises_when_api_returns_no_sha() -> None:

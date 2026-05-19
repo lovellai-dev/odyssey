@@ -30,6 +30,8 @@ from odyssey.runners import (
     TaskContext,
 )
 from odyssey.spec import (
+    AgentRole,
+    AgentSpec,
     EvaluationTask,
     EvaluationType,
     HFModelRef,
@@ -40,7 +42,6 @@ from odyssey.spec import (
     TrainingTask,
     TrainingType,
 )
-from odyssey.spec.mission import RobotSpec as RobotSpecAlias  # noqa: F401 — clarity
 from odyssey.telemetry import EventPublisher
 
 # ---------------------------------------------------------------------------
@@ -89,20 +90,26 @@ def _spec() -> Mission:
         metadata=MissionMetadata(name="ctx-test"),
         objective="o",
         acceptance_criteria="a",
-        robot=RobotSpec(embodiment="franka_panda"),
+        robot=RobotSpec(
+            embodiment="franka_panda",
+            agents=[
+                AgentSpec(
+                    id="pilot",
+                    role=AgentRole.PILOT,
+                    model=HFModelRef(base="openvla/openvla-7b"),
+                ),
+            ],
+        ),
         tasks=[
             TrainingTask(
                 name="train",
                 training_type=TrainingType.DEMONSTRATION,
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
+                agent_id="pilot",
             ),
             EvaluationTask(
                 name="eval",
                 evaluation_type=EvaluationType.ROBOSUITE,
                 benchmark_name="Lift",
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
             ),
         ],
     )
@@ -202,17 +209,22 @@ async def test_openvla_runner_works_without_providers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Back-compat: when providers is None, the runner relies on
-    build_openvla_argv's existing env/config/HF-id fallback."""
+    build_openvla_argv's existing env/config/HF-id fallback against
+    the agent's model base."""
     from odyssey.runners.openvla import build_openvla_argv
 
     monkeypatch.delenv("OPENVLA_OPENVLA_7B_PATH", raising=False)
     task = TrainingTask(
         name="ft",
         training_type=TrainingType.DEMONSTRATION,
-        model=HFModelRef(base="openvla/openvla-7b"),
-        target_agent_id="pilot",
+        agent_id="pilot",
     )
-    argv = build_openvla_argv(task=task, output_dir=tmp_path, run_id="r")
+    argv = build_openvla_argv(
+        task=task,
+        agent_model_base="openvla/openvla-7b",
+        output_dir=tmp_path,
+        run_id="r",
+    )
     idx = argv.index("--vla_path")
     # Fallback: HF base id itself.
     assert argv[idx + 1] == "openvla/openvla-7b"

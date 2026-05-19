@@ -18,6 +18,7 @@ from typing import Any
 
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.providers.registry import ProviderRegistry
+from odyssey.spec.agents import AgentSpec
 from odyssey.spec.tasks import TaskKind
 from odyssey.telemetry.events import TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
@@ -45,6 +46,16 @@ class TaskContext:
     # talking to providers directly. None when the engine was built
     # without providers (the CPU-mock-only test setup).
     providers: ProviderRegistry | None = None
+    # The agent this training task updates. Set by the engine for
+    # training tasks; None for evaluation tasks (which walk all agents
+    # via ``mission.spec.robot.agents`` themselves).
+    agent: AgentSpec | None = None
+    # Local path to the checkpoint a training task should start from.
+    # Set by the engine when a prior completed training task on the
+    # same agent produced one. None for the first training round
+    # against an agent — runners fall back to ``agent.model`` (the
+    # agent's base checkpoint).
+    starting_checkpoint: str | None = None
 
     def cancelled(self) -> bool:
         return self.cancel_event.is_set()

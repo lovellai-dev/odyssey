@@ -4,6 +4,7 @@ Public surface is re-exported here so callers do
 ``from odyssey.spec import Mission`` without knowing the submodule layout.
 """
 
+from odyssey.spec.agents import AgentRole, AgentSpec
 from odyssey.spec.execution import ExecutionSpec
 from odyssey.spec.graph import GraphSpec
 from odyssey.spec.leaderboard import LeaderboardSpec
@@ -13,7 +14,6 @@ from odyssey.spec.refs import (
     DatasetFormat,
     DatasetRef,
     DatasetSource,
-    FromTaskModelRef,
     HFModelRef,
     LovellModelRef,
     ModelRef,
@@ -28,13 +28,14 @@ from odyssey.spec.tasks import (
 )
 
 __all__ = [
+    "AgentRole",
+    "AgentSpec",
     "DatasetFormat",
     "DatasetRef",
     "DatasetSource",
     "EvaluationTask",
     "EvaluationType",
     "ExecutionSpec",
-    "FromTaskModelRef",
     "GraphSpec",
     "HFModelRef",
     "LeaderboardSpec",

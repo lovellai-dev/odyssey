@@ -1,12 +1,21 @@
 """Task specs.
 
-Two task kinds: TRAINING and EVALUATION. Each carries its own type enum
-(TrainingType / EvaluationType) — matching the CC schema where
-`training_type` is on the training_tasks table and `evaluation_type` is
-on the evaluation_tasks table, not on the missions table.
+Two task kinds: TRAINING and EVALUATION.
 
-ML hyperparameters live in `config: dict`, not as enum values. The framework
-spec stays open; runners validate their own config schemas.
+  * A TRAINING task targets one agent on the robot (``agent_id`` refs
+    ``RobotSpec.agents[].id``). The framework looks up the agent's
+    base model from ``AgentSpec.model`` and chains successive training
+    tasks against the same agent through the runtime's per-agent
+    checkpoint walk — there is no ``model:`` field on the task.
+
+  * An EVALUATION task runs the robot. It carries no model or agent
+    reference; the runner walks the robot's agents and composes the
+    current checkpoints. Today that composition reduces to one agent =
+    one policy = one eval; multi-agent eval arrives with the
+    multi-agent runtime.
+
+ML hyperparameters live in ``config: dict``. The framework spec stays
+open; runners validate their own config schemas.
 """
 
 from __future__ import annotations
@@ -16,7 +25,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from odyssey.spec.refs import DatasetRef, ModelRef
+from odyssey.spec.refs import DatasetRef
 
 _TASK_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
 
@@ -61,11 +70,12 @@ class TrainingTask(BaseModel):
     description: str | None = None
     training_type: TrainingType
     depends_on: list[str] = Field(default_factory=list)
-    model: ModelRef
+    # The agent on the robot this training task updates. The model
+    # checkpoint is resolved from the agent (or from a prior training
+    # task's output for the same agent) — the task does not name a
+    # model directly.
+    agent_id: str
     dataset: DatasetRef | None = None
-    target_agent_id: str
-    target_agent_role: str = "PILOT"
-    target_model_type: str = "VLA"
     config: dict[str, Any] = Field(default_factory=dict)
     execution_order: int = 0
     timeout_seconds: int | None = Field(default=None, ge=1)
@@ -79,10 +89,10 @@ class EvaluationTask(BaseModel):
     evaluation_type: EvaluationType
     benchmark_name: str
     depends_on: list[str] = Field(default_factory=list)
-    model: ModelRef
-    target_agent_id: str
-    target_agent_role: str = "PILOT"
-    target_model_type: str = "VLA"
+    # No model or agent reference. The eval runs the robot — the runner
+    # walks the robot's agents and composes their current checkpoints.
+    # Today there is exactly one agent, so the composition is single-
+    # policy; multi-agent eval arrives with the multi-agent runtime.
     num_episodes: int = Field(default=100, ge=1)
     config: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1)

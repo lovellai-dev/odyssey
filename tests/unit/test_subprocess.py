@@ -21,6 +21,8 @@ from odyssey.runners.subprocess import (
     run_training_subprocess,
 )
 from odyssey.spec import (
+    AgentRole,
+    AgentSpec,
     EvaluationTask,
     EvaluationType,
     HFModelRef,
@@ -46,20 +48,26 @@ def _spec() -> Mission:
         metadata=MissionMetadata(name="sub-tests"),
         objective="o",
         acceptance_criteria="a",
-        robot=RobotSpec(embodiment="franka_panda"),
+        robot=RobotSpec(
+            embodiment="franka_panda",
+            agents=[
+                AgentSpec(
+                    id="pilot",
+                    role=AgentRole.PILOT,
+                    model=HFModelRef(base="openvla/openvla-7b"),
+                ),
+            ],
+        ),
         tasks=[
             TrainingTask(
                 name="train",
                 training_type=TrainingType.DEMONSTRATION,
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
+                agent_id="pilot",
             ),
             EvaluationTask(
                 name="eval",
                 evaluation_type=EvaluationType.ROBOSUITE,
                 benchmark_name="Lift",
-                model=HFModelRef(base="openvla/openvla-7b"),
-                target_agent_id="pilot",
             ),
         ],
     )
