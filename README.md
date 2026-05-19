@@ -152,6 +152,8 @@ one agent — will become possible when the agent cap lifts.
 ```bash
 git clone https://github.com/lovellai-dev/odyssey.git
 cd odyssey
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .              # CLI, validate, mock runs (lightweight)
 pip install -e ".[all]"       # real training + evaluation (torch, robosuite…)
 pip install -e ".[all,dev]"   # + pytest, ruff, mypy
