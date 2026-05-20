@@ -1,16 +1,13 @@
 <h1 align="center">Lovell Odyssey</h1>
 
-[![CI](https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
-[![Status: Pre-Alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)]()
+<p align="center">
+  <a href="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml"><img src="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/status-pre--alpha-orange.svg" alt="Status: Pre-Alpha">
+</p>
 
 Open-source framework for defining, running, and benchmarking robot training missions.
-
-> [!WARNING]
-> **Pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
-> targeted at `v0.1.0-alpha`. API, CLI, schemas, and wire protocols are
-> subject to change without notice.
 
 ## Install
 
