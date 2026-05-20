@@ -7,17 +7,18 @@
 
 Open-source framework for defining, running, and benchmarking robot training missions.
 
-> **Status: pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
-> targeted at `v0.1.0-alpha`. The API, CLI, schemas, and wire protocols are
-> still subject to change without notice.
+> [!WARNING]
+> **Pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
+> targeted at `v0.1.0-alpha`. API, CLI, schemas, and wire protocols are
+> subject to change without notice.
 
 ## Install
 
-**Linux only** — install build dependencies before proceeding (needed by `.[all]`):
-
-```bash
-sudo apt update && sudo apt install build-essential python3-dev -y
-```
+> [!IMPORTANT]
+> **Linux only** — install build dependencies before proceeding (needed by `.[all]`):
+> ```bash
+> sudo apt update && sudo apt install build-essential python3-dev -y
+> ```
 
 ```bash
 git clone https://github.com/lovellai-dev/odyssey.git
@@ -129,11 +130,12 @@ odyssey run examples/quickstart-openvla/mission.yaml
 
 Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA fine-tune.
 
-**Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
-the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
-adapter. Real eval numbers require supplying a `policy_factory` to
-`RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
-The built-in adapter is a v0.2.x line item.
+> [!NOTE]
+> **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
+> the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
+> adapter. Real eval numbers require supplying a `policy_factory` to
+> `RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
+> The built-in adapter is a v0.2.x line item.
 
 ## Status snapshot (v0.0.x)
 
