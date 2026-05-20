@@ -1,5 +1,10 @@
 # Lovell Odyssey
 
+[![CI](https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![Status: Pre-Alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)]()
+
 Open-source framework for defining, running, and benchmarking robot training missions.
 
 > **Status: pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
