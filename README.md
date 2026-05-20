@@ -149,6 +149,12 @@ one agent — will become possible when the agent cap lifts.
 
 ## Install
 
+**Linux only** — install build dependencies before proceeding (needed by `.[all]`):
+
+```bash
+sudo apt update && sudo apt install build-essential python3-dev -y
+```
+
 ```bash
 git clone https://github.com/lovellai-dev/odyssey.git
 cd odyssey
