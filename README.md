@@ -112,20 +112,40 @@ src/odyssey/
   utils/        ~/.odyssey/ path management
 ```
 
-## Real run (OpenVLA + Robosuite)
+## Launching a training mission
 
-This works only after the extras are installed AND the upstream
-[openvla](https://github.com/openvla/openvla) repo is cloned somewhere
-findable (`$OPENVLA_REPO_PATH` or `/srv/openvla`):
+### Prerequisites
+
+1. Install the training extras:
+   ```bash
+   pip install -e ".[huggingface,openvla,robosuite]"
+   ```
+2. Clone the upstream OpenVLA repo and install its dependencies (needed for
+   `draccus` and the fine-tuning script):
+   ```bash
+   git clone https://github.com/openvla/openvla.git /srv/openvla
+   pip install -e /srv/openvla
+   export OPENVLA_REPO_PATH=/srv/openvla
+   ```
+3. Download the Bridge V2 dataset in RLDS format (~124 GB):
+   ```bash
+   wget -r -nH --cut-dirs=4 --reject="index.html*" \
+     https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/
+   mv bridge_dataset bridge_orig
+   ```
+   Set `--data_root_dir` to the parent directory containing `bridge_orig/`.
+
+### Run
 
 ```bash
-pip install -e ".[huggingface,openvla,robosuite]"
-git clone https://github.com/openvla/openvla.git /srv/openvla
-
 odyssey run examples/quickstart-openvla/mission.yaml
 ```
 
-Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA fine-tune.
+Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA LoRA fine-tune.
+
+> [!NOTE]
+> **GCP users:** single-GPU VMs require `export NCCL_NET=Socket` before
+> running, to bypass Google's NCCL plugin. See [issue #5](https://github.com/lovellai-dev/odyssey/issues/5) for details.
 
 > [!NOTE]
 > **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
