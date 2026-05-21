@@ -47,6 +47,7 @@ tasks:
       batch_size: 2
       learning_rate: 5.0e-5
       epochs: 1
+      dataset_name: bridge_orig  # OXE name required by OpenVLA's finetune.py
 
   - name: eval-on-robosuite-lift
     kind: evaluation
