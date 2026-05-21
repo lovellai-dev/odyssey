@@ -162,7 +162,16 @@ def build_openvla_argv(
     # the dedicated branch above only fires when it's missing from
     # config, so when the operator sets it the override loop here is
     # what propagates their value.
-    handled = {"vla_path", "data_root_dir", "dataset_name"}
+    # Keys consumed by Odyssey's mission spec but not accepted by the
+    # upstream finetune.py draccus config.
+    handled = {
+        "vla_path",
+        "data_root_dir",
+        "dataset_name",
+        "method",
+        "lora_alpha",
+        "epochs",
+    }
     for key, value in _flatten_config(config):
         if key in handled:
             continue
@@ -284,6 +293,7 @@ class OpenVLARunner(Runner):
 
         process_spec = TrainingProcessSpec(
             script_path=script_path,
+            use_torchrun=True,
             argv_extra=build_openvla_argv(
                 task=spec.model_copy(update={"config": config}),
                 agent_model_base=agent_model_base,

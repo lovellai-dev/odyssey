@@ -59,6 +59,8 @@ class TrainingProcessSpec:
     line_parser: LineParser | None = None
     cwd: str | None = None
     sigterm_grace_seconds: float = 30.0
+    use_torchrun: bool = False
+    torchrun_nproc: int = 1
 
     def __post_init__(self) -> None:
         if (self.entry_module is None) == (self.script_path is None):
@@ -78,12 +80,21 @@ async def run_training_subprocess(
     responsible for building ``argv_extra``, picking the entry, and
     post-processing the resulting output directory.
     """
+    if spec.use_torchrun:
+        launcher = [
+            "torchrun",
+            "--standalone",
+            f"--nproc_per_node={spec.torchrun_nproc}",
+        ]
+    else:
+        launcher = ["python"]
+
     if spec.entry_module is not None:
-        cmd = ["python", "-m", spec.entry_module, *spec.argv_extra]
+        cmd = [*launcher, "-m", spec.entry_module, *spec.argv_extra]
     else:
         # script_path is guaranteed by __post_init__
         assert spec.script_path is not None
-        cmd = ["python", spec.script_path, *spec.argv_extra]
+        cmd = [*launcher, spec.script_path, *spec.argv_extra]
     env = {**os.environ, **spec.env}
 
     logger.info(
