@@ -113,6 +113,10 @@ async def run_training_subprocess(
         cwd=spec.cwd,
         # New process group so SIGTERM targets only this child tree.
         preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        # tqdm progress bars use \r without \n, which can accumulate
+        # into a single "line" that exceeds asyncio's default 64 KB
+        # buffer.  10 MB is enough for long training runs.
+        limit=10 * 1024 * 1024,
     )
 
     stdout_task = asyncio.create_task(
