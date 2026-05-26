@@ -33,7 +33,7 @@ The DCO is checked by CI on every pull request. We do not require a CLA.
 ## Development setup
 
 ```bash
-git clone https://github.com/femtechie/lovell-odyssey.git
+git clone https://github.com/lovellai-dev/odyssey.git
 cd lovell-odyssey
 python -m venv .venv
 source .venv/bin/activate
