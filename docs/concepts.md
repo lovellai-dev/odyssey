@@ -102,13 +102,7 @@ robot's agents at a time.** v0.0.x enforces exactly one agent on the
 robot (the implicit PILOT), and the eval composes a single policy from
 that single agent. Multi-agent loadouts (PILOT + one or more
 SPECIALISTs) and the multi-agent execution that goes with them ship
-when the multi-agent runtime lands. What v0.0.x does *not* model from
-the brain paper — agent persona / goals / success criteria,
-materialized artifacts that condition runtime behavior, the
-deterministic safety stack, conduct-rule enforcement, the deployment
-contract — is on the roadmap. Where each of those ultimately lives
-(in `src/odyssey/` versus in a hosted Lovell service) is a strategic
-decision still being worked out.
+when the multi-agent runtime lands.
 
 ## Robot specs in v0.0.x
 
