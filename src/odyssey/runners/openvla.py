@@ -147,10 +147,17 @@ def build_openvla_argv(
     if dataset_id is None and task.dataset is not None:
         dataset_id = task.dataset.ref
 
+    # OXE dataset name: prefer dataset.ref (the OXE registry key) over
+    # config fallback, so users declare the key in the dataset spec
+    # rather than burying it in hyperparameter config.
+    dataset_name = (
+        task.dataset.ref if task.dataset else config.get("dataset_name", task.name)
+    )
+
     argv: list[str] = ["--vla_path", str(vla_path)]
     if dataset_id:
         argv += ["--data_root_dir", str(dataset_id)]
-    argv += ["--dataset_name", str(config.get("dataset_name", task.name))]
+    argv += ["--dataset_name", str(dataset_name)]
     argv += ["--run_root_dir", str(output_dir)]
     argv += ["--adapter_tmp_dir", str(output_dir / "adapter_tmp")]
     argv += ["--run_id", run_id]

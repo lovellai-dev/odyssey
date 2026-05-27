@@ -36,10 +36,9 @@ tasks:
     training_type: demonstration
     agent_id: pilot
     dataset:
-      source: huggingface
-      ref: lerobot/bridge_v2
-      partial: 1000
-      format: lerobot
+      source: oxe
+      ref: bridge_orig            # OXE registry key used by OpenVLA's finetune.py
+      format: rlds
     config:
       method: peft_lora
       lora_rank: 8
@@ -47,7 +46,7 @@ tasks:
       batch_size: 2
       learning_rate: 5.0e-5
       epochs: 1
-      dataset_name: bridge_orig  # OXE name required by OpenVLA's finetune.py
+      data_root_dir: /path/to/dataset  # parent dir containing bridge_orig/1.0.0/
 
   - name: eval-on-robosuite-lift
     kind: evaluation
