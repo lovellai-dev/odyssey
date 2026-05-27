@@ -74,7 +74,7 @@ artifacts under `~/.odyssey/runs/<mission-id>/<task-id>/`.
 
 ## What it is
 
-You describe a mission in YAML — a robot, a model, a dataset to train on, an
+You describe a mission in YAML — a robot, an agent, a dataset to train on, an
 evaluation benchmark to score against — and `odyssey run` walks it through the
 full lifecycle: load → validate → execute training tasks → execute the
 evaluation task → persist results. Local-mode by default; the hosted Lovell

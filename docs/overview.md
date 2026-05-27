@@ -37,4 +37,4 @@ You describe a mission in YAML — specifying a robot, a model, a dataset, and a
 
 ## Focus
 
-The project is oriented toward **VLA (Vision-Language-Action) model** fine-tuning and robotic sim evaluation, with OpenVLA as the first supported model and Robosuite as the first eval environment.
+The pre-alpha version supports **VLA (Vision-Language-Action) model** fine-tuning only, with OpenVLA as the first supported model and Robosuite as the first eval environment. Future releases will add multi-agent training and VLM support.
