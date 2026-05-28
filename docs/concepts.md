@@ -71,11 +71,8 @@ it's a composition of an embodiment with a **loadout of agents**. Every
 robot has exactly one **PILOT** (running a Vision-Language-Action model
 with physical authority over the actuators) and zero or more
 **SPECIALISTs** (running language models for delegated reasoning — map
-queries, calculations, lookups). Each agent is authored with a persona,
-goals, and success criteria, and runs against a pinned model checkpoint;
-its behavior is conditioned at runtime by materialized artifacts
-produced from that prose. The fuller picture is described in the Lovell
-AI robot-brain paper.
+queries, calculations, lookups). Each agent runs against a pinned model
+checkpoint.
 
 Odyssey's spec models this hierarchy directly. A `robot:` block
 declares an embodiment and an inline loadout of agents:
