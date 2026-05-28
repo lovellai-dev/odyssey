@@ -2,12 +2,11 @@
 
 An **open-source framework for defining, running, and benchmarking robot training missions**. Built by Lovell AI, currently in pre-alpha (v0.0.1).
 
-You describe a mission in YAML — specifying a robot, an agent, a dataset, and an evaluation benchmark — and `odyssey run` orchestrates the full lifecycle: load → validate → train → evaluate → persist results.
+You describe a mission in YAML — specifying a robot, a model, a dataset, and an evaluation benchmark — and `odyssey run` orchestrates the full lifecycle: load → validate → train → evaluate → persist results.
 
 ## Key Concepts
 
 - **Missions** — YAML specs that define what to train, how to evaluate, and on which robot
-- **Agents** — The AI models attached to a robot (e.g. a VLA policy). Each agent has a role (PILOT or SPECIALIST) and a pinned model checkpoint
 - **Runners** — Pluggable backends that execute tasks (CPU mock for testing, OpenVLA for real training, Robosuite for evaluation)
 - **Providers** — Abstractions for data/model sources (local filesystem, HuggingFace)
 
