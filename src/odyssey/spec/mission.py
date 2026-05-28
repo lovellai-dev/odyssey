@@ -56,9 +56,8 @@ class RobotSpec(BaseModel):
     today is the PILOT (running a Vision-Language-Action model with
     physical authority over the actuators).
 
-    See the Lovell robot-brain paper for the fuller agent shape that
-    v0.0.x's ``AgentSpec`` does not yet model (persona, goals, success
-    criteria, materialized artifacts).
+    Future versions will extend ``AgentSpec`` with additional fields
+    (persona, goals, success criteria, materialized artifacts).
     """
 
     embodiment: str | None = None
