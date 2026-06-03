@@ -2,7 +2,7 @@
 
 An **open-source framework for defining, running, and benchmarking robot training missions**. Built by Lovell AI, currently in pre-alpha (v0.0.1).
 
-You describe a mission in YAML — specifying a robot, a model, a dataset, and an evaluation benchmark — and `odyssey run` orchestrates the full lifecycle: load → validate → train → evaluate → persist results.
+You train an agent by describing a mission in YAML — specifying a robot, a model, a dataset, and an evaluation benchmark — and `odyssey run` orchestrates the full lifecycle: load → validate → train → evaluate → persist results.
 
 ## Key Concepts
 
