@@ -1,4 +1,4 @@
-# Lovell Odyssey Overview
+# Odyssey Overview
 
 An **open-source framework for defining, running, and benchmarking robot training missions**. Built by Lovell AI, currently in pre-alpha (v0.0.1).
 
@@ -8,6 +8,8 @@ You describe a mission in YAML — specifying a robot, a model, a dataset, and a
 
 - **Missions** — YAML specs that define what to train, how to evaluate, and on which robot
 - **Runners** — Pluggable backends that execute tasks (CPU mock for testing, OpenVLA for real training, Robosuite for evaluation)
+- **Models** — The neural network being trained (e.g. OpenVLA). A mission specifies which model to fine-tune and how
+- **Agents** — The autonomous entity resulting from training a mission. It becomes part of the robot as a PILOT or SPECIALIST
 - **Providers** — Abstractions for data/model sources (local filesystem, HuggingFace)
 
 ## Codebase Structure (`src/odyssey/`)

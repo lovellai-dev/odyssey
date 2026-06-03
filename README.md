@@ -1,4 +1,4 @@
-<h1 align="center">Lovell Odyssey</h1>
+<h1 align="center">Odyssey</h1>
 
 <p align="center">
   <a href="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml"><img src="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/status-pre--alpha-orange.svg" alt="Status: Pre-Alpha">
 </p>
 
-Open-source framework for defining, running, and benchmarking robot training missions.
+<p align="center">Open-source framework for defining, running, and benchmarking robot training missions.</p>
 
 ## Install
 
