@@ -54,6 +54,7 @@ openvla = [
     "transformers>=4.40",
     "peft>=0.8",
     "torch>=2.1",
+    "pillow>=9.0",
 ]
 
 [project.scripts]
@@ -97,7 +98,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

@@ -53,6 +53,8 @@ tasks:
     evaluation_type: robosuite
     benchmark_name: Lift
     num_episodes: 10
+    config:
+      unnorm_key: bridge_orig
 
 leaderboard:
   publish: false   # Backend not live yet in v0.1.0-alpha.
