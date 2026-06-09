@@ -43,6 +43,9 @@ Thumbs.db
 *.db-wal
 .odyssey/
 
+# Internal migration docs (not for public repo)
+docs/migration/
+
 # Local reference material that lived in this directory before the
 # OSS repo was bootstrapped here. Not part of the project; kept on
 # disk for now in case anything is still wanted out of it.
