@@ -526,9 +526,9 @@ def make_openvla_policy(
             img_array = Image.fromarray(img_array.astype("uint8"), "RGB")
 
         action = model.predict_action(
-            processor,
             img_array,
             task_instruction,
+            processor=processor,
             unnorm_key=unnorm_key,
             do_sample=False,
         )
