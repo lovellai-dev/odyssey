@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"class.*Model\\\\|VLA\\\\|OpenVLA\\\\|Pi0\\\\|Deepseek\" /Users/gema/Documents/LovellAI/lai-trainer/app/*.py 2>/dev/null | grep -v \".pyc\" | head -30)",
+      "Bash(grep -r \"256\\\\|bin\\\\|quantize\\\\|discretize\" /Users/gema/Documents/LovellAI/odyssey --include=\"*.py\" 2>/dev/null | grep -i action | head -10)",
+      "Bash(find /Users/gema/Documents/LovellAI/odyssey/docs -name \"*.md\" 2>/dev/null | head -20)",
+      "Bash(python3 -c \"import openvla; print\\(openvla.__file__\\)\" 2>/dev/null || echo \"OpenVLA not installed\")",
+      "WebSearch"
+    ]
+  }
+}
