@@ -50,3 +50,5 @@ docs/migration/
 # OSS repo was bootstrapped here. Not part of the project; kept on
 # disk for now in case anything is still wanted out of it.
 Legacy Mission Service/
+.claude/
+CLAUDE.md

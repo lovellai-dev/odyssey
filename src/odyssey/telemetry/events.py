@@ -34,9 +34,7 @@ class TaskEventType(str, Enum):
 class ProgressEvent(BaseModel):
     """Structured progress event emitted by runners.
 
-    Mirrors lai-trainer's ``ProgressEvent`` schema so both the local CLI
-    and the hosted Command Center consume the same event shape.  Validated
-    at emission time by ``TaskContext.emit_progress()``.
+    Validated at emission time by ``TaskContext.emit_progress()``.
     """
 
     mission_id: str
