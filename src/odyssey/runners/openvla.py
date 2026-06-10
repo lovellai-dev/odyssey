@@ -448,7 +448,7 @@ def make_openvla_policy(
     try:
         import torch
         from PIL import Image
-        from transformers import AutoModelForVision2Seq, AutoProcessor  # type: ignore[attr-defined]
+        from transformers import AutoModelForVision2Seq, AutoProcessor
     except ImportError as e:
         raise NotImplementedError(
             "OpenVLA inference policy requires the 'openvla' extra. "
@@ -471,7 +471,7 @@ def make_openvla_policy(
 
         base_model_name = _resolve_base_model(checkpoint_path)
         logger.info("Loading OpenVLA base model: %s", base_model_name)
-        processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+        processor = AutoProcessor.from_pretrained(
             base_model_name, trust_remote_code=True
         )
         model = AutoModelForVision2Seq.from_pretrained(
@@ -496,7 +496,7 @@ def make_openvla_policy(
                 )
     else:
         logger.info("Loading full merged model from: %s", checkpoint_path)
-        processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+        processor = AutoProcessor.from_pretrained(
             str(checkpoint_path), trust_remote_code=True
         )
         model = AutoModelForVision2Seq.from_pretrained(

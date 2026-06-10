@@ -98,8 +98,9 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy"]
 ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
