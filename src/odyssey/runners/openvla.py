@@ -234,7 +234,9 @@ def _resolve_run_subdir(output_dir: Path, run_id: str) -> Path | None:
     """OpenVLA writes to ``{run_root_dir}/<vla_name>+<run_id>+<suffix>/``.
 
     Pick whichever subdir contains an adapter (LoRA) or full-finetune
-    config and includes ``run_id`` in its name.
+    config and includes ``run_id`` in its name.  Then look inside for
+    the latest ``checkpoint-NNN/`` subdir with an ``adapter_config.json``
+    — that's the actual LoRA checkpoint the eval needs.
     """
     if not output_dir.is_dir():
         return None
@@ -251,7 +253,30 @@ def _resolve_run_subdir(output_dir: Path, run_id: str) -> Path | None:
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
+    run_dir = candidates[0]
+
+    # Look for the latest checkpoint-NNN/ subdir with adapter_config.json
+    checkpoint = _resolve_latest_checkpoint(run_dir)
+    return checkpoint if checkpoint is not None else run_dir
+
+
+def _resolve_latest_checkpoint(run_dir: Path) -> Path | None:
+    """Find the latest ``checkpoint-NNN/`` subdir containing a LoRA adapter."""
+    checkpoints: list[tuple[int, Path]] = []
+    for entry in run_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("checkpoint-"):
+            continue
+        if (entry / "adapter_config.json").is_file():
+            # Extract step number for sorting
+            try:
+                step_num = int(entry.name.split("-", 1)[1])
+            except (ValueError, IndexError):
+                step_num = 0
+            checkpoints.append((step_num, entry))
+    if not checkpoints:
+        return None
+    checkpoints.sort(reverse=True)
+    return checkpoints[0][1]
 
 
 class OpenVLARunner(Runner):
