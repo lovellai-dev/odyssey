@@ -67,20 +67,27 @@ def _find_image_key(obs: dict[str, Any], preferred: str) -> str:
     )
 
 
+def _is_lora_checkpoint(checkpoint_path: Path) -> bool:
+    """Check whether the checkpoint is a LoRA adapter or a full model."""
+    return (checkpoint_path / "adapter_config.json").is_file()
+
+
 def make_openvla_policy(
     checkpoint_path: Path,
     *,
     config: dict[str, Any] | None = None,
     benchmark_name: str = "Lift",
 ) -> Any:
-    """Build an OpenVLA inference policy from a LoRA checkpoint.
+    """Build an OpenVLA inference policy from a checkpoint.
+
+    Supports both LoRA adapter checkpoints (with ``adapter_config.json``)
+    and full merged model checkpoints (with ``config.json`` and safetensors).
 
     Returns a callable ``policy(obs_dict) -> action_array`` suitable for
     use as a ``Policy`` in ``RobosuiteRunner``.
     """
     try:
         import torch
-        from peft import PeftModel
         from PIL import Image
         from transformers import AutoModelForVision2Seq, AutoProcessor  # type: ignore[attr-defined]
     except ImportError as e:
@@ -98,33 +105,47 @@ def make_openvla_policy(
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
 
     checkpoint_path = Path(checkpoint_path)
-    base_model_name = _resolve_base_model(checkpoint_path)
+    is_lora = _is_lora_checkpoint(checkpoint_path)
 
-    logger.info("Loading OpenVLA base model: %s", base_model_name)
-    processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
-        base_model_name, trust_remote_code=True
-    )
-    model = AutoModelForVision2Seq.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-    )
+    if is_lora:
+        from peft import PeftModel
 
-    logger.info("Applying LoRA adapter from: %s", checkpoint_path)
-    model = PeftModel.from_pretrained(model, str(checkpoint_path))
+        base_model_name = _resolve_base_model(checkpoint_path)
+        logger.info("Loading OpenVLA base model: %s", base_model_name)
+        processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+            base_model_name, trust_remote_code=True
+        )
+        model = AutoModelForVision2Seq.from_pretrained(
+            base_model_name,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        )
+        logger.info("Applying LoRA adapter from: %s", checkpoint_path)
+        model = PeftModel.from_pretrained(model, str(checkpoint_path))
 
-    # merge_and_unload() for faster inference — but only if the merged model
-    # retains the custom predict_action method.
-    if hasattr(model, "merge_and_unload"):
-        merged = model.merge_and_unload()
-        if hasattr(merged, "predict_action"):
-            model = merged
-            logger.info("LoRA merged and unloaded for faster inference")
-        else:
-            logger.info(
-                "Skipping merge_and_unload — predict_action not on merged model"
-            )
+        # merge_and_unload() for faster inference — but only if the merged
+        # model retains the custom predict_action method.
+        if hasattr(model, "merge_and_unload"):
+            merged = model.merge_and_unload()
+            if hasattr(merged, "predict_action"):
+                model = merged
+                logger.info("LoRA merged and unloaded for faster inference")
+            else:
+                logger.info(
+                    "Skipping merge_and_unload — predict_action not on merged model"
+                )
+    else:
+        logger.info("Loading full merged model from: %s", checkpoint_path)
+        processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+            str(checkpoint_path), trust_remote_code=True
+        )
+        model = AutoModelForVision2Seq.from_pretrained(
+            str(checkpoint_path),
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True,
+        )
 
     model = model.to(device)
 
