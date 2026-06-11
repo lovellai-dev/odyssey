@@ -525,10 +525,12 @@ def make_openvla_policy(
         if not isinstance(img_array, Image.Image):
             img_array = Image.fromarray(img_array.astype("uint8"), "RGB")
 
+        # The HF-hosted OpenVLAForActionPrediction.predict_action() expects
+        # pre-tokenized input_ids, not raw image+instruction.  We use the
+        # processor to build the prompt and then pass input_ids directly.
+        inputs = processor(task_instruction, img_array).to(device, dtype=torch.bfloat16)
         action = model.predict_action(
-            img_array,
-            task_instruction,
-            processor=processor,
+            inputs["input_ids"],
             unnorm_key=unnorm_key,
             do_sample=False,
         )
