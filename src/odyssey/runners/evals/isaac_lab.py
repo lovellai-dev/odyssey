@@ -249,26 +249,27 @@ def _resolve_isaac_lab_robot(robot: RobotSpec) -> str | None:
 
 
 def _resolve_eval_checkpoint(context: TaskContext) -> Path:
-    """Find the checkpoint the eval should run against.
+    """Find the PILOT checkpoint the eval should run against.
 
-    Walks the robot's single agent and picks the latest completed
-    training task's checkpoint. Mirrors the logic in ``robosuite.py``.
+    Uses ``context.agent_checkpoints`` (populated by the engine) to find
+    the first PILOT agent with a trained checkpoint. Multi-agent loadouts
+    (PILOT + SPECIALIST) are supported.
     """
-    agents = context.mission.spec.robot.agents
-    if len(agents) != 1:
-        raise NotImplementedError(
-            f"IsaacLabRunner expects exactly one agent on the robot "
-            f"(got {len(agents)}). Multi-agent eval arrives with the "
-            "multi-agent runtime."
-        )
-    agent = agents[0]
-    checkpoint = context.mission.latest_checkpoint_for(agent.id)
-    if not checkpoint:
-        raise ValueError(
-            f"No completed training task produced a checkpoint for agent "
-            f"{agent.id!r} on this mission — cannot evaluate."
-        )
-    return Path(checkpoint)
+    from odyssey.spec.agents import AgentRole
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role != AgentRole.PILOT:
+            continue
+        checkpoint = (context.agent_checkpoints or {}).get(agent.id)
+        if not checkpoint:
+            checkpoint = context.mission.latest_checkpoint_for(agent.id)
+        if checkpoint:
+            return Path(checkpoint)
+
+    raise ValueError(
+        "No completed training task produced a checkpoint for any PILOT "
+        "agent on this mission — cannot evaluate."
+    )
 
 
 def _grade(success_rate: float) -> str:
