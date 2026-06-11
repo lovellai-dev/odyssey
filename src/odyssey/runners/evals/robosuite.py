@@ -189,8 +189,22 @@ class RobosuiteRunner(Runner):
             step_label=str(checkpoint),
         )
 
-        # Policy: use OpenVLA when no custom factory was injected
-        if self._policy_factory is _default_policy_factory:
+        cfg = spec.config or {}
+        image_key = cfg.get("image_key", "agentview_image")
+        use_planned = (
+            self._policy_factory is _default_policy_factory
+            and _has_specialist(context)
+        )
+
+        if use_planned:
+            runtime = _build_planned_runtime(context, checkpoint, spec)
+            await context.emit_progress(
+                "model_loading",
+                step="load_specialist",
+                step_label="PlannedEvalRuntime (PILOT + SPECIALIST)",
+            )
+            policy = None
+        elif self._policy_factory is _default_policy_factory:
             from odyssey.runners.models.openvla import make_openvla_policy
 
             policy = make_openvla_policy(
@@ -198,8 +212,10 @@ class RobosuiteRunner(Runner):
                 config=spec.config,
                 benchmark_name=spec.benchmark_name,
             )
+            runtime = None
         else:
             policy = self._policy_factory(checkpoint)
+            runtime = None
 
         robosuite_robot = _resolve_robosuite_robot(context.mission.spec.robot)
         await context.emit_progress(
@@ -221,6 +237,9 @@ class RobosuiteRunner(Runner):
         successes = 0
         episode_returns: list[float] = []
 
+        # Resolve the task instruction for PlannedEvalRuntime
+        task_instruction = _resolve_task_instruction(spec) if runtime else ""
+
         for ep in range(1, num_episodes + 1):
             if context.cancelled():
                 logger.info(
@@ -234,10 +253,23 @@ class RobosuiteRunner(Runner):
             obs = env.reset()
             episode_return = 0.0
             success = False
+
+            if runtime:
+                plan = runtime.begin_episode(task_instruction)
+                logger.info("Episode %d plan: %s", ep, plan)
+
             for _step in range(self._max_steps):
                 if context.cancelled():
                     break
-                action = policy(obs if isinstance(obs, dict) else {"observation": obs})
+
+                if runtime:
+                    obs_dict = obs if isinstance(obs, dict) else {"observation": obs}
+                    image = obs_dict.get(image_key, next(iter(obs_dict.values())))
+                    action = runtime.get_action(image)
+                else:
+                    assert policy is not None
+                    action = policy(obs if isinstance(obs, dict) else {"observation": obs})
+
                 step_result = env.step(action)
                 # robosuite returns (obs, reward, done, info)
                 obs, reward, done, info = step_result
@@ -343,4 +375,78 @@ def _resolve_eval_checkpoint(context: TaskContext) -> Path:
     raise ValueError(
         "No completed training task produced a checkpoint for any PILOT "
         "agent on this mission — cannot evaluate."
+    )
+
+
+def _has_specialist(context: TaskContext) -> bool:
+    """Check whether the loadout includes a SPECIALIST agent."""
+    from odyssey.spec.agents import AgentRole
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role == AgentRole.SPECIALIST:
+            return True
+    return False
+
+
+def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
+    """Return ``(model_base, quantization)`` for the first SPECIALIST."""
+    from odyssey.spec.agents import AgentRole
+    from odyssey.spec.refs import HFModelRef
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role == AgentRole.SPECIALIST:
+            model = agent.model
+            if not isinstance(model, HFModelRef):
+                raise ValueError(
+                    f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
+                    "Only HuggingFace models are supported for SPECIALIST inference."
+                )
+            return model.base, model.quantization
+    raise ValueError("No SPECIALIST agent found in the loadout")
+
+
+def _resolve_task_instruction(spec: EvaluationTask) -> str:
+    """Resolve the natural-language task instruction for the benchmark."""
+    from odyssey.runners.models.openvla import _DEFAULT_INSTRUCTIONS
+
+    cfg = spec.config or {}
+    return str(
+        cfg.get("task_instruction")
+        or _DEFAULT_INSTRUCTIONS.get(spec.benchmark_name, "complete the task")
+    )
+
+
+def _build_planned_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    spec: EvaluationTask,
+) -> Any:
+    """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST."""
+    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+    from odyssey.runners.agents.planner import LLMPlanner
+    from odyssey.runners.models.gemma import GemmaTextGenerator
+    from odyssey.runners.models.openvla import VLARuntime
+
+    cfg = spec.config or {}
+    unnorm_key = cfg.get("unnorm_key", "bridge_orig")
+
+    # Load the PILOT as a VLARuntime (per-call instruction)
+    pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
+
+    # Load the SPECIALIST model + wrap in planner
+    model_base, quantization = _find_specialist_model(context)
+    generator = GemmaTextGenerator(model_base, quantization=quantization)
+    planner = LLMPlanner(generator)
+
+    # Phase config from mission config
+    steps_per_phase = cfg.get("steps_per_phase", 50)
+    phase_config = PhaseConfig(steps_per_phase=steps_per_phase)
+
+    task_instruction = _resolve_task_instruction(spec)
+
+    return PlannedEvalRuntime(
+        pilot=pilot,
+        planner=planner,
+        phase_config=phase_config,
+        fallback_instruction=task_instruction,
     )
