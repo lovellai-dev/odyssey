@@ -25,6 +25,7 @@ class HFModelRef(BaseModel):
     source: Literal["huggingface"] = "huggingface"
     base: str
     revision: str | None = None
+    quantization: str | None = None
 
 
 class LovellModelRef(BaseModel):

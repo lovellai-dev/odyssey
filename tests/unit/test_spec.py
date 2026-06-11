@@ -190,16 +190,49 @@ def test_robotspec_requires_at_least_one_agent() -> None:
         RobotSpec(embodiment="franka_panda", agents=[])
 
 
-def test_robotspec_caps_agents_at_one_today() -> None:
+def test_robotspec_accepts_pilot_plus_specialist() -> None:
+    specialist = AgentSpec(
+        id="task-planner",
+        role=AgentRole.SPECIALIST,
+        model=HFModelRef(base="google/gemma-3-4b-it", quantization="int4"),
+    )
+    robot = RobotSpec(
+        embodiment="franka_panda",
+        agents=[_agent("pilot"), specialist],
+    )
+    assert len(robot.agents) == 2
+    assert robot.agents[0].role == AgentRole.PILOT
+    assert robot.agents[1].role == AgentRole.SPECIALIST
+
+
+def test_robotspec_rejects_loadout_without_pilot() -> None:
+    specialist = AgentSpec(
+        id="planner",
+        role=AgentRole.SPECIALIST,
+        model=HFModelRef(base="google/gemma-3-4b-it"),
+    )
+    with pytest.raises(ValidationError, match="at least one PILOT"):
+        RobotSpec(embodiment="franka_panda", agents=[specialist])
+
+
+def test_robotspec_caps_agents_at_four() -> None:
     with pytest.raises(ValidationError):
         RobotSpec(
             embodiment="franka_panda",
-            agents=[_agent("pilot"), _agent("co-pilot")],
+            agents=[_agent(f"a{i}") for i in range(5)],
+        )
+
+
+def test_robotspec_duplicate_agent_ids_rejected() -> None:
+    with pytest.raises(ValidationError, match="unique"):
+        RobotSpec(
+            embodiment="franka_panda",
+            agents=[_agent("pilot"), _agent("pilot")],
         )
 
 
 # ---------------------------------------------------------------------------
-# Training agent_id must resolve
+# Training agent_id must resolve + no SPECIALIST training
 # ---------------------------------------------------------------------------
 
 def test_training_agent_id_must_resolve_to_robot_agent() -> None:
@@ -210,6 +243,55 @@ def test_training_agent_id_must_resolve_to_robot_agent() -> None:
 def test_training_agent_id_to_known_agent_accepted() -> None:
     m = _mission([_training_task(agent_id="pilot"), _eval_task()])
     assert m.tasks[0].agent_id == "pilot"
+
+
+def test_training_specialist_rejected() -> None:
+    specialist = AgentSpec(
+        id="task-planner",
+        role=AgentRole.SPECIALIST,
+        model=HFModelRef(base="google/gemma-3-4b-it"),
+    )
+    robot = RobotSpec(
+        embodiment="franka_panda",
+        agents=[_agent("pilot"), specialist],
+    )
+    with pytest.raises(ValidationError, match=r"SPECIALIST.*not trained"):
+        _mission(
+            [_training_task(agent_id="task-planner"), _eval_task()],
+            robot=robot,
+        )
+
+
+def test_training_pilot_with_specialist_present_accepted() -> None:
+    """Training a PILOT is fine even when a SPECIALIST is in the loadout."""
+    specialist = AgentSpec(
+        id="task-planner",
+        role=AgentRole.SPECIALIST,
+        model=HFModelRef(base="google/gemma-3-4b-it"),
+    )
+    robot = RobotSpec(
+        embodiment="franka_panda",
+        agents=[_agent("pilot"), specialist],
+    )
+    m = _mission(
+        [_training_task(agent_id="pilot"), _eval_task()],
+        robot=robot,
+    )
+    assert m.tasks[0].agent_id == "pilot"
+
+
+# ---------------------------------------------------------------------------
+# HFModelRef quantization field
+# ---------------------------------------------------------------------------
+
+def test_hfmodelref_accepts_quantization() -> None:
+    ref = HFModelRef(base="google/gemma-3-4b-it", quantization="int4")
+    assert ref.quantization == "int4"
+
+
+def test_hfmodelref_quantization_optional() -> None:
+    ref = HFModelRef(base="openvla/openvla-7b")
+    assert ref.quantization is None
 
 
 # ---------------------------------------------------------------------------

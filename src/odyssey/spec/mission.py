@@ -23,7 +23,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from odyssey.spec.agents import AgentSpec
+from odyssey.spec.agents import AgentRole, AgentSpec
 from odyssey.spec.execution import ExecutionSpec
 from odyssey.spec.graph import GraphSpec
 from odyssey.spec.leaderboard import LeaderboardSpec
@@ -51,10 +51,10 @@ class RobotSpec(BaseModel):
 
     Exactly one of ``embodiment`` (catalog name), ``urdf`` (local file
     path), or ``id`` (a robot registered in a Lovell account) names the
-    embodiment. ``agents`` is the loadout — today exactly one entry;
-    when SPECIALISTs ship the upper bound lifts. The single agent
-    today is the PILOT (running a Vision-Language-Action model with
-    physical authority over the actuators).
+    embodiment. ``agents`` is the loadout — one PILOT (running a
+    Vision-Language-Action model with physical authority over the
+    actuators) plus zero or more SPECIALISTs (running language models
+    for delegated reasoning: task planning, map queries, etc.).
 
     See the Lovell robot-brain paper for the fuller agent shape that
     v0.0.x's ``AgentSpec`` does not yet model (persona, goals, success
@@ -64,7 +64,7 @@ class RobotSpec(BaseModel):
     embodiment: str | None = None
     urdf: str | None = None
     id: str | None = None
-    agents: list[AgentSpec] = Field(min_length=1, max_length=1)
+    agents: list[AgentSpec] = Field(min_length=1, max_length=4)
 
     @model_validator(mode="after")
     def _exactly_one_embodiment(self) -> RobotSpec:
@@ -77,11 +77,19 @@ class RobotSpec(BaseModel):
 
     @model_validator(mode="after")
     def _agent_ids_unique(self) -> RobotSpec:
-        # Trivial for ``max_length=1`` today; forward-compat for when
-        # multi-agent loadouts ship and operators can declare several.
         ids = [a.id for a in self.agents]
         if len(ids) != len(set(ids)):
             raise ValueError("Agent ids must be unique within a robot")
+        return self
+
+    @model_validator(mode="after")
+    def _at_least_one_pilot(self) -> RobotSpec:
+        pilots = [a for a in self.agents if a.role == AgentRole.PILOT]
+        if not pilots:
+            raise ValueError(
+                "Robot loadout must include at least one PILOT agent. "
+                f"Got roles: {[a.role.value for a in self.agents]}"
+            )
         return self
 
 
@@ -144,5 +152,21 @@ class Mission(BaseModel):
                     f"Training task {task.name!r} targets agent "
                     f"{task.agent_id!r}, which is not in the robot's loadout "
                     f"(known: {sorted(known_agent_ids)})"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _no_specialist_training(self) -> Mission:
+        agent_roles = {a.id: a.role for a in self.robot.agents}
+        for task in self.tasks:
+            if not isinstance(task, TrainingTask):
+                continue
+            role = agent_roles.get(task.agent_id)
+            if role == AgentRole.SPECIALIST:
+                raise ValueError(
+                    f"Training task {task.name!r} targets SPECIALIST agent "
+                    f"{task.agent_id!r}. SPECIALISTs participate in evaluation "
+                    "only and are not trained — they use their base model for "
+                    "inference. Target a PILOT agent instead."
                 )
         return self
