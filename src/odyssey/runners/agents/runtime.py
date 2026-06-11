@@ -1,11 +1,12 @@
 """Agent runtime protocols for multi-agent evaluation.
 
-Two runtime protocols define the interface between eval runners (Robosuite,
-Isaac Lab) and the agent models:
+Three runtime protocols define the interfaces between components:
 
+  * ``TextGenerator`` — wraps any text generation model. Maps chat
+    messages to generated text. Lives at the model layer.
   * ``PilotRuntime`` — wraps a VLA model. Maps a camera image plus a
     natural-language instruction to a robot action (7-DoF ndarray).
-  * ``PlannerRuntime`` — wraps a task-planner LLM. Decomposes a high-level
+  * ``PlannerRuntime`` — wraps a task-planner. Decomposes a high-level
     task instruction into an ordered list of sub-instructions the pilot
     executes sequentially.
 
@@ -19,6 +20,31 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+@runtime_checkable
+class TextGenerator(Protocol):
+    """Generates text from chat messages.
+
+    This is the model-layer interface. Implementations live in
+    ``runners/models/`` (e.g. ``GemmaTextGenerator``). The planning
+    logic in ``runners/agents/planner.py`` consumes this protocol,
+    so swapping the underlying model doesn't touch the planner.
+    """
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        """Generate text from a list of chat messages.
+
+        Parameters
+        ----------
+        messages:
+            Chat messages, e.g. ``[{"role": "user", "content": "..."}]``.
+
+        Returns
+        -------
+        Generated text string.
+        """
+        ...
 
 
 @runtime_checkable

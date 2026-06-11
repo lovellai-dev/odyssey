@@ -334,7 +334,7 @@ class IsaacLabRunner(Runner):
 
         # Policy: use OpenVLA when no custom factory was injected
         if self._policy_factory is _default_policy_factory:
-            from odyssey.runners.openvla import make_openvla_policy
+            from odyssey.runners.models.openvla import make_openvla_policy
 
             policy = make_openvla_policy(
                 checkpoint,

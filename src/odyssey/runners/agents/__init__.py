@@ -1,13 +1,16 @@
 """Multi-agent evaluation runtimes.
 
 Protocols:
+  * ``TextGenerator`` — chat messages → text (model-layer interface)
   * ``PilotRuntime`` — image + instruction → action
   * ``PlannerRuntime`` — task instruction → sub-instructions
 
 Implementations:
   * ``VLARuntime`` — OpenVLA (requires ``openvla`` extra)
-  * ``LLMPlanner`` — Gemma 4B int4 (requires ``transformers`` + ``torch``)
+  * ``LLMPlanner`` — planning logic, takes any TextGenerator
   * ``PlannedEvalRuntime`` — composes planner + pilot with phase transitions
+
+Model loading (``GemmaTextGenerator``, etc.) lives in ``runners/models/``.
 """
 
 from odyssey.runners.agents.planned import (
@@ -15,7 +18,8 @@ from odyssey.runners.agents.planned import (
     PhaseStrategy,
     PlannedEvalRuntime,
 )
-from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime
+from odyssey.runners.agents.planner import LLMPlanner
+from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGenerator
 
 __all__ = [
     "LLMPlanner",
@@ -24,7 +28,7 @@ __all__ = [
     "PilotRuntime",
     "PlannedEvalRuntime",
     "PlannerRuntime",
-    "VLARuntime",
+    "TextGenerator",
 ]
 
 
@@ -34,8 +38,4 @@ def __getattr__(name: str) -> object:
         from odyssey.runners.agents.vla import VLARuntime
 
         return VLARuntime
-    if name == "LLMPlanner":
-        from odyssey.runners.agents.planner import LLMPlanner
-
-        return LLMPlanner
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

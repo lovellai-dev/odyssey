@@ -21,7 +21,7 @@ import pytest
 from odyssey.engine.lifecycle import TaskStatus
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.runners.base import TaskContext
-from odyssey.runners.isaac_lab import (
+from odyssey.runners.evals.isaac_lab import (
     ISAAC_LAB_ROBOT_NAMES,
     IsaacLabRunner,
     _convert_obs,

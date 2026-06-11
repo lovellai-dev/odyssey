@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from odyssey.runners.openvla import build_openvla_argv, parse_openvla_line
+from odyssey.runners.models.openvla import build_openvla_argv, parse_openvla_line
 from odyssey.spec import TrainingTask, TrainingType
 
 

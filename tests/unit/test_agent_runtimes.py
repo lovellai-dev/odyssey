@@ -20,8 +20,8 @@ from odyssey.runners.agents.planned import (
     PlannedEvalRuntime,
     _PhaseState,
 )
-from odyssey.runners.agents.planner import _parse_plan
-from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime
+from odyssey.runners.agents.planner import LLMPlanner, _parse_plan
+from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGenerator
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -36,6 +36,18 @@ class FakePilot:
     def act(self, image: Any, instruction: str) -> NDArray[np.floating[Any]]:
         self.calls.append((image, instruction))
         return np.zeros(7, dtype=np.float64)
+
+
+class FakeTextGenerator:
+    """Returns canned text for any messages."""
+
+    def __init__(self, response: str = "1. Step one\n2. Step two") -> None:
+        self._response = response
+        self.call_count = 0
+
+    def generate(self, messages: list[dict[str, str]]) -> str:
+        self.call_count += 1
+        return self._response
 
 
 class FakePlanner:
@@ -250,3 +262,45 @@ def test_get_action_returns_7dof_array() -> None:
     action = rt.get_action(np.zeros((256, 256, 3), dtype=np.uint8))
     assert action.shape == (7,)
     assert action.dtype == np.float64
+
+
+# ---------------------------------------------------------------------------
+# TextGenerator protocol + LLMPlanner with fake generator
+# ---------------------------------------------------------------------------
+
+def test_fake_text_generator_satisfies_protocol() -> None:
+    assert isinstance(FakeTextGenerator(), TextGenerator)
+
+
+def test_llm_planner_uses_text_generator() -> None:
+    gen = FakeTextGenerator("1. Reach for cube\n2. Grasp\n3. Lift")
+    planner = LLMPlanner(gen)
+    steps = planner.plan("pick up the cube")
+    assert steps == ["Reach for cube", "Grasp", "Lift"]
+    assert gen.call_count == 1
+
+
+def test_llm_planner_satisfies_planner_protocol() -> None:
+    gen = FakeTextGenerator()
+    assert isinstance(LLMPlanner(gen), PlannerRuntime)
+
+
+def test_llm_planner_fallback_on_unparseable_output() -> None:
+    gen = FakeTextGenerator("This is not a numbered list at all.")
+    planner = LLMPlanner(gen)
+    steps = planner.plan("do something")
+    assert steps == ["do something"]
+
+
+def test_llm_planner_passes_instruction_to_generator() -> None:
+    calls: list[list[dict[str, str]]] = []
+
+    class CapturingGenerator:
+        def generate(self, messages: list[dict[str, str]]) -> str:
+            calls.append(messages)
+            return "1. Do it"
+
+    planner = LLMPlanner(CapturingGenerator())
+    planner.plan("pick up the red cube")
+    assert len(calls) == 1
+    assert "pick up the red cube" in calls[0][0]["content"]

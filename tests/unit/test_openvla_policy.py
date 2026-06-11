@@ -1,8 +1,8 @@
-"""Tests for OpenVLA inference policy helpers in odyssey.runners.openvla.
+"""Tests for OpenVLA inference policy helpers in odyssey.runners.models.openvla.
 
 Pure Python — no GPU or transformers needed. The functions under test
 (_resolve_base_model, _find_image_key, make_openvla_policy) live in
-openvla.py alongside the training runner. We import them through the
+models/openvla.py alongside the training runner. We import them through the
 package so existing modules are already initialized.
 
 NOTE: running this file in isolation (``pytest tests/unit/test_openvla_policy.py``)
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from odyssey.runners.openvla import (
+from odyssey.runners.models.openvla import (
     _find_image_key,
     _resolve_base_model,
     make_openvla_policy,
