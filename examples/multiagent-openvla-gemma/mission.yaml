@@ -1,0 +1,75 @@
+# Multi-agent mission: OpenVLA PILOT + Gemma 4B SPECIALIST task planner.
+#
+# The SPECIALIST (Gemma 4B int4) decomposes the task instruction into
+# sub-steps before each episode. The PILOT (OpenVLA 7B LoRA) executes
+# them sequentially. Only the PILOT is trained; the SPECIALIST uses its
+# base model for inference.
+#
+# Hardware: 24 GB GPU (L4, RTX 4090 class).
+# Peak VRAM: ~16.5 GB (14 GB PILOT bf16 + 2.5 GB SPECIALIST int4).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: multiagent-lift
+  description: >
+    Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2,
+    with Gemma 4B int4 as a task planner. Evaluated on both Robosuite
+    and Isaac Lab Lift benchmarks.
+  tags: [multiagent, openvla, gemma, robosuite, isaac-lab]
+
+objective: |
+  Demonstrate that an OpenVLA pilot guided by a Gemma task planner
+  can successfully pick up a cube in simulation.
+
+acceptance_criteria: |
+  At least one successful lift across 10 evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b
+
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: google/gemma-3-4b-it
+        quantization: int4
+
+tasks:
+  - name: finetune-pilot
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: oxe
+      ref: bridge_orig
+      format: rlds
+    config:
+      method: peft_lora
+      lora_rank: 8
+      lora_alpha: 16
+      batch_size: 2
+      learning_rate: 5.0e-5
+      epochs: 1
+      data_root_dir: /path/to/dataset
+
+  - name: eval-robosuite-lift
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: Lift
+    num_episodes: 10
+    config:
+      unnorm_key: bridge_orig
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false
