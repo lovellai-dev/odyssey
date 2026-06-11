@@ -106,7 +106,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "isaaclab", "isaaclab.app", "gymnasium"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "isaaclab", "isaaclab.app", "gymnasium"]
 ignore_missing_imports = true
 follow_imports = "skip"
 
