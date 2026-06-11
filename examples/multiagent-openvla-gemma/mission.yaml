@@ -62,9 +62,9 @@ tasks:
       epochs: 1
       data_root_dir: /home/gema/data
 
-  - name: eval-robosuite-lift
+  - name: eval-isaac-lab-lift
     kind: evaluation
-    evaluation_type: robosuite
+    evaluation_type: isaac_lab
     benchmark_name: Lift
     num_episodes: 2
     config:
