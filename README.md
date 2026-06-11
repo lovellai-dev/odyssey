@@ -104,7 +104,7 @@ src/odyssey/
   spec/         Pydantic schemas for mission.yaml
   engine/       MissionEngine + lifecycle + runtime records
   runners/      Runner ABC, registry, CPU mock, subprocess infra,
-                OpenVLA training, Robosuite evaluation
+                OpenVLA + GR00T training, Robosuite evaluation
   providers/    Provider ABCs + registry, local/ + huggingface/
   persistence/  Persistence ABC + InMemory + SQLite
   telemetry/    Event vocabulary + stdout publisher
@@ -164,7 +164,9 @@ Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA LoRA fine-tune.
 | Provider ABCs + Local + HF | ✓ | OXE, Lovell-mode |
 | CPU mock runner | ✓ | — |
 | OpenVLA training runner | skeleton + tests | end-to-end smoke with real OpenVLA |
+| GR00T training runner | skeleton + tests, task-level `runner: gr00t` routing | end-to-end smoke with real Isaac-GR00T |
 | Robosuite eval runner | skeleton + tests | built-in OpenVLA→action adapter |
+| Isaac Lab eval runner | spec enum only (`evaluation_type: isaac_lab`) | runner implementation |
 | `odyssey init / run / list / status / validate` | ✓ | `logs`, `publish` |
 | Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha |
 

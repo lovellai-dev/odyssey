@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from odyssey.cli.main import cli
@@ -18,9 +19,17 @@ from odyssey.persistence import SqlitePersistence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
+EXAMPLE_MISSION_GR00T = REPO_ROOT / "examples" / "quickstart-gr00t" / "mission.yaml"
 
 
-def test_run_example_with_mock_runner_succeeds(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "mission_path",
+    [EXAMPLE_MISSION, EXAMPLE_MISSION_GR00T],
+    ids=["quickstart-openvla", "quickstart-gr00t"],
+)
+def test_run_example_with_mock_runner_succeeds(
+    tmp_path: Path, mission_path: Path
+) -> None:
     db_path = tmp_path / "missions.db"
     work_dir = tmp_path / "runs"
     runner = CliRunner()
@@ -28,7 +37,7 @@ def test_run_example_with_mock_runner_succeeds(tmp_path: Path) -> None:
         cli,
         [
             "run",
-            str(EXAMPLE_MISSION),
+            str(mission_path),
             "--use-mock-runner",
             "--db",
             str(db_path),
