@@ -15,7 +15,7 @@ metadata:
   name: multiagent-lift
   description: >
     Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2,
-    with Gemma 4B int4 as a task planner. Evaluated on both Robosuite
+    with Gemma 2B int4 as a task planner. Evaluated on both Robosuite
     and Isaac Lab Lift benchmarks.
   tags: [multiagent, openvla, gemma, robosuite, isaac-lab]
 
@@ -39,7 +39,9 @@ robot:
       role: SPECIALIST
       model:
         source: huggingface
-        base: google/gemma-3-4b-it
+        # Gemma 1 (gemma-2b-it) — only family compatible with OpenVLA's
+        # transformers 4.40.1 pin. Gemma 2 needs 4.42+, Gemma 3 needs 4.49+.
+        base: google/gemma-2b-it
         quantization: int4
 
 tasks:

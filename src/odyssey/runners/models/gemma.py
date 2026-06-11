@@ -1,12 +1,18 @@
 """Gemma text generation model loader.
 
-Loads a quantized causal LM (e.g. ``google/gemma-3-4b-it`` at int4)
+Loads a quantized causal LM (e.g. ``google/gemma-2b-it`` at int4)
 and exposes a simple ``generate(messages) -> str`` interface. The
 planning logic lives in ``runners/agents/planner.py`` — this module
 only handles model loading and inference.
 
-VRAM footprint: ~2.5 GB for Gemma 4B int4 via bitsandbytes,
-leaving ~20 GB for the VLA on a 24 GB card.
+Model choice is constrained by OpenVLA: the PILOT (OpenVLA) pins
+``transformers==4.40.1``, and the SPECIALIST runs in the same process,
+so only **Gemma 1** (``gemma-2b-it`` / ``gemma-7b-it``, supported since
+transformers 4.38) is compatible. Gemma 2 needs 4.42+ and Gemma 3
+needs 4.49+, both of which break OpenVLA.
+
+VRAM footprint: ~1.5 GB for Gemma 2B int4 via bitsandbytes,
+leaving ~22 GB for the VLA on a 24 GB card.
 
 All heavy imports (torch, transformers, bitsandbytes) are deferred.
 """
@@ -27,7 +33,8 @@ class GemmaTextGenerator:
     Parameters
     ----------
     model_name:
-        HuggingFace model ID. Default: ``google/gemma-3-4b-it``.
+        HuggingFace model ID. Default: ``google/gemma-2b-it`` (Gemma 1,
+        the only family compatible with OpenVLA's transformers 4.40.1 pin).
     quantization:
         Quantization config string. ``"int4"`` uses bitsandbytes
         4-bit. ``None`` loads in bfloat16 (needs more VRAM).
@@ -39,7 +46,7 @@ class GemmaTextGenerator:
 
     def __init__(
         self,
-        model_name: str = "google/gemma-3-4b-it",
+        model_name: str = "google/gemma-2b-it",
         *,
         quantization: str | None = "int4",
         device: str | None = None,

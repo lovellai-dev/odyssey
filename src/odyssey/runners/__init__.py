@@ -1,4 +1,25 @@
-"""Runner ABC, registry, and built-in runners."""
+"""Runner ABC, registry, and built-in runners.
+
+Package layout
+--------------
+The package root holds the **infrastructure / contract layer** — modules that
+define the framework itself rather than any concrete robot/model integration:
+
+- ``base.py``       — Runner ABC, TaskContext, WILDCARD_TYPE (imported by all)
+- ``registry.py``   — RunnerRegistry, the (TaskKind, type) dispatch table
+- ``subprocess.py`` — model-agnostic training-subprocess helper (LineParser,
+                      TrainingProcessSpec, run_training_subprocess)
+- ``cpu_mock.py``   — CPUMockRunner, the universal fallback runner
+
+Concrete implementations live in subpackages, grouped by concern:
+
+- ``models/`` — model loading + training runners (OpenVLA, Gemma)
+- ``evals/``  — evaluation runners (Robosuite, Isaac Lab)
+- ``agents/`` — multi-agent orchestration (no model loading)
+
+Subpackages import "up" from the root contracts; the root never imports an
+implementation except to re-export it below.
+"""
 
 from odyssey.runners.base import WILDCARD_TYPE, Runner, TaskContext
 from odyssey.runners.cpu_mock import CPUMockRunner

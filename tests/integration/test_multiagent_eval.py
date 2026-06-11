@@ -196,7 +196,7 @@ def _multiagent_spec() -> Mission:
                     id="task-planner",
                     role=AgentRole.SPECIALIST,
                     model=HFModelRef(
-                        base="google/gemma-3-4b-it", quantization="int4"
+                        base="google/gemma-2b-it", quantization="int4"
                     ),
                 ),
             ],
