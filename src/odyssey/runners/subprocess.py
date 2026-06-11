@@ -43,6 +43,8 @@ to ``ctx.emit_progress(**kwargs)``, or ``None`` to skip emitting.
 class TrainingProcessSpec:
     """How to launch a specific family's training subprocess.
 
+    Also used by subprocess-shaped evaluation runners (Isaac Lab).
+
     Exactly one of ``entry_module`` or ``script_path`` must be set:
       * ``entry_module`` invokes ``python -m <module>`` (suitable for
         packages like ``gr00t.experiment.launch_train`` or
@@ -59,12 +61,22 @@ class TrainingProcessSpec:
     line_parser: LineParser | None = None
     cwd: str | None = None
     sigterm_grace_seconds: float = 30.0
+    # Optional command prefix replacing the default ``python`` for
+    # ``script_path`` invocations — e.g. ["/path/isaaclab.sh", "-p"] so
+    # the script runs under Isaac Sim's bundled interpreter. Not valid
+    # with ``entry_module`` (the ``-m`` form assumes a python launcher).
+    launcher: list[str] | None = None
 
     def __post_init__(self) -> None:
         if (self.entry_module is None) == (self.script_path is None):
             raise ValueError(
                 "TrainingProcessSpec requires exactly one of "
                 "entry_module or script_path"
+            )
+        if self.launcher is not None and self.entry_module is not None:
+            raise ValueError(
+                "TrainingProcessSpec.launcher only applies to script_path "
+                "invocations"
             )
 
 
@@ -83,7 +95,8 @@ async def run_training_subprocess(
     else:
         # script_path is guaranteed by __post_init__
         assert spec.script_path is not None
-        cmd = ["python", spec.script_path, *spec.argv_extra]
+        prefix = spec.launcher if spec.launcher is not None else ["python"]
+        cmd = [*prefix, spec.script_path, *spec.argv_extra]
     env = {**os.environ, **spec.env}
 
     logger.info(

@@ -32,6 +32,7 @@ from odyssey.runners import (
     OpenVLARunner,
     RunnerRegistry,
 )
+from odyssey.runners.isaac_lab import IsaacLabRunner
 from odyssey.runners.robosuite import RobosuiteRunner
 from odyssey.spec.loader import LoadError, load_mission
 from odyssey.spec.mission import Mission
@@ -50,6 +51,7 @@ def _build_runners() -> RunnerRegistry:
     registry.register(OpenVLARunner())
     registry.register(GR00TRunner())
     registry.register(RobosuiteRunner())
+    registry.register(IsaacLabRunner())
     registry.register(CPUMockRunner())
     return registry
 

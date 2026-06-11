@@ -62,6 +62,11 @@ tasks:
     evaluation_type: isaac_lab
     benchmark_name: Isaac-Lift-Cube-Franka-v0
     num_episodes: 10
+    # For a real run: set $ISAACLAB_PATH and point eval_script at a
+    # script speaking the ODYSSEY_* stdout protocol (see
+    # src/odyssey/runners/isaac_lab.py). Mock-run needs neither.
+    # config:
+    #   eval_script: /path/to/gr00t_isaaclab_eval.py
 
 leaderboard:
   publish: false   # Backend not live yet.

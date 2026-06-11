@@ -29,13 +29,16 @@ README (OpenVLA repo clone, Bridge V2 download, 24 GB GPU).
 
 ## GR00T quickstart status
 
-`quickstart-gr00t/` ships with a real training runner skeleton
-(`src/odyssey/runners/gr00t.py`): `validate` and `--use-mock-runner`
-work everywhere, and real training runs work once the
-[Isaac-GR00T repo](https://github.com/NVIDIA/Isaac-GR00T) is installed
-(`pip install -e` of the checkout, plus `$ISAAC_GR00T_REPO_PATH`
-pointing at it for the demo data). The Isaac Lab *evaluation* runner is
-still a v0.2.x line item — the eval task is spec-pinned but mock-only.
+`quickstart-gr00t/` ships with real runner skeletons on both sides:
+`validate` and `--use-mock-runner` work everywhere; real training runs
+work once the [Isaac-GR00T repo](https://github.com/NVIDIA/Isaac-GR00T)
+is installed (`pip install -e` of the checkout, plus
+`$ISAAC_GR00T_REPO_PATH` pointing at it for the demo data); and real
+evaluation runs work once you have Isaac Lab installed
+(`$ISAACLAB_PATH`) and supply an eval script speaking the `ODYSSEY_*`
+stdout protocol via `config: {eval_script: ...}` — see
+`src/odyssey/runners/isaac_lab.py` for the contract. The built-in
+GR00T-policy eval script is the remaining v0.2.x piece.
 
 The moving parts:
 
@@ -54,5 +57,7 @@ The moving parts:
   `global_batch_size`, `max_steps`); the runner maps them 1:1 onto the
   upstream CLI with underscores translated to dashes.
 * **Eval** — Isaac Lab task `Isaac-Lift-Cube-Franka-v0`,
-  `evaluation_type: isaac_lab` (already a first-class enum in the
-  mission spec).
+  `evaluation_type: isaac_lab`. The runner launches your eval script
+  under `isaaclab.sh -p`, passes
+  `--task/--num_episodes/--checkpoint/--headless`, and scores the
+  `ODYSSEY_EPISODE` / `ODYSSEY_RESULT` lines the script prints.
