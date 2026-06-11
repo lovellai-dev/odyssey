@@ -14,14 +14,20 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.spec.agents import AgentSpec
 from odyssey.spec.tasks import TaskKind
 from odyssey.telemetry.events import TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
+
+if TYPE_CHECKING:
+    # Annotation-only: importing engine.records at runtime initializes
+    # the engine package, whose mission_engine imports this module right
+    # back — a cycle that bites when a runner module is the entry
+    # import. Guarded by tests/unit/test_imports.py.
+    from odyssey.engine.records import MissionRun, TaskRun
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
 # value." Used by CPUMockRunner so a single registration covers every task
