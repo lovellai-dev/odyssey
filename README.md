@@ -163,8 +163,14 @@ mission spec. Real training and evaluation runners need their own extras:
 pip install -e ".[huggingface]"   # HF model + dataset providers
 pip install -e ".[openvla]"       # OpenVLA training runner deps
 pip install -e ".[robosuite]"     # Robosuite evaluation runner deps
+pip install -e ".[isaac_lab]"     # Isaac Lab eval deps (gymnasium) — see note below
 pip install -e ".[dev]"           # pytest, ruff, mypy
 ```
+
+> **Isaac Lab is not a normal pip extra.** The `isaac_lab` extra only declares
+> the lightweight glue (`gymnasium`); the `isaaclab` package itself ships with
+> NVIDIA Isaac Sim and must be installed separately — see
+> [Isaac Lab evaluation (NVIDIA)](#isaac-lab-evaluation-nvidia) below.
 
 ## 60-second smoke test (no GPU, no network)
 
@@ -220,8 +226,51 @@ Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA fine-tune.
 **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
 the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
 adapter. Real eval numbers require supplying a `policy_factory` to
-`RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
+`RobosuiteRunner` — see the docstring in `src/odyssey/runners/evals/robosuite.py`.
 The built-in adapter is a v0.2.x line item.
+
+## Isaac Lab evaluation (NVIDIA)
+
+`evaluation_type: isaac_lab` runs rollouts in NVIDIA Isaac Lab (Gymnasium
+5-tuple API, PhysX) instead of Robosuite/MuJoCo. Unlike the other runners,
+**Isaac Lab cannot be installed by a plain `pip install -e ".[...]"`** — it
+ships with Isaac Sim and follows NVIDIA's own, version-pinned procedure.
+
+The fastest path is the Isaac Sim pip package (Linux, x86_64, NVIDIA GPU):
+
+```bash
+# 1) Isaac Sim 4.x needs Python 3.10; Isaac Sim 5.x needs Python 3.11.
+#    Use a dedicated venv to avoid clashing with the OpenVLA env.
+pip install -U torch==2.7.0 torchvision==0.22.0 \
+  --index-url https://download.pytorch.org/whl/cu128
+
+# 2) Install Isaac Lab + Isaac Sim from NVIDIA's index (pin to a release).
+pip install "isaaclab[isaacsim,all]==2.3.2.post1" \
+  --extra-index-url https://pypi.nvidia.com
+
+# 3) Install Odyssey's Isaac Lab glue into the same env.
+pip install -e ".[isaac_lab]"
+```
+
+Verify the simulator launches before running a mission:
+
+```bash
+python -c "from isaaclab.app import AppLauncher; print('isaaclab OK')"
+```
+
+Then run a mission whose eval task uses `evaluation_type: isaac_lab` (see
+`examples/multiagent-openvla-gemma/mission.yaml`).
+
+> **Version-sensitive.** The exact pins (Isaac Sim / Isaac Lab / PyTorch /
+> Python) change between releases. Always check the official guide:
+> [Isaac Lab — Installation](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html)
+> ([pip package method](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/pip_installation.html)).
+
+> **Heads-up on combined VRAM/envs.** OpenVLA pins `transformers==4.40.1`,
+> which may conflict with Isaac Sim's own dependency set. If you hit
+> resolver conflicts, install Isaac Lab in a separate environment and run the
+> training and Isaac Lab eval as separate missions/steps rather than in one
+> shared env. Robosuite eval has no such constraint.
 
 ## CLI reference
 
