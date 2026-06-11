@@ -56,6 +56,14 @@ openvla = [
     "torch>=2.1",
     "pillow>=9.0",
 ]
+isaac_lab = [
+    # Isaac Lab is installed via NVIDIA's own instructions (pip install isaaclab
+    # or from source). We list the gymnasium dep here; the actual isaaclab
+    # package must be installed separately per NVIDIA's docs.
+    "gymnasium>=1.0",
+    "torch>=2.1",
+    "numpy>=1.24",
+]
 
 [project.scripts]
 odyssey = "odyssey.cli.main:cli"
@@ -98,7 +106,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "isaaclab", "isaaclab.app", "gymnasium"]
 ignore_missing_imports = true
 follow_imports = "skip"
 

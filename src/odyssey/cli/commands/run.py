@@ -28,6 +28,7 @@ from odyssey.providers.huggingface import HFDatasetProvider, HFModelProvider
 from odyssey.providers.local import LocalDatasetProvider, LocalRobotProvider
 from odyssey.runners import (
     CPUMockRunner,
+    IsaacLabRunner,
     OpenVLARunner,
     RunnerRegistry,
 )
@@ -47,6 +48,7 @@ def _build_runners(use_mock: bool) -> RunnerRegistry:
     # task types still produce *something* instead of "no runner registered."
     registry.register(OpenVLARunner())
     registry.register(RobosuiteRunner())
+    registry.register(IsaacLabRunner())
     registry.register(CPUMockRunner())
     return registry
 
