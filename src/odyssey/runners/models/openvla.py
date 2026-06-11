@@ -525,10 +525,11 @@ def make_openvla_policy(
         if not isinstance(img_array, Image.Image):
             img_array = Image.fromarray(img_array.astype("uint8"), "RGB")
 
+        # The HF-hosted OpenVLAForActionPrediction.predict_action() expects
+        # pre-tokenized input_ids, not raw image+instruction.
+        inputs = processor(task_instruction, img_array).to(device, dtype=torch.bfloat16)
         action = model.predict_action(
-            img_array,
-            task_instruction,
-            processor=processor,
+            inputs["input_ids"],
             unnorm_key=unnorm_key,
             do_sample=False,
         )
@@ -622,15 +623,18 @@ class VLARuntime:
     ) -> Any:
         """Produce a 7-DoF action from image + instruction."""
         import numpy as np
+        import torch
         from PIL import Image
 
         if not isinstance(image, Image.Image):
             image = Image.fromarray(np.asarray(image, dtype=np.uint8), "RGB")
 
+        # Pre-tokenize with processor, then pass input_ids to predict_action
+        inputs = self._processor(instruction, image).to(
+            self._device, dtype=torch.bfloat16
+        )
         action = self._model.predict_action(
-            image,
-            instruction,
-            processor=self._processor,
+            inputs["input_ids"],
             unnorm_key=self._unnorm_key,
             do_sample=False,
         )
