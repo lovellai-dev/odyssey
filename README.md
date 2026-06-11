@@ -221,6 +221,22 @@ git clone https://github.com/openvla/openvla.git /srv/openvla
 odyssey run examples/quickstart-openvla/mission.yaml
 ```
 
+### HuggingFace login (gated models)
+
+The models pulled from the Hub are **gated** — you must accept each model's
+license on its HuggingFace page, then authenticate on the machine before the
+first run, or the download fails with `401/403`:
+
+- [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
+- [`google/gemma-2b-it`](https://huggingface.co/google/gemma-2b-it) — the
+  SPECIALIST in the multi-agent example (accept Google's Gemma license)
+
+```bash
+huggingface-cli login          # paste a token from https://huggingface.co/settings/tokens
+# or, non-interactive (CI / headless VM):
+export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
+```
+
 Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA fine-tune.
 
 **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
