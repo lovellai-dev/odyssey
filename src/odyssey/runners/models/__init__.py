@@ -10,6 +10,7 @@ from odyssey.runners.models.openvla import (
 __all__ = [
     "GemmaTextGenerator",
     "OpenVLARunner",
+    "VLARuntime",
     "build_openvla_argv",
     "make_openvla_policy",
     "parse_openvla_line",
@@ -22,4 +23,8 @@ def __getattr__(name: str) -> object:
         from odyssey.runners.models.gemma import GemmaTextGenerator
 
         return GemmaTextGenerator
+    if name == "VLARuntime":
+        from odyssey.runners.models.openvla import VLARuntime
+
+        return VLARuntime
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
