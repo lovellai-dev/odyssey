@@ -39,6 +39,10 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.8",
     "types-PyYAML",
+    # numpy is used by agent-runtime / eval-runner tests (action arrays,
+    # torch->numpy obs conversion). Required for `pytest` collection in CI,
+    # which installs only the dev extra.
+    "numpy>=1.24",
 ]
 # Optional providers / runners — kept out of base install so the wheel
 # stays light. Users opt in per-feature.
