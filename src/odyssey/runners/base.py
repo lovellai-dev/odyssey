@@ -20,7 +20,7 @@ from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.spec.agents import AgentSpec
 from odyssey.spec.tasks import TaskKind
-from odyssey.telemetry.events import TaskEventType
+from odyssey.telemetry.events import ProgressEvent, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
@@ -37,6 +37,7 @@ class TaskContext:
     mission: MissionRun
     publisher: EventPublisher
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _progress_seq: int = field(default=0, init=False, repr=False)
     # Per-task working directory where checkpoints, logs, and other
     # artifacts should land. The engine creates this dir before invoking
     # the runner. None only in tests that don't go through the engine.
@@ -73,23 +74,23 @@ class TaskContext:
         step_label: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {
-            "mission_id": self.mission.id,
-            "task_id": self.task.id,
-            "task_name": self.task.spec.name,
-            "stage": stage,
-        }
-        if step is not None:
-            payload["step"] = step
-        if step_index is not None:
-            payload["step_index"] = step_index
-        if step_total is not None:
-            payload["step_total"] = step_total
-        if step_label is not None:
-            payload["step_label"] = step_label
-        if metadata:
-            payload["metadata"] = metadata
-        await self.publisher.publish(TaskEventType.PROGRESS.value, payload)
+        self._progress_seq += 1
+        event = ProgressEvent(
+            mission_id=self.mission.id,
+            task_id=self.task.id,
+            task_name=self.task.spec.name,
+            stage=stage,
+            seq=self._progress_seq,
+            step=step,
+            step_index=step_index,
+            step_total=step_total,
+            step_label=step_label,
+            metadata=metadata,
+        )
+        await self.publisher.publish(
+            TaskEventType.PROGRESS.value,
+            event.model_dump(exclude_none=True),
+        )
 
 
 class Runner(ABC):
