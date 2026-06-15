@@ -1,12 +1,12 @@
-# Multi-agent mission: OpenVLA PILOT + Gemma 4B SPECIALIST task planner.
+# Multi-agent mission: OpenVLA PILOT + Gemma 2B SPECIALIST task planner.
 #
-# The SPECIALIST (Gemma 4B int4) decomposes the task instruction into
+# The SPECIALIST (Gemma 2B int4) decomposes the task instruction into
 # sub-steps before each episode. The PILOT (OpenVLA 7B LoRA) executes
 # them sequentially. Only the PILOT is trained; the SPECIALIST uses its
 # base model for inference.
 #
 # Hardware: 24 GB GPU (L4, RTX 4090 class).
-# Peak VRAM: ~16.5 GB (14 GB PILOT bf16 + 2.5 GB SPECIALIST int4).
+# Peak VRAM: ~15.5 GB (14 GB PILOT bf16 + 1.5 GB SPECIALIST int4).
 
 odysseyVersion: "0.1"
 kind: Mission
@@ -15,9 +15,9 @@ metadata:
   name: multiagent-lift
   description: >
     Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2,
-    with Gemma 2B int4 as a task planner. Evaluated on both Robosuite
-    and Isaac Lab Lift benchmarks.
-  tags: [multiagent, openvla, gemma, robosuite, isaac-lab]
+    with Gemma 2B int4 as a task planner. Evaluated on the Robosuite
+    Lift benchmark.
+  tags: [multiagent, openvla, gemma, robosuite]
 
 objective: |
   Demonstrate that an OpenVLA pilot guided by a Gemma task planner
@@ -64,9 +64,9 @@ tasks:
       epochs: 1
       data_root_dir: /home/gema/data
 
-  - name: eval-isaac-lab-lift
+  - name: eval-robosuite-lift
     kind: evaluation
-    evaluation_type: isaac_lab
+    evaluation_type: robosuite
     benchmark_name: Lift
     num_episodes: 2
     config:
