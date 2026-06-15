@@ -46,7 +46,10 @@ tasks:
       batch_size: 2
       learning_rate: 5.0e-5
       epochs: 1
-      data_root_dir: /path/to/dataset  # parent dir containing bridge_orig/1.0.0/
+      # Parent dir of the on-disk RLDS dataset folder. The OXE key (above) and
+      # the folder name can differ (e.g. bridge_orig -> bridge_dataset/1.0.0/).
+      # See README -> "Dataset: how source: oxe / ref: bridge_orig resolves".
+      data_root_dir: /path/to/dataset
 
   - name: eval-on-robosuite-lift
     kind: evaluation
