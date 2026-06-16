@@ -71,6 +71,9 @@ openvla = [
     "torch==2.2.0",
     "peft>=0.11,<0.12",
     "pillow>=9.0",
+    # numpy<2: TensorFlow 2.15 (OpenVLA's RLDS data pipeline) requires it, and
+    # numpy 2.x also breaks torch 2.2's import (compiled against numpy 1.x).
+    "numpy>=1.24,<2",
 ]
 
 [project.scripts]
