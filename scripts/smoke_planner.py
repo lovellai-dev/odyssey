@@ -24,7 +24,11 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 def main() -> None:
     instruction = sys.argv[1] if len(sys.argv) > 1 else "pick up the red cube"
 
-    # Imported here so --help / import errors surface clearly.
+    # The runners package has a pre-existing engine<->runners circular import
+    # that only resolves cleanly when `odyssey.engine` is fully loaded first
+    # (otherwise `runners.base` is still partway through importing when
+    # `mission_engine` reaches in for `TaskContext`). Import engine first.
+    import odyssey.engine  # noqa: F401
     from odyssey.runners.agents.planner import LLMPlanner
     from odyssey.runners.models.gemma import GemmaTextGenerator
 
