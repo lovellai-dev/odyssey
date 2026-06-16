@@ -9,10 +9,10 @@ Phase transition strategies:
   * ``fixed_steps`` (default) — advance after N steps per phase.
   * ``timeout`` — advance after T seconds per phase.
 
-The runtime is simulator-agnostic: callers (IsaacLabRunner,
-RobosuiteRunner) drive the step loop and call ``get_action()``
-each tick. The runtime tracks which phase is active and feeds
-the correct sub-instruction to the pilot.
+The runtime is simulator-agnostic: callers (e.g. RobosuiteRunner)
+drive the step loop and call ``get_action()`` each tick. The runtime
+tracks which phase is active and feeds the correct sub-instruction
+to the pilot.
 """
 
 from __future__ import annotations

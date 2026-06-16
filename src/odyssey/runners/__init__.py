@@ -14,7 +14,7 @@ define the framework itself rather than any concrete robot/model integration:
 Concrete implementations live in subpackages, grouped by concern:
 
 - ``models/`` — model loading + training runners (OpenVLA, Gemma)
-- ``evals/``  — evaluation runners (Robosuite, Isaac Lab)
+- ``evals/``  — evaluation runners (Robosuite)
 - ``agents/`` — multi-agent orchestration (no model loading)
 
 Subpackages import "up" from the root contracts; the root never imports an
@@ -23,7 +23,6 @@ implementation except to re-export it below.
 
 from odyssey.runners.base import WILDCARD_TYPE, Runner, TaskContext
 from odyssey.runners.cpu_mock import CPUMockRunner
-from odyssey.runners.evals.isaac_lab import IsaacLabRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
 from odyssey.runners.models.openvla import OpenVLARunner, build_openvla_argv, parse_openvla_line
 from odyssey.runners.registry import RunnerRegistry
@@ -36,7 +35,6 @@ from odyssey.runners.subprocess import (
 __all__ = [
     "WILDCARD_TYPE",
     "CPUMockRunner",
-    "IsaacLabRunner",
     "LineParser",
     "OpenVLARunner",
     "RobosuiteRunner",
