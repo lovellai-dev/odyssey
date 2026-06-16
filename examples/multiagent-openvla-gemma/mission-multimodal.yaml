@@ -14,10 +14,14 @@
 # run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission FAILS at
 # eval.
 #
-# Hardware: 24 GB GPU (L4). Peak VRAM ~23 GB (~14 GB PILOT bf16 + ~9.3 GB
-# SPECIALIST int4). Tight but fits; switch base to google/gemma-4-E2B-it for
-# more headroom. (Gemma 3 4B was the first target but NaNs under int4
-# bitsandbytes on this stack — Gemma 4 loads cleanly.)
+# Hardware: 24 GB GPU (L4). The SPECIALIST shares the GPU with the ~14 GB bf16
+# PILOT, so it must fit in the remaining headroom. E4B int4 (~9.3 GB) is too
+# tight in practice — device_map="auto" can't place it and tries to offload to
+# CPU, which bitsandbytes rejects for 4-bit ("Some modules are dispatched on the
+# CPU or the disk"). Use the smaller E2B-it (~5 GB int4): ~14 + 5 = ~19 GB peak,
+# comfortable. (E4B works standalone, e.g. the smoke test, just not alongside
+# the pilot.) Gemma 3 4B was the first target but NaNs under int4 here — Gemma 4
+# loads cleanly.
 
 odysseyVersion: "0.1"
 kind: Mission
@@ -52,12 +56,12 @@ robot:
         source: huggingface
         # Vision-language planner — runs in the specialist venv (modern
         # transformers + torchvision), so it is NOT bound by OpenVLA's 4.40.1
-        # pin. Gemma 4 E4B-it is multimodal (Apache-2.0, no gated license), so
+        # pin. Gemma 4 E2B-it is multimodal (Apache-2.0, no gated license), so
         # it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
         # AutoProcessor). The first episode frame is fed to the planner so the
-        # plan is grounded in the scene. (Gemma 3 4B was the first target but
-        # NaNs under int4 bitsandbytes on this stack — Gemma 4 loads cleanly.)
-        base: google/gemma-4-E4B-it
+        # plan is grounded in the scene. E2B (not E4B) so it fits alongside the
+        # 14 GB pilot — see the hardware note above.
+        base: google/gemma-4-E2B-it
         quantization: int4
         modality: multimodal
 
