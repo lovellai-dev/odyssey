@@ -9,8 +9,8 @@ end-to-end path is blocked.
 Footprint: ~1.5 GB VRAM (Gemma 2B int4). No distributed setup needed.
 
 Usage (from the odyssey repo root, venv active, HF auth done):
-    python scripts/smoke_planner.py
-    python scripts/smoke_planner.py "stack the blue block on the red block"
+    python tests/manual/smoke_planner.py
+    python tests/manual/smoke_planner.py "stack the blue block on the red block"
 """
 
 from __future__ import annotations

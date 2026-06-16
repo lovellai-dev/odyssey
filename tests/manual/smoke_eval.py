@@ -17,8 +17,8 @@ Requirements:
   * HF auth (both models are gated)
 
 Usage (odyssey repo root, venv active):
-    python scripts/smoke_eval.py
-    python scripts/smoke_eval.py --benchmark Lift --episodes 2 --max-steps 150
+    python tests/manual/smoke_eval.py
+    python tests/manual/smoke_eval.py --benchmark Lift --episodes 2 --max-steps 150
 """
 
 from __future__ import annotations
