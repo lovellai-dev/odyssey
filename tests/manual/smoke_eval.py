@@ -23,7 +23,7 @@ Usage (odyssey repo root, venv active):
     # Out-of-process SPECIALIST (advanced Gemma in a separate venv) — same gate
     # as the real runner. The PILOT stays in this venv; only the planner moves out:
     export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
-    python tests/manual/smoke_eval.py --specialist-model google/gemma-3-4b-it
+    python tests/manual/smoke_eval.py --specialist-model google/gemma-4-E4B-it
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def main() -> None:
         "--specialist-model",
         default="google/gemma-2b-it",
         help="SPECIALIST (planner) model. Use an advanced Gemma (e.g. "
-        "google/gemma-3-4b-it) together with ODYSSEY_SPECIALIST_PYTHON.",
+        "google/gemma-4-E4B-it) together with ODYSSEY_SPECIALIST_PYTHON.",
     )
     args = parser.parse_args()
 

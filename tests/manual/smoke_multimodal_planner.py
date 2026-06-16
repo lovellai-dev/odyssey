@@ -1,14 +1,14 @@
-"""Standalone smoke test for the MULTIMODAL SPECIALIST (Gemma 3 vision-language).
+"""Standalone smoke test for the MULTIMODAL SPECIALIST (Gemma 4 vision-language).
 
-Loads the vision-language Gemma 3 planner, feeds it a synthetic scene image
+Loads the vision-language Gemma 4 planner, feeds it a synthetic scene image
 plus a high-level instruction, and decomposes it into sub-steps — WITHOUT any
 training, checkpoint, OpenVLA, or simulator. This isolates the genuinely-new
 multimodal piece (image-grounded task decomposition) and reports peak VRAM so
 you can confirm the budget on a real 24 GB card.
 
-Footprint: ~3.5-4 GB VRAM (Gemma 3 4B int4, incl. SigLIP vision tower).
+Footprint: ~9.3 GB VRAM (Gemma 4 E4B-it int4).
 
-REQUIRES the specialist venv (modern transformers >=4.50):
+REQUIRES the specialist venv (modern transformers + torchvision):
     python -m venv ~/specialist-venv
     ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
 
@@ -44,8 +44,8 @@ def main() -> None:
     from odyssey.runners.agents.planner import LLMPlanner
     from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 
-    print("\n=== Loading SPECIALIST: google/gemma-3-4b-it (int4, multimodal) ===", flush=True)
-    generator = GemmaVLMGenerator("google/gemma-3-4b-it", quantization="int4")
+    print("\n=== Loading SPECIALIST: google/gemma-4-E4B-it (int4, multimodal) ===", flush=True)
+    generator = GemmaVLMGenerator("google/gemma-4-E4B-it", quantization="int4")
     planner = LLMPlanner(generator)
 
     image = _demo_image()

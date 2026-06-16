@@ -55,7 +55,7 @@ class RemotePlanner:
     Parameters
     ----------
     model_base:
-        HF id of the SPECIALIST model (e.g. ``google/gemma-3-4b-it``).
+        HF id of the SPECIALIST model (e.g. ``google/gemma-4-E4B-it``).
     quantization:
         Quantization string passed through to the server (e.g. ``int4``) or None.
     python_path:

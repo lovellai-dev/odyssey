@@ -1,25 +1,26 @@
-"""Gemma 3 multimodal (vision-language) text generation loader.
+"""Gemma 4 multimodal (vision-language) text generation loader.
 
-Loads a multimodal Gemma 3 checkpoint (``google/gemma-3-4b-it`` and
+Loads a multimodal Gemma 4 checkpoint (``google/gemma-4-E4B-it`` and
 friends) and exposes ``generate(messages, image=None) -> str``. Unlike
 ``GemmaTextGenerator`` (text-only, ``AutoModelForCausalLM`` +
-``AutoTokenizer``), Gemma 3 vision-language models load through
-``Gemma3ForConditionalGeneration`` + ``AutoProcessor`` and consume chat
-messages whose ``content`` is a list of typed blocks (image / text).
+``AutoTokenizer``), Gemma 4 vision-language models load through
+``AutoModelForMultimodalLM`` + ``AutoProcessor`` and consume chat messages
+whose ``content`` is a list of typed blocks (image / text).
 
-Only viable **out of process** (in the specialist venv): Gemma 3 needs
-``transformers>=4.50``, which is incompatible with OpenVLA's pinned
-``transformers==4.40.1`` in the main venv. The ``planner_server`` launches
-this in that separate venv.
+We use Gemma 4 (Apache-2.0, no gated license) rather than Gemma 3: Gemma 3
+4B produces NaN logits under int4 bitsandbytes on this stack (verified for
+both eager and sdpa attention, text-only and with-image), so it cannot run
+quantized here. Gemma 4 E4B-it loads cleanly in int4 and grounds plans in
+the scene image.
 
-VRAM footprint: ~3.5-4 GB for Gemma 3 4B int4 (LLM + SigLIP vision tower)
-via bitsandbytes, leaving room alongside the ~14 GB bf16 OpenVLA pilot on
-a 24 GB card (~20 GB peak).
+Only viable **out of process** (in the specialist venv): Gemma 4 needs a
+modern ``transformers`` (plus ``torchvision`` for its image processor),
+incompatible with OpenVLA's pinned ``transformers==4.40.1`` in the main
+venv. The ``planner_server`` launches this in that separate venv.
 
-bitsandbytes 4-bit is used (not torchao) to match the rest of the stack;
-verified to work with ``Gemma3ForConditionalGeneration`` on
-``transformers==4.51.3``. (Note: transformers 5.1.x has a regression that
-silently ignores 4-bit on Gemma 3 — stay on the 4.51.x pin.)
+VRAM footprint: ~9.3 GB for Gemma 4 E4B-it int4 (bf16 compute) via
+bitsandbytes — alongside the ~14 GB bf16 OpenVLA pilot that is ~23 GB peak
+on a 24 GB card. Tight but fits; drop to E2B-it for more headroom.
 
 All heavy imports (torch, transformers, bitsandbytes) are deferred.
 """
@@ -30,6 +31,21 @@ import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _multimodal_model_class() -> Any:
+    """Resolve Gemma 4's multimodal auto-class (name has drifted across versions)."""
+    import transformers
+
+    for name in ("AutoModelForMultimodalLM", "AutoModelForImageTextToText"):
+        cls = getattr(transformers, name, None)
+        if cls is not None:
+            return cls
+    raise NotImplementedError(
+        "No multimodal auto-class (AutoModelForMultimodalLM / "
+        "AutoModelForImageTextToText) in this transformers — it is too old for "
+        "Gemma 4. Upgrade in the specialist venv: pip install -U transformers"
+    )
 
 
 def _to_pil(image: Any) -> Any:
@@ -43,7 +59,7 @@ def _to_pil(image: Any) -> Any:
 
 
 class GemmaVLMGenerator:
-    """Loads a multimodal Gemma 3 model and generates text from chat messages.
+    """Loads a multimodal Gemma 4 model and generates text from chat messages.
 
     Satisfies the ``TextGenerator`` protocol, plus accepts an optional
     ``image`` on ``generate`` so the planner can ground its plan in the
@@ -52,9 +68,10 @@ class GemmaVLMGenerator:
     Parameters
     ----------
     model_name:
-        HuggingFace model ID. Default ``google/gemma-3-4b-it`` — the
-        multimodal 4B variant, the sweet spot for a 24 GB card shared
-        with the OpenVLA pilot.
+        HuggingFace model ID. Default ``google/gemma-4-E4B-it`` — the
+        multimodal E4B variant (Apache-2.0), the sweet spot for a 24 GB
+        card shared with the OpenVLA pilot. Use ``google/gemma-4-E2B-it``
+        for more VRAM headroom.
     quantization:
         ``"int4"`` uses bitsandbytes 4-bit (nf4). ``None`` loads in
         bfloat16 (needs more VRAM).
@@ -67,7 +84,7 @@ class GemmaVLMGenerator:
 
     def __init__(
         self,
-        model_name: str = "google/gemma-3-4b-it",
+        model_name: str = "google/gemma-4-E4B-it",
         *,
         quantization: str | None = "int4",
         device: str | None = None,
@@ -75,12 +92,14 @@ class GemmaVLMGenerator:
     ) -> None:
         try:
             import torch
-            from transformers import AutoProcessor, Gemma3ForConditionalGeneration
+            from transformers import AutoProcessor
         except ImportError as e:
             raise NotImplementedError(
-                "GemmaVLMGenerator requires a modern transformers (>=4.50) + torch. "
-                "Install the specialist extra: pip install '.[specialist]'"
+                "GemmaVLMGenerator requires a modern transformers + torch + "
+                "torchvision. Install the specialist extra: pip install '.[specialist]'"
             ) from e
+
+        model_cls = _multimodal_model_class()
 
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._max_new_tokens = max_new_tokens
@@ -124,9 +143,7 @@ class GemmaVLMGenerator:
         self._processor = AutoProcessor.from_pretrained(
             model_name, padding_side="left"
         )
-        self._model = Gemma3ForConditionalGeneration.from_pretrained(
-            model_name, **load_kwargs
-        )
+        self._model = model_cls.from_pretrained(model_name, **load_kwargs)
         if quant_config is None:
             self._model = self._model.to(self._device)
         self._model.eval()

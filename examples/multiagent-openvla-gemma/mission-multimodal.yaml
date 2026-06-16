@@ -1,23 +1,23 @@
-# Multi-agent mission: OpenVLA PILOT + MULTIMODAL Gemma 3 SPECIALIST (out-of-process).
+# Multi-agent mission: OpenVLA PILOT + MULTIMODAL Gemma 4 SPECIALIST (out-of-process).
 #
 # Same plan-then-execute eval as mission-advanced.yaml, but the SPECIALIST is a
-# VISION-LANGUAGE Gemma 3 4B. It sees the first camera frame of each episode and
-# grounds its plan in the actual scene (objects, positions) rather than planning
-# blind from the instruction text alone.
+# VISION-LANGUAGE Gemma 4 E4B-it. It sees the first camera frame of each episode
+# and grounds its plan in the actual scene (objects, positions) rather than
+# planning blind from the instruction text alone.
 #
 # REQUIRES the out-of-process setup (see README "Multi-agent evaluation"):
 #   python -m venv ~/specialist-venv
 #   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
 #   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
-# Multimodal Gemma 3 needs transformers>=4.50 (the specialist venv has 4.51.3),
-# incompatible with OpenVLA's pinned transformers==4.40.1 in the main venv, so it
-# can ONLY run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission
-# FAILS at eval.
+# Multimodal Gemma 4 needs a modern transformers + torchvision, incompatible
+# with OpenVLA's pinned transformers==4.40.1 in the main venv, so it can ONLY
+# run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission FAILS at
+# eval.
 #
-# Hardware: 24 GB GPU (L4). Peak VRAM ~20 GB (~14 GB PILOT bf16 +
-# ~3.5-4 GB SPECIALIST int4 incl. SigLIP vision tower). Stay on the 4B variant:
-# 12B int4 pushes ~22-23 GB and risks OOM with the pilot's activations. Keep
-# transformers on the 4.51.x pin — 5.1.x silently ignores 4-bit on Gemma 3.
+# Hardware: 24 GB GPU (L4). Peak VRAM ~23 GB (~14 GB PILOT bf16 + ~9.3 GB
+# SPECIALIST int4). Tight but fits; switch base to google/gemma-4-E2B-it for
+# more headroom. (Gemma 3 4B was the first target but NaNs under int4
+# bitsandbytes on this stack — Gemma 4 loads cleanly.)
 
 odysseyVersion: "0.1"
 kind: Mission
@@ -51,11 +51,13 @@ robot:
       model:
         source: huggingface
         # Vision-language planner — runs in the specialist venv (modern
-        # transformers), so it is NOT bound by OpenVLA's 4.40.1 pin. Gemma 3 4B
-        # is multimodal, so it loads via GemmaVLMGenerator
-        # (Gemma3ForConditionalGeneration + AutoProcessor). The first episode
-        # frame is fed to the planner so the plan is grounded in the scene.
-        base: google/gemma-3-4b-it
+        # transformers + torchvision), so it is NOT bound by OpenVLA's 4.40.1
+        # pin. Gemma 4 E4B-it is multimodal (Apache-2.0, no gated license), so
+        # it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
+        # AutoProcessor). The first episode frame is fed to the planner so the
+        # plan is grounded in the scene. (Gemma 3 4B was the first target but
+        # NaNs under int4 bitsandbytes on this stack — Gemma 4 loads cleanly.)
+        base: google/gemma-4-E4B-it
         quantization: int4
         modality: multimodal
 

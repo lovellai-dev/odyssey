@@ -11,11 +11,11 @@ Requirements:
         python -m venv ~/specialist-venv
         ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
   * export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
-  * HF auth for the gated Gemma model.
+  * HF auth (Gemma 4 is Apache-2.0, no gating).
 
 Usage (from the odyssey repo root, MAIN venv active):
     python tests/manual/smoke_remote_planner.py
-    python tests/manual/smoke_remote_planner.py --model google/gemma-3-4b-it "stack the blocks"
+    python tests/manual/smoke_remote_planner.py --model google/gemma-4-E4B-it "stack the blocks"
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("instruction", nargs="?", default="pick up the red cube")
-    parser.add_argument("--model", default="google/gemma-3-4b-it")
+    parser.add_argument("--model", default="google/gemma-4-E4B-it")
     parser.add_argument("--quantization", default="int4")
     args = parser.parse_args()
 

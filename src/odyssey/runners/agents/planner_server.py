@@ -23,7 +23,7 @@ module imports cheaply for unit-testing ``serve()``.
 
 Usage (normally launched by ``RemotePlanner``, not by hand):
     python -m odyssey.runners.agents.planner_server \
-        --model google/gemma-3-4b-it --quantization int4
+        --model google/gemma-4-E4B-it --quantization int4 --multimodal
 """
 
 from __future__ import annotations

@@ -1,19 +1,26 @@
 # Dependency set for the out-of-process SPECIALIST venv (advanced Gemma planner).
 #
 # This is a SEPARATE venv from the main/OpenVLA one. A modern transformers here
-# lets the planner run Gemma 2/3, free of OpenVLA's pinned transformers==4.40.1
-# (which stays in the main venv via constraints/openvla-known-good.txt).
+# lets the planner run an advanced Gemma, free of OpenVLA's pinned
+# transformers==4.40.1 (which stays in the main venv via
+# constraints/openvla-known-good.txt).
 #
 # Set up the specialist venv:
 #   python -m venv ~/specialist-venv
 #   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
 #   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
 #
-# Gemma 3 needs transformers>=4.50. These are a coherent recent set; treat as a
-# starting point and re-pin exact versions (incl. torch) once validated on the
-# GPU box. The eval-side main venv is unaffected.
-transformers==4.51.3
-tokenizers==0.21.4
+# The default SPECIALIST is now Gemma 4 E4B-it (multimodal, Apache-2.0). Gemma 4
+# needs a newer transformers than the Gemma-3-era 4.51.3 below, plus torchvision
+# (its image processor imports torchvision.transforms.v2). The exact pins are
+# TBD — re-pin transformers/tokenizers/torchvision/torch from the GPU box (see
+# `pip freeze` after `pip install -U transformers accelerate torchvision`).
+#
+# NOTE: Gemma 3 4B NaNs under int4 bitsandbytes on this stack; Gemma 4 loads
+# cleanly. The eval-side main venv is unaffected.
+transformers==4.51.3   # TODO: bump to the Gemma-4-capable version pinned on the VM
+tokenizers==0.21.4     # TODO: re-pin to match the bumped transformers
 accelerate==1.13.0
 bitsandbytes==0.49.2
 sentencepiece==0.2.0
+# torchvision==X.Y.Z    # TODO: pin to match the installed torch ABI (Gemma 4 image processor)
