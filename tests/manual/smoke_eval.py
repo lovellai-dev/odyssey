@@ -19,12 +19,18 @@ Requirements:
 Usage (odyssey repo root, venv active):
     python tests/manual/smoke_eval.py
     python tests/manual/smoke_eval.py --benchmark Lift --episodes 2 --max-steps 150
+
+    # Out-of-process SPECIALIST (advanced Gemma in a separate venv) — same gate
+    # as the real runner. The PILOT stays in this venv; only the planner moves out:
+    export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+    python tests/manual/smoke_eval.py --specialist-model google/gemma-3-4b-it
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
@@ -41,20 +47,48 @@ def main() -> None:
         help="HF id or local path for the PILOT (the base model works fine).",
     )
     parser.add_argument("--unnorm-key", default="bridge_orig")
+    parser.add_argument(
+        "--specialist-model",
+        default="google/gemma-2b-it",
+        help="SPECIALIST (planner) model. Use an advanced Gemma (e.g. "
+        "google/gemma-3-4b-it) together with ODYSSEY_SPECIALIST_PYTHON.",
+    )
     args = parser.parse_args()
 
     # engine-first import to dodge the pre-existing engine<->runners cycle
     import odyssey.engine  # noqa: F401
     from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
     from odyssey.runners.agents.planner import LLMPlanner
+    from odyssey.runners.agents.runtime import PlannerRuntime
     from odyssey.runners.evals.robosuite import _make_eval_env
     from odyssey.runners.models.gemma import GemmaTextGenerator
     from odyssey.runners.models.openvla import _DEFAULT_INSTRUCTIONS, VLARuntime
 
     instruction = _DEFAULT_INSTRUCTIONS.get(args.benchmark, "complete the task")
 
-    print("\n=== Loading SPECIALIST: google/gemma-2b-it (int4) ===", flush=True)
-    planner = LLMPlanner(GemmaTextGenerator("google/gemma-2b-it", quantization="int4"))
+    # Same gate as the real runner (_build_planned_runtime): out-of-process
+    # SPECIALIST when ODYSSEY_SPECIALIST_PYTHON is set, else in-process.
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    planner: PlannerRuntime
+    if specialist_python:
+        from odyssey.runners.agents.remote_planner import RemotePlanner
+
+        print(
+            f"\n=== SPECIALIST out-of-process: {args.specialist_model} via "
+            f"{specialist_python} ===",
+            flush=True,
+        )
+        planner = RemotePlanner(
+            args.specialist_model, "int4", python_path=specialist_python
+        )
+    else:
+        print(
+            f"\n=== SPECIALIST in-process: {args.specialist_model} (int4) ===",
+            flush=True,
+        )
+        planner = LLMPlanner(
+            GemmaTextGenerator(args.specialist_model, quantization="int4")
+        )
 
     print(f"\n=== Loading PILOT: {args.pilot} ===", flush=True)
     pilot = VLARuntime(args.pilot, unnorm_key=args.unnorm_key)
@@ -99,6 +133,7 @@ def main() -> None:
             flush=True,
         )
 
+    runtime.close()  # tear down the out-of-process planner (no-op in-process)
     print(f"\n=== {successes}/{args.episodes} successful episode(s) ===\n")
 
 
