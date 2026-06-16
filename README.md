@@ -343,6 +343,70 @@ adapter. Real eval numbers require supplying a `policy_factory` to
 `RobosuiteRunner` — see the docstring in `src/odyssey/runners/evals/robosuite.py`.
 The built-in adapter is a v0.2.x line item.
 
+## Multi-agent evaluation (PILOT + SPECIALIST)
+
+A mission with a **SPECIALIST** agent (a task planner) in addition to the
+**PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
+the instruction into sub-steps once per episode, and the PILOT executes each.
+
+```yaml
+robot:
+  agents:
+    - id: pilot
+      role: PILOT
+      model: { source: huggingface, base: openvla/openvla-7b }
+    - id: task-planner
+      role: SPECIALIST
+      model: { source: huggingface, base: google/gemma-2b-it, quantization: int4 }
+```
+
+By default the SPECIALIST loads **in the same process** as the PILOT. Because
+OpenVLA pins `transformers==4.40.1`, that limits the planner to **Gemma 1**
+(`gemma-2b-it`) — the only family compatible with that version.
+
+### Running an advanced Gemma (out-of-process SPECIALIST)
+
+To use a **more capable Gemma (2/3)**, run the planner in a **separate venv**
+with a modern `transformers`, free of OpenVLA's pin. The PILOT stays in the main
+venv; only the planner moves out. They talk over a JSON-lines subprocess protocol
+(the planner runs once per episode, off the per-step hot loop).
+
+1. Create the specialist venv (modern transformers + Gemma deps):
+
+   ```bash
+   python -m venv ~/specialist-venv
+   ~/specialist-venv/bin/pip install -e ".[specialist]" \
+     -c constraints/specialist-known-good.txt
+   ```
+
+2. Point Odyssey at it (per-shell, like other env config):
+
+   ```bash
+   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+   ```
+
+3. Set an advanced model on the SPECIALIST agent in your mission, e.g.
+   `base: google/gemma-3-4b-it`, and run the mission as usual.
+
+When `ODYSSEY_SPECIALIST_PYTHON` is set, the planner is launched in that venv
+(`RemotePlanner` → `python -m odyssey.runners.agents.planner_server`). When it is
+**unset**, behavior is unchanged (in-process Gemma 1). Quick check without a
+simulator:
+
+```bash
+python tests/manual/smoke_remote_planner.py   # plans "pick up the red cube"
+```
+
+> **VRAM note.** Both models still share the GPU — the venv split solves the
+> *dependency* conflict, not VRAM. Gemma 3 4B int4 (~3 GB) + OpenVLA (14 GB)
+> fits comfortably on a 24 GB L4; 12B int4 (~8 GB) is tight. The planner can also
+> be run on CPU or a second GPU (it's once-per-episode).
+
+> **Two known-good stacks.** The main venv pins OpenVLA's stack
+> (`constraints/openvla-known-good.txt`: torch 2.2.0, transformers 4.40.1); the
+> specialist venv pins a modern one (`constraints/specialist-known-good.txt`).
+> They no longer need to be mutually compatible.
+
 ## CLI reference
 
 | Command | What it does |
