@@ -86,14 +86,17 @@ class GemmaTextGenerator:
             quantization,
         )
 
-        load_kwargs: dict[str, Any] = {
-            "torch_dtype": torch.bfloat16,
-            "trust_remote_code": True,
-            "low_cpu_mem_usage": True,
-        }
+        load_kwargs: dict[str, Any] = {"trust_remote_code": True}
         if quant_config is not None:
+            # bitsandbytes 4-bit: let the quantization config own dtype/placement.
+            # Passing torch_dtype / low_cpu_mem_usage alongside device_map makes
+            # transformers' dispatch_model call model.to(), which bnb forbids
+            # ("`.to` is not supported for 4-bit models").
             load_kwargs["quantization_config"] = quant_config
             load_kwargs["device_map"] = "auto"
+        else:
+            load_kwargs["torch_dtype"] = torch.bfloat16
+            load_kwargs["low_cpu_mem_usage"] = True
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_name, trust_remote_code=True
