@@ -59,7 +59,7 @@ class MockPlanner:
         self._steps = steps or ["reach for object", "grasp", "lift"]
         self.call_count = 0
 
-    def plan(self, task_instruction: str) -> list[str]:
+    def plan(self, task_instruction: str, image: object = None) -> list[str]:
         self.call_count += 1
         return list(self._steps)
 

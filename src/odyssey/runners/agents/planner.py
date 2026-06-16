@@ -11,8 +11,10 @@ Satisfies ``PlannerRuntime`` protocol.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
+from typing import Any
 
 from odyssey.runners.agents.runtime import TextGenerator
 
@@ -24,6 +26,15 @@ _SYSTEM_PROMPT = (
     "that a robot arm can execute one at a time. Each sub-instruction should "
     "describe a single atomic motion or action. Output ONLY the numbered list, "
     "nothing else."
+)
+
+_SYSTEM_PROMPT_VISION = (
+    "You are a robot task planner. You are given the current scene image and a "
+    "high-level task instruction. Using what you can see in the image, decompose "
+    "the task into a numbered list of simple, sequential sub-instructions that a "
+    "robot arm can execute one at a time. Each sub-instruction should describe a "
+    "single atomic motion or action and refer to the objects visible in the "
+    "scene. Output ONLY the numbered list, nothing else."
 )
 
 _NUMBERED_LINE = re.compile(r"^\s*\d+[\.\)]\s*(.+)$")
@@ -53,14 +64,27 @@ class LLMPlanner:
 
     def __init__(self, generator: TextGenerator) -> None:
         self._generator = generator
+        # A multimodal generator (e.g. GemmaVLMGenerator) accepts an ``image``
+        # argument on ``generate``; a text-only one does not. Detect once so
+        # ``plan`` forwards the scene image only when it's supported.
+        self._accepts_image = "image" in inspect.signature(generator.generate).parameters
 
-    def plan(self, task_instruction: str) -> list[str]:
-        """Decompose a task instruction into sub-steps."""
+    def plan(self, task_instruction: str, image: Any | None = None) -> list[str]:
+        """Decompose a task instruction into sub-steps.
+
+        When ``image`` is given and the underlying generator is multimodal,
+        the plan is grounded in the scene; otherwise the image is ignored.
+        """
+        use_vision = image is not None and self._accepts_image
+        system_prompt = _SYSTEM_PROMPT_VISION if use_vision else _SYSTEM_PROMPT
         messages = [
-            {"role": "user", "content": f"{_SYSTEM_PROMPT}\n\nTask: {task_instruction}"},
+            {"role": "user", "content": f"{system_prompt}\n\nTask: {task_instruction}"},
         ]
 
-        text = self._generator.generate(messages)
+        if use_vision:
+            text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
+        else:
+            text = self._generator.generate(messages)
         logger.debug("LLMPlanner raw output:\n%s", text)
 
         steps = _parse_plan(text)

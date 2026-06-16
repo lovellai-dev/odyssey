@@ -7,6 +7,7 @@ requests over a JSON-lines stdin/stdout protocol:
 
     <- {"ready": true}                       (once, after the model loads)
     -> {"instruction": "pick up the cube"}   (one request per line, on stdin)
+    -> {"instruction": "...", "image": "<base64 PNG>"}   (multimodal request)
     <- {"plan": ["...", "..."]}              (one response per line, on stdout)
     <- {"error": "..."}                      (on failure; the client falls back)
     -> {"shutdown": true}                    (client asks the server to exit)
@@ -42,6 +43,16 @@ def _emit(stream: TextIO, obj: dict[str, Any]) -> None:
     stream.flush()
 
 
+def _decode_image(data: str) -> Any:
+    """Decode a base64 PNG string into a PIL Image (deferred PIL import)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGB")
+
+
 def serve(
     planner: PlannerRuntime,
     instream: TextIO,
@@ -72,7 +83,11 @@ def serve(
             _emit(outstream, {"error": "missing 'instruction' string"})
             continue
         try:
-            plan = planner.plan(instruction)
+            image = None
+            raw_image = req.get("image")
+            if isinstance(raw_image, str):
+                image = _decode_image(raw_image)
+            plan = planner.plan(instruction, image)
             _emit(outstream, {"plan": list(plan)})
         except BaseException as e:
             _emit(outstream, {"error": f"plan failed: {type(e).__name__}: {e}"})
@@ -83,6 +98,11 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="HF id of the SPECIALIST model")
     parser.add_argument("--quantization", default=None, help="e.g. int4 (or omit)")
     parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--multimodal",
+        action="store_true",
+        help="Host a vision-language Gemma 3 (GemmaVLMGenerator) instead of text-only.",
+    )
     args = parser.parse_args()
 
     # Keep stdout clean for the protocol: route any model-loading prints to
@@ -91,13 +111,24 @@ def main() -> None:
     sys.stdout = sys.stderr
     try:
         from odyssey.runners.agents.planner import LLMPlanner
-        from odyssey.runners.models.gemma import GemmaTextGenerator
 
-        generator = GemmaTextGenerator(
-            args.model,
-            quantization=args.quantization,
-            max_new_tokens=args.max_new_tokens,
-        )
+        generator: Any
+        if args.multimodal:
+            from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
+
+            generator = GemmaVLMGenerator(
+                args.model,
+                quantization=args.quantization,
+                max_new_tokens=args.max_new_tokens,
+            )
+        else:
+            from odyssey.runners.models.gemma import GemmaTextGenerator
+
+            generator = GemmaTextGenerator(
+                args.model,
+                quantization=args.quantization,
+                max_new_tokens=args.max_new_tokens,
+            )
         planner: PlannerRuntime = LLMPlanner(generator)
     except BaseException as e:
         sys.stdout = real_stdout

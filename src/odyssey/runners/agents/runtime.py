@@ -30,9 +30,15 @@ class TextGenerator(Protocol):
     ``runners/models/`` (e.g. ``GemmaTextGenerator``). The planning
     logic in ``runners/agents/planner.py`` consumes this protocol,
     so swapping the underlying model doesn't touch the planner.
+
+    Multimodal implementations (e.g. ``GemmaVLMGenerator``) extend
+    ``generate`` with an optional ``image`` argument; ``LLMPlanner``
+    forwards a scene image only when the generator accepts it, so a
+    text-only generator (matching this minimal signature) keeps working
+    unchanged.
     """
 
-    def generate(self, messages: list[dict[str, str]]) -> str:
+    def generate(self, messages: list[dict[str, Any]]) -> str:
         """Generate text from a list of chat messages.
 
         Parameters
@@ -76,7 +82,7 @@ class PilotRuntime(Protocol):
 class PlannerRuntime(Protocol):
     """Decomposes a task instruction into sub-instructions."""
 
-    def plan(self, task_instruction: str) -> list[str]:
+    def plan(self, task_instruction: str, image: Any | None = None) -> list[str]:
         """Break a high-level instruction into ordered sub-steps.
 
         Parameters
@@ -84,6 +90,10 @@ class PlannerRuntime(Protocol):
         task_instruction:
             The top-level task description (e.g. "pick up the red cube
             and place it on the shelf").
+        image:
+            Optional scene image (PIL Image or HWC uint8 ndarray) captured
+            at the start of the episode. A multimodal planner grounds its
+            plan in it; text-only planners ignore it.
 
         Returns
         -------

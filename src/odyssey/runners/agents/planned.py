@@ -112,13 +112,17 @@ class PlannedEvalRuntime:
     def current_instruction(self) -> str:
         return self._state.current_instruction
 
-    def begin_episode(self, task_instruction: str) -> list[str]:
+    def begin_episode(
+        self, task_instruction: str, image: Any | None = None
+    ) -> list[str]:
         """Call at the start of each episode. Returns the plan.
 
         If no planner is set, returns ``[task_instruction]`` (single phase).
+        ``image`` is the first observation frame; a multimodal planner grounds
+        its plan in it, text-only planners ignore it.
         """
         if self._planner is not None:
-            steps = self._planner.plan(task_instruction)
+            steps = self._planner.plan(task_instruction, image)
         else:
             steps = [task_instruction]
 

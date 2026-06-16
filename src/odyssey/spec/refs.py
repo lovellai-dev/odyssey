@@ -26,6 +26,10 @@ class HFModelRef(BaseModel):
     base: str
     revision: str | None = None
     quantization: str | None = None
+    # "text" (default) loads via AutoModelForCausalLM / Gemma3 text path;
+    # "multimodal" selects the vision-language loader (GemmaVLMGenerator) so a
+    # SPECIALIST planner can ground its plan in the scene image.
+    modality: Literal["text", "multimodal"] = "text"
 
 
 class LovellModelRef(BaseModel):

@@ -16,7 +16,9 @@ stdout lines are skipped, and any failure falls back to ``[instruction]``
 from __future__ import annotations
 
 import atexit
+import base64
 import contextlib
+import io
 import json
 import logging
 import os
@@ -33,6 +35,20 @@ logger = logging.getLogger(__name__)
 _SERVER_MODULE = "odyssey.runners.agents.planner_server"
 
 
+def _encode_image(image: Any) -> str:
+    """Encode a PIL Image or HWC uint8 ndarray as a base64 PNG string.
+
+    Runs once per episode (off the per-step hot loop), so PNG's cost is
+    irrelevant and it keeps the JSON-lines channel ASCII-clean.
+    """
+    from PIL import Image
+
+    pil = image if isinstance(image, Image.Image) else Image.fromarray(image)
+    buf = io.BytesIO()
+    pil.convert("RGB").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 class RemotePlanner:
     """Out-of-process planner. Satisfies the ``PlannerRuntime`` protocol.
 
@@ -45,6 +61,10 @@ class RemotePlanner:
     python_path:
         Path to the *specialist* venv's python interpreter (from
         ``ODYSSEY_SPECIALIST_PYTHON``).
+    multimodal:
+        When True, launch the server with ``--multimodal`` so it hosts a
+        vision-language Gemma 3 (``GemmaVLMGenerator``) and ``plan`` ships
+        the scene image alongside the instruction.
     startup_timeout:
         Seconds to wait for ``{"ready": true}`` — the first run downloads the
         model, so this is generous.
@@ -61,6 +81,7 @@ class RemotePlanner:
         quantization: str | None = None,
         *,
         python_path: str,
+        multimodal: bool = False,
         startup_timeout: float = 600.0,
         request_timeout: float = 120.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
@@ -68,6 +89,7 @@ class RemotePlanner:
         self._model_base = model_base
         self._quantization = quantization
         self._python_path = python_path
+        self._multimodal = multimodal
         self._startup_timeout = startup_timeout
         self._request_timeout = request_timeout
         self._launch_args = list(launch_args)
@@ -86,6 +108,8 @@ class RemotePlanner:
         argv = [self._python_path, *self._launch_args, "--model", self._model_base]
         if self._quantization:
             argv += ["--quantization", self._quantization]
+        if self._multimodal:
+            argv += ["--multimodal"]
         logger.info("RemotePlanner: launching specialist server: %s", " ".join(argv))
         # stderr inherited -> model-loading logs stay visible in the terminal.
         # start_new_session -> own process group for clean teardown.
@@ -146,16 +170,21 @@ class RemotePlanner:
             if isinstance(obj, dict):
                 return obj
 
-    def plan(self, task_instruction: str) -> list[str]:
+    def plan(self, task_instruction: str, image: Any | None = None) -> list[str]:
         """Decompose a task instruction via the out-of-process planner.
 
-        Falls back to ``[task_instruction]`` on any error (matches LLMPlanner).
+        When ``image`` is given (and the server is multimodal), it is sent as
+        a base64 PNG alongside the instruction. Falls back to
+        ``[task_instruction]`` on any error (matches LLMPlanner).
         """
         try:
             self._ensure_started()
             proc = self._proc
             assert proc is not None and proc.stdin is not None
-            proc.stdin.write(json.dumps({"instruction": task_instruction}) + "\n")
+            request: dict[str, Any] = {"instruction": task_instruction}
+            if image is not None:
+                request["image"] = _encode_image(image)
+            proc.stdin.write(json.dumps(request) + "\n")
             proc.stdin.flush()
             msg = self._read_message(self._request_timeout)
             plan = (msg or {}).get("plan")

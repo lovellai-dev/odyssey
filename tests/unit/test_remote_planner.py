@@ -29,6 +29,44 @@ class _FakeGen:
         return self._text
 
 
+class _FakeVLMGen:
+    """Multimodal generator stub: records the image it was handed."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self.last_image: object = "unset"
+
+    def generate(self, messages: list[dict[str, object]], image: object = None) -> str:
+        self.last_image = image
+        return self._text
+
+
+def _tiny_png_b64() -> str:
+    """A 2x2 PNG as base64 (built with PIL, the base image dep)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_llmplanner_forwards_image_when_generator_is_multimodal() -> None:
+    gen = _FakeVLMGen("1. look\n2. grasp\n")
+    planner = LLMPlanner(gen)
+    sentinel = object()
+    assert planner.plan("pick up the cube", image=sentinel) == ["look", "grasp"]
+    assert gen.last_image is sentinel
+
+
+def test_llmplanner_ignores_image_when_generator_is_text_only() -> None:
+    # _FakeGen.generate has no `image` param → image must not be forwarded.
+    planner = LLMPlanner(_FakeGen("1. a\n2. b\n"))
+    assert planner.plan("task", image=object()) == ["a", "b"]
+
+
 # --------------------------------------------------------------------------- #
 # serve() — the server-side request/response loop
 # --------------------------------------------------------------------------- #
@@ -60,6 +98,29 @@ def test_serve_rejects_invalid_json() -> None:
 def test_serve_missing_instruction() -> None:
     out = _run_serve(LLMPlanner(_FakeGen("1. a\n")), [{"foo": "bar"}, {"shutdown": True}])
     assert any("error" in m for m in out)
+
+
+def test_serve_decodes_image_and_passes_to_planner() -> None:
+    """serve() base64-decodes 'image' into a PIL Image for the planner."""
+
+    class _RecordingPlanner:
+        def __init__(self) -> None:
+            self.last_image: object = "unset"
+
+        def plan(self, instruction: str, image: object = None) -> list[str]:
+            self.last_image = image
+            return ["ok"]
+
+    from PIL import Image
+
+    planner = _RecordingPlanner()
+    out = _run_serve(  # type: ignore[arg-type]
+        planner,
+        [{"instruction": "pick up", "image": _tiny_png_b64()}, {"shutdown": True}],
+    )
+    assert out[1] == {"plan": ["ok"]}
+    assert isinstance(planner.last_image, Image.Image)
+    assert planner.last_image.size == (2, 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,6 +160,22 @@ for line in sys.stdin:
         sys.stdout.write(json.dumps({"plan": []}) + "\\n"); sys.stdout.flush()
 """
 
+# Echoes whether the request carried an "image" field (a base64 string).
+_FAKE_SERVER_ECHO_IMG = """
+import json, sys
+sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    has_img = isinstance(req.get("image"), str) and len(req["image"]) > 0
+    sys.stdout.write(json.dumps({"plan": ["image=" + str(has_img)]}) + "\\n")
+    sys.stdout.flush()
+"""
+
 
 def _planner_for(script_body: str, tmp_path: Path, **kw: object) -> RemotePlanner:
     script = tmp_path / "fake_server.py"
@@ -126,6 +203,30 @@ def test_remote_planner_roundtrip(tmp_path: Path) -> None:
     finally:
         planner.close()
         planner.close()  # idempotent
+
+
+def test_remote_planner_encodes_image_into_request(tmp_path: Path) -> None:
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_ECHO_IMG, tmp_path)
+    try:
+        # No image -> request has no "image" field.
+        assert planner.plan("do the task") == ["image=False"]
+        # With an image (HWC uint8 ndarray) -> base64-encoded into the request.
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        assert planner.plan("do the task", image=img) == ["image=True"]
+    finally:
+        planner.close()
+
+
+def test_remote_planner_multimodal_flag_appends_argv(tmp_path: Path) -> None:
+    planner = _planner_for(_FAKE_SERVER_ECHO_IMG, tmp_path, multimodal=True)
+    try:
+        # The fake server ignores --multimodal (argparse-free), but the flag
+        # must not break launch; roundtrip still works.
+        assert planner.plan("task") == ["image=False"]
+    finally:
+        planner.close()
 
 
 def test_remote_planner_falls_back_when_server_dies(tmp_path: Path) -> None:

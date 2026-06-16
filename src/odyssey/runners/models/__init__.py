@@ -9,6 +9,7 @@ from odyssey.runners.models.openvla import (
 
 __all__ = [
     "GemmaTextGenerator",
+    "GemmaVLMGenerator",
     "OpenVLARunner",
     "VLARuntime",
     "build_openvla_argv",
@@ -23,6 +24,10 @@ def __getattr__(name: str) -> object:
         from odyssey.runners.models.gemma import GemmaTextGenerator
 
         return GemmaTextGenerator
+    if name == "GemmaVLMGenerator":
+        from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
+
+        return GemmaVLMGenerator
     if name == "VLARuntime":
         from odyssey.runners.models.openvla import VLARuntime
 

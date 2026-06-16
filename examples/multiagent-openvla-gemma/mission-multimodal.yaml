@@ -1,0 +1,97 @@
+# Multi-agent mission: OpenVLA PILOT + MULTIMODAL Gemma 3 SPECIALIST (out-of-process).
+#
+# Same plan-then-execute eval as mission-advanced.yaml, but the SPECIALIST is a
+# VISION-LANGUAGE Gemma 3 4B. It sees the first camera frame of each episode and
+# grounds its plan in the actual scene (objects, positions) rather than planning
+# blind from the instruction text alone.
+#
+# REQUIRES the out-of-process setup (see README "Multi-agent evaluation"):
+#   python -m venv ~/specialist-venv
+#   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
+#   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+# Multimodal Gemma 3 needs transformers>=4.50 (the specialist venv has 4.51.3),
+# incompatible with OpenVLA's pinned transformers==4.40.1 in the main venv, so it
+# can ONLY run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission
+# FAILS at eval.
+#
+# Hardware: 24 GB GPU (L4). Peak VRAM ~20 GB (~14 GB PILOT bf16 +
+# ~3.5-4 GB SPECIALIST int4 incl. SigLIP vision tower). Stay on the 4B variant:
+# 12B int4 pushes ~22-23 GB and risks OOM with the pilot's activations. Keep
+# transformers on the 4.51.x pin — 5.1.x silently ignores 4-bit on Gemma 3.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: multiagent-lift-multimodal
+  description: >
+    Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2, with a
+    multimodal Gemma 3 4B task planner running out-of-process that grounds its
+    plan in the scene image. Evaluated on the Robosuite Lift benchmark.
+  tags: [multiagent, openvla, gemma, multimodal, robosuite, out-of-process]
+
+objective: |
+  Demonstrate that an OpenVLA pilot guided by a vision-language (out-of-process)
+  Gemma 3 planner can pick up a cube in simulation.
+
+acceptance_criteria: |
+  At least one successful lift across the evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b
+
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        # Vision-language planner — runs in the specialist venv (modern
+        # transformers), so it is NOT bound by OpenVLA's 4.40.1 pin. Gemma 3 4B
+        # is multimodal, so it loads via GemmaVLMGenerator
+        # (Gemma3ForConditionalGeneration + AutoProcessor). The first episode
+        # frame is fed to the planner so the plan is grounded in the scene.
+        base: google/gemma-3-4b-it
+        quantization: int4
+        modality: multimodal
+
+tasks:
+  - name: finetune-pilot
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: oxe
+      ref: bridge_orig
+      format: rlds
+    config:
+      method: peft_lora
+      lora_rank: 8
+      lora_alpha: 16
+      batch_size: 2
+      learning_rate: 5.0e-5
+      max_steps: 10
+      save_steps: 5
+      epochs: 1
+      data_root_dir: /home/gema
+      # Keep the RLDS shuffle buffer small — the upstream default (256k) eats
+      # all 32 GB RAM on g2-standard-8 and freezes the VM.
+      shuffle_buffer_size: 10000
+
+  - name: eval-robosuite-lift
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: Lift
+    num_episodes: 2
+    config:
+      unnorm_key: bridge_orig
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false

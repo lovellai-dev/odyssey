@@ -51,14 +51,16 @@ class FakeTextGenerator:
 
 
 class FakePlanner:
-    """Returns a fixed plan."""
+    """Returns a fixed plan. Records the image it was handed (if any)."""
 
     def __init__(self, steps: list[str]) -> None:
         self._steps = steps
         self.call_count = 0
+        self.last_image: object = None
 
-    def plan(self, task_instruction: str) -> list[str]:
+    def plan(self, task_instruction: str, image: object = None) -> list[str]:
         self.call_count += 1
+        self.last_image = image
         return list(self._steps)
 
 
@@ -248,6 +250,25 @@ def test_pilot_receives_correct_image() -> None:
     img = np.ones((64, 64, 3), dtype=np.uint8) * 42
     rt.get_action(img)
     np.testing.assert_array_equal(pilot.calls[0][0], img)
+
+
+def test_begin_episode_forwards_image_to_planner() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["a", "b"])
+    rt = PlannedEvalRuntime(pilot, planner)
+
+    img = np.ones((48, 48, 3), dtype=np.uint8)
+    rt.begin_episode("task", img)
+    np.testing.assert_array_equal(planner.last_image, img)
+
+
+def test_begin_episode_image_defaults_to_none() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["a"])
+    rt = PlannedEvalRuntime(pilot, planner)
+
+    rt.begin_episode("task")
+    assert planner.last_image is None
 
 
 # ---------------------------------------------------------------------------

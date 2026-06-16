@@ -256,7 +256,10 @@ class RobosuiteRunner(Runner):
             success = False
 
             if runtime:
-                plan = runtime.begin_episode(task_instruction)
+                # Plan from the first frame so a multimodal SPECIALIST can
+                # ground its plan in the scene (text planners ignore it).
+                first_image = _extract_image(obs, image_key)
+                plan = runtime.begin_episode(task_instruction, first_image)
                 logger.info("Episode %d plan: %s", ep, plan)
 
             for _step in range(self._max_steps):
@@ -264,8 +267,7 @@ class RobosuiteRunner(Runner):
                     break
 
                 if runtime:
-                    obs_dict = obs if isinstance(obs, dict) else {"observation": obs}
-                    image = obs_dict.get(image_key, next(iter(obs_dict.values())))
+                    image = _extract_image(obs, image_key)
                     action = runtime.get_action(image)
                 else:
                     assert policy is not None
@@ -395,8 +397,8 @@ def _has_specialist(context: TaskContext) -> bool:
     return False
 
 
-def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
-    """Return ``(model_base, quantization)`` for the first SPECIALIST."""
+def _find_specialist_model(context: TaskContext) -> tuple[str, str | None, bool]:
+    """Return ``(model_base, quantization, multimodal)`` for the first SPECIALIST."""
     from odyssey.spec.agents import AgentRole
     from odyssey.spec.refs import HFModelRef
 
@@ -408,8 +410,18 @@ def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
                     f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
                     "Only HuggingFace models are supported for SPECIALIST inference."
                 )
-            return model.base, model.quantization
+            return model.base, model.quantization, model.modality == "multimodal"
     raise ValueError("No SPECIALIST agent found in the loadout")
+
+
+def _extract_image(obs: Any, image_key: str) -> Any:
+    """Pull the RGB camera frame out of a robosuite observation.
+
+    Prefers ``image_key`` (e.g. ``agentview_image``); falls back to the first
+    value when the obs isn't the expected dict shape.
+    """
+    obs_dict = obs if isinstance(obs, dict) else {"observation": obs}
+    return obs_dict.get(image_key, next(iter(obs_dict.values())))
 
 
 def _resolve_task_instruction(spec: EvaluationTask) -> str:
@@ -437,7 +449,7 @@ def _build_planned_runtime(
     (Gemma 1), with no behavior change.
     """
     from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
-    from odyssey.runners.agents.runtime import PlannerRuntime
+    from odyssey.runners.agents.runtime import PlannerRuntime, TextGenerator
     from odyssey.runners.models.openvla import VLARuntime
 
     cfg = spec.config or {}
@@ -448,22 +460,33 @@ def _build_planned_runtime(
 
     # Resolve the SPECIALIST model, then build the planner — out-of-process if
     # a specialist venv is configured, else in-process (backward compatible).
-    model_base, quantization = _find_specialist_model(context)
+    model_base, quantization, multimodal = _find_specialist_model(context)
     specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
     planner: PlannerRuntime
     if specialist_python:
         from odyssey.runners.agents.remote_planner import RemotePlanner
 
         logger.info(
-            "SPECIALIST out-of-process: model=%s via %s",
+            "SPECIALIST out-of-process: model=%s multimodal=%s via %s",
             model_base,
+            multimodal,
             specialist_python,
         )
         planner = RemotePlanner(
             model_base,
             quantization,
             python_path=specialist_python,
+            multimodal=multimodal,
         )
+    elif multimodal:
+        # Multimodal Gemma 3 needs transformers>=4.50, which conflicts with
+        # OpenVLA's 4.40.1 pin in this venv — it can only run out-of-process.
+        from odyssey.runners.agents.planner import LLMPlanner
+        from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
+
+        logger.info("SPECIALIST in-process multimodal: model=%s", model_base)
+        generator: TextGenerator = GemmaVLMGenerator(model_base, quantization=quantization)
+        planner = LLMPlanner(generator)
     else:
         from odyssey.runners.agents.planner import LLMPlanner
         from odyssey.runners.models.gemma import GemmaTextGenerator
