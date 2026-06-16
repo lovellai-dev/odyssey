@@ -44,8 +44,10 @@ def main() -> None:
     from odyssey.runners.agents.planner import LLMPlanner
     from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 
-    print("\n=== Loading SPECIALIST: google/gemma-4-E4B-it (int4, multimodal) ===", flush=True)
-    generator = GemmaVLMGenerator("google/gemma-4-E4B-it", quantization="int4")
+    # E2B-it to match mission-multimodal.yaml (one planner model to cache; fits
+    # alongside the pilot). Pass a different id below to try E4B standalone.
+    print("\n=== Loading SPECIALIST: google/gemma-4-E2B-it (int4, multimodal) ===", flush=True)
+    generator = GemmaVLMGenerator("google/gemma-4-E2B-it", quantization="int4")
     planner = LLMPlanner(generator)
 
     image = _demo_image()
