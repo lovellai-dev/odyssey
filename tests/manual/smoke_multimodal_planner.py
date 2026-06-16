@@ -50,6 +50,19 @@ def main() -> None:
 
     image = _demo_image()
     print(f"\n=== Decomposing (with scene image): {instruction!r} ===", flush=True)
+
+    # Show the RAW model output first (what the parser sees), then the plan —
+    # so a 1-step result is easy to diagnose (prose vs numbered, markdown, etc).
+    from odyssey.runners.agents.planner import _SYSTEM_PROMPT_VISION
+
+    raw = generator.generate(
+        [{"role": "user", "content": f"{_SYSTEM_PROMPT_VISION}\n\nTask: {instruction}"}],
+        image=image,
+    )
+    print("\n--- RAW generator output ---")
+    print(repr(raw))
+    print("--- end raw ---")
+
     steps = planner.plan(instruction, image=image)
 
     print(f"\n--- Plan: {len(steps)} sub-instruction(s) ---")
