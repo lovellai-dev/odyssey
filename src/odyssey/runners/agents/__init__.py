@@ -19,6 +19,7 @@ from odyssey.runners.agents.planned import (
     PlannedEvalRuntime,
 )
 from odyssey.runners.agents.planner import LLMPlanner
+from odyssey.runners.agents.remote_planner import RemotePlanner
 from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGenerator
 
 __all__ = [
@@ -28,5 +29,6 @@ __all__ = [
     "PilotRuntime",
     "PlannedEvalRuntime",
     "PlannerRuntime",
+    "RemotePlanner",
     "TextGenerator",
 ]

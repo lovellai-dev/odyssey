@@ -32,6 +32,7 @@ end-to-end. Pair it with a custom policy and you get real numbers.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -293,6 +294,12 @@ class RobosuiteRunner(Runner):
                 step_label=f"episode {ep}: {'PASS' if success else 'FAIL'} return={episode_return:.3f}",
             )
 
+        # Tear down the planner once rollouts finish — closes the
+        # out-of-process RemotePlanner subprocess (no-op for in-process /
+        # the single-agent policy path). atexit covers the exception path.
+        if runtime is not None:
+            runtime.close()
+
         attempted = len(episode_returns)
         success_rate = (successes / attempted) if attempted else 0.0
         performance_score = (
@@ -421,10 +428,16 @@ def _build_planned_runtime(
     checkpoint: Path,
     spec: EvaluationTask,
 ) -> Any:
-    """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST."""
+    """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST.
+
+    The SPECIALIST (planner) runs **out of process** when
+    ``ODYSSEY_SPECIALIST_PYTHON`` points at a separate venv's python — that
+    frees Gemma from OpenVLA's pinned ``transformers==4.40.1`` so an advanced
+    Gemma (2/3) can be used. Unset → the planner loads in-process as before
+    (Gemma 1), with no behavior change.
+    """
     from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
-    from odyssey.runners.agents.planner import LLMPlanner
-    from odyssey.runners.models.gemma import GemmaTextGenerator
+    from odyssey.runners.agents.runtime import PlannerRuntime
     from odyssey.runners.models.openvla import VLARuntime
 
     cfg = spec.config or {}
@@ -433,10 +446,30 @@ def _build_planned_runtime(
     # Load the PILOT as a VLARuntime (per-call instruction)
     pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
 
-    # Load the SPECIALIST model + wrap in planner
+    # Resolve the SPECIALIST model, then build the planner — out-of-process if
+    # a specialist venv is configured, else in-process (backward compatible).
     model_base, quantization = _find_specialist_model(context)
-    generator = GemmaTextGenerator(model_base, quantization=quantization)
-    planner = LLMPlanner(generator)
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    planner: PlannerRuntime
+    if specialist_python:
+        from odyssey.runners.agents.remote_planner import RemotePlanner
+
+        logger.info(
+            "SPECIALIST out-of-process: model=%s via %s",
+            model_base,
+            specialist_python,
+        )
+        planner = RemotePlanner(
+            model_base,
+            quantization,
+            python_path=specialist_python,
+        )
+    else:
+        from odyssey.runners.agents.planner import LLMPlanner
+        from odyssey.runners.models.gemma import GemmaTextGenerator
+
+        generator = GemmaTextGenerator(model_base, quantization=quantization)
+        planner = LLMPlanner(generator)
 
     # Phase config from mission config
     steps_per_phase = cfg.get("steps_per_phase", 50)

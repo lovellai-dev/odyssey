@@ -64,6 +64,17 @@ openvla = [
     "torch>=2.1",
     "pillow>=9.0",
 ]
+specialist = [
+    # Out-of-process SPECIALIST planner venv — a modern transformers so it can
+    # host an advanced Gemma (2/3), free of OpenVLA's pinned 4.40.1. Installed
+    # in a SEPARATE venv (see constraints/specialist-known-good.txt) and reached
+    # via ODYSSEY_SPECIALIST_PYTHON; never co-installed with the [openvla] extra.
+    "transformers>=4.49",
+    "accelerate>=0.30",
+    "bitsandbytes>=0.43",
+    "torch>=2.1",
+    "sentencepiece>=0.1.99",
+]
 
 [project.scripts]
 odyssey = "odyssey.cli.main:cli"

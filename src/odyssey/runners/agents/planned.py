@@ -176,3 +176,11 @@ class PlannedEvalRuntime:
                     self._state.current_index,
                     self._state.current_instruction,
                 )
+
+    def close(self) -> None:
+        """Release runtime resources. Closes the planner if it owns any
+        (e.g. an out-of-process ``RemotePlanner`` subprocess). No-op for
+        in-process planners. Safe to call multiple times."""
+        closer = getattr(self._planner, "close", None)
+        if callable(closer):
+            closer()
