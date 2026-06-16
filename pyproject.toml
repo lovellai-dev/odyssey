@@ -55,25 +55,14 @@ robosuite = [
     "mujoco>=3.0",
 ]
 openvla = [
-    # OpenVLA pins transformers==4.40.1, and the whole stack must be
-    # contemporaneous or model loading breaks at runtime — even though loose
-    # floors "resolve" fine at install time. Observed on a GCP L4:
-    #   * accelerate 1.x -> transformers calls model.to() on a 4-bit Gemma
-    #     (bitsandbytes forbids it) -> SPECIALIST fails to load.
-    #   * torch 2.6 -> inductor compile-worker fork-after-CUDA race -> training
-    #     exits 1 with no traceback.
-    # These are the versions validated end-to-end (PILOT inference + Gemma int4
-    # SPECIALIST co-hosted in one process). Keep them aligned as a set.
-    "transformers==4.40.1",
-    "tokenizers==0.19.1",
-    "accelerate>=0.30,<0.31",
-    "bitsandbytes>=0.43,<0.44",
-    "torch==2.2.0",
-    "peft>=0.11,<0.12",
+    # NOTE: the known-good runtime stack (torch 2.2.0, transformers 4.40.1,
+    # accelerate 0.30.1, bitsandbytes 0.43.1, numpy<2) is documented in the PR /
+    # issue #22 rather than hard-pinned here — pinning is deferred so it can't
+    # affect eval testing until verified in CI.
+    "transformers>=4.40",
+    "peft>=0.8",
+    "torch>=2.1",
     "pillow>=9.0",
-    # numpy<2: TensorFlow 2.15 (OpenVLA's RLDS data pipeline) requires it, and
-    # numpy 2.x also breaks torch 2.2's import (compiled against numpy 1.x).
-    "numpy>=1.24,<2",
 ]
 
 [project.scripts]
