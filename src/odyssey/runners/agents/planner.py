@@ -31,10 +31,12 @@ _SYSTEM_PROMPT = (
 _SYSTEM_PROMPT_VISION = (
     "You are a robot task planner. You are given the current scene image and a "
     "high-level task instruction. Using what you can see in the image, decompose "
-    "the task into a numbered list of simple, sequential sub-instructions that a "
-    "robot arm can execute one at a time. Each sub-instruction should describe a "
-    "single atomic motion or action and refer to the objects visible in the "
-    "scene. Output ONLY the numbered list, nothing else."
+    "the task into a numbered list of ALL the simple, sequential sub-instructions "
+    "a robot arm must execute to complete it, from start to finish "
+    "(1., 2., 3., ...). Each line is one atomic motion that refers to the objects "
+    "visible in the scene (e.g. locate, move to, align, grasp, lift, place). "
+    "Give every step needed — do not stop after the first. Output ONLY the "
+    "numbered list, nothing else."
 )
 
 _NUMBERED_LINE = re.compile(r"^\s*\d+[\.\)]\s*(.+)$")
