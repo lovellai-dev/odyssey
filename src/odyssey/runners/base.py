@@ -14,14 +14,22 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.spec.agents import AgentSpec
 from odyssey.spec.tasks import TaskKind
 from odyssey.telemetry.events import ProgressEvent, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
+
+if TYPE_CHECKING:
+    # Type-only: TaskContext annotates these (task/mission fields). Importing
+    # them at runtime would create an engine<->runners import cycle — fatal when
+    # the out-of-process planner_server is launched via `python -m`, which
+    # imports the odyssey.runners package before any of our code can break the
+    # cycle. `from __future__ import annotations` keeps the annotations as
+    # strings, so this stays type-check-only.
+    from odyssey.engine.records import MissionRun, TaskRun
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
 # value." Used by CPUMockRunner so a single registration covers every task
