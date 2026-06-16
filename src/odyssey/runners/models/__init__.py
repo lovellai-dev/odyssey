@@ -1,5 +1,10 @@
 """Model loaders — training runners and inference models."""
 
+from odyssey.runners.models.gr00t import (
+    GR00TRunner,
+    build_gr00t_argv,
+    parse_gr00t_line,
+)
 from odyssey.runners.models.openvla import (
     OpenVLARunner,
     build_openvla_argv,
@@ -8,11 +13,14 @@ from odyssey.runners.models.openvla import (
 )
 
 __all__ = [
+    "GR00TRunner",
     "GemmaTextGenerator",
     "OpenVLARunner",
     "VLARuntime",
+    "build_gr00t_argv",
     "build_openvla_argv",
     "make_openvla_policy",
+    "parse_gr00t_line",
     "parse_openvla_line",
 ]
 
