@@ -74,6 +74,9 @@ specialist = [
     "bitsandbytes>=0.43",
     "torch>=2.1",
     "sentencepiece>=0.1.99",
+    # pillow: the multimodal planner decodes the scene image (base64 PNG over
+    # the protocol) into a PIL Image for Gemma 3's processor.
+    "pillow>=9.0",
 ]
 
 [project.scripts]
