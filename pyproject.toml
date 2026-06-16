@@ -75,8 +75,11 @@ specialist = [
     "torch>=2.1",
     "sentencepiece>=0.1.99",
     # pillow: the multimodal planner decodes the scene image (base64 PNG over
-    # the protocol) into a PIL Image for Gemma 3's processor.
+    # the protocol) into a PIL Image for the processor.
     "pillow>=9.0",
+    # torchvision: Gemma 4's image processor (Gemma4ImageProcessor) imports
+    # torchvision.transforms.v2. Must match the installed torch ABI.
+    "torchvision",
 ]
 
 [project.scripts]
