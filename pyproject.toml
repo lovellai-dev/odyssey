@@ -43,6 +43,9 @@ dev = [
     # torch->numpy obs conversion). Required for `pytest` collection in CI,
     # which installs only the dev extra.
     "numpy>=1.24",
+    # pillow: the remote-planner image tests encode/decode a scene image as a
+    # base64 PNG (PIL). Same reason as numpy — CI installs only the dev extra.
+    "pillow>=9.0",
 ]
 # Optional providers / runners — kept out of base install so the wheel
 # stays light. Users opt in per-feature.
