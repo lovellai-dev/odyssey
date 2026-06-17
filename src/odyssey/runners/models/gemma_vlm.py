@@ -127,13 +127,28 @@ class GemmaVLMGenerator:
             quantization,
         )
 
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            logger.info(
+                "GemmaVLMGenerator: GPU free %.2f GB / total %.2f GB before load",
+                free / 1e9,
+                total / 1e9,
+            )
+
         load_kwargs: dict[str, Any] = {}
         if quant_config is not None:
             # bitsandbytes 4-bit: let the quantization config own dtype/placement.
             # Mirrors GemmaTextGenerator — passing torch_dtype alongside device_map
             # makes transformers call model.to(), which bnb forbids for 4-bit.
             load_kwargs["quantization_config"] = quant_config
-            load_kwargs["device_map"] = "auto"
+            # Force the whole model onto GPU 0 instead of device_map="auto".
+            # When the PILOT already occupies most of the shared GPU, "auto"
+            # conservatively reserves a buffer, decides the planner doesn't fit,
+            # and offloads some modules to CPU — which bitsandbytes rejects for
+            # 4-bit ("Some modules are dispatched on the CPU or the disk").
+            # Pinning to {"": 0} uses all remaining VRAM (it OOMs cleanly if the
+            # model genuinely doesn't fit, instead of the confusing offload error).
+            load_kwargs["device_map"] = {"": 0} if torch.cuda.is_available() else "auto"
         else:
             load_kwargs["torch_dtype"] = torch.bfloat16
             load_kwargs["low_cpu_mem_usage"] = True
