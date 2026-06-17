@@ -107,18 +107,35 @@ def test_argv_does_not_override_explicit_use_lora(tmp_path: Path) -> None:
     assert argv.count("--use_lora") == 1
 
 
-def test_argv_passes_dataset_via_data_root_dir(tmp_path: Path) -> None:
+def test_argv_passes_dataset_ref_as_data_root_dir(tmp_path: Path) -> None:
     from odyssey.spec import DatasetRef, DatasetSource
     task = _task(
         dataset=DatasetRef(
-            source=DatasetSource.HUGGINGFACE, ref="lerobot/bridge_v2"
+            source=DatasetSource.OXE, ref="bridge_orig"
         ),
     )
     argv = build_openvla_argv(
         task=task, agent_model_base=HF_BASE, output_dir=tmp_path, run_id="r"
     )
     idx = argv.index("--data_root_dir")
-    assert argv[idx + 1] == "lerobot/bridge_v2"
+    assert argv[idx + 1] == "bridge_orig"
+
+
+def test_argv_reads_dataset_name_from_oxe_ref(tmp_path: Path) -> None:
+    from odyssey.spec import DatasetRef, DatasetSource
+    task = _task(
+        dataset=DatasetRef(
+            source=DatasetSource.OXE, ref="bridge_orig"
+        ),
+        config={"data_root_dir": "/data/datasets"},
+    )
+    argv = build_openvla_argv(
+        task=task, agent_model_base=HF_BASE, output_dir=tmp_path, run_id="r"
+    )
+    idx = argv.index("--dataset_name")
+    assert argv[idx + 1] == "bridge_orig"
+    idx = argv.index("--data_root_dir")
+    assert argv[idx + 1] == "/data/datasets"
 
 
 def test_argv_includes_flat_overrides(tmp_path: Path) -> None:

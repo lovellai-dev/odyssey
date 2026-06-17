@@ -114,7 +114,45 @@ src/odyssey/
 
 ## Launching a training mission
 
-### Prerequisites
+Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T, the newer path)
+and **OpenVLA** (the original). Both run through `odyssey run <mission.yaml>` —
+pick the quickstart that matches your model.
+
+### GR00T (Isaac-GR00T + Isaac Lab)
+
+Fine-tunes `nvidia/GR00T-N1.7-3B` on the LeRobot-format demo set that ships
+inside the Isaac-GR00T repo (no separate download), evaluated in the Isaac Lab
+cube-lift environment.
+
+**Prerequisites:**
+
+1. Install the upstream Isaac-GR00T package — it carries the training entry
+   point (`gr00t.experiment.launch_finetune`) and the demo dataset. Accept
+   NVIDIA's weight license:
+   ```bash
+   git clone https://github.com/NVIDIA/Isaac-GR00T.git /srv/Isaac-GR00T
+   pip install -e /srv/Isaac-GR00T
+   export ISAAC_GR00T_REPO_PATH=/srv/Isaac-GR00T   # resolves the demo dataset
+   ```
+2. For the Isaac Lab evaluation, install Isaac Lab and point Odyssey at its
+   launcher:
+   ```bash
+   export ISAACLAB_PATH=/srv/IsaacLab              # provides isaaclab.sh
+   ```
+
+**Run:**
+
+```bash
+odyssey run examples/quickstart-gr00t/mission.yaml
+```
+
+The mission routes its training task to the GR00T runner with
+`config: { runner: gr00t }` — OpenVLA and GR00T both serve wildcard training
+tasks, so the family is selected explicitly.
+
+### OpenVLA (Bridge V2 + Robosuite)
+
+**Prerequisites:**
 
 1. Install the training extras:
    ```bash
@@ -135,7 +173,7 @@ src/odyssey/
    ```
    Set `--data_root_dir` to the parent directory containing `bridge_orig/`.
 
-### Run
+**Run:**
 
 ```bash
 odyssey run examples/quickstart-openvla/mission.yaml
@@ -153,6 +191,78 @@ Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA LoRA fine-tune.
 > adapter. Real eval numbers require supplying a `policy_factory` to
 > `RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
 > The built-in adapter is a v0.2.x line item.
+
+#### Known-good OpenVLA stack
+
+The fine-tune runs through the **cloned OpenVLA repo**, which carries its own
+dependency set — most onboarding friction comes from there, not from Odyssey.
+Mixing versions surfaces as protobuf / TensorFlow / `tensorflow-metadata`
+conflicts or `draccus` import errors. Known-good versions (from OpenVLA's own
+requirements — treat its repo as the source of truth):
+
+```text
+Python        3.10
+torch         2.2.0
+torchvision   0.17.0
+transformers  4.40.1
+tokenizers    0.19.1
+timm          0.9.10
+flash-attn    2.5.5
+```
+
+To avoid re-downloading the 7B base model each run, point its path env var at a
+local copy (HF id upper-cased, `/` and `-` → `_`, suffixed `_PATH`):
+
+```bash
+export OPENVLA_OPENVLA_7B_PATH=/path/to/openvla-7b   # for base: openvla/openvla-7b
+```
+
+#### Dataset: how `source: oxe` / `ref: bridge_orig` resolves
+
+**Odyssey does not download the dataset** — `oxe` is a *pass-through*. The runner
+forwards two values to OpenVLA's `finetune.py`, which loads via TFDS/RLDS:
+
+| mission.yaml | becomes the flag | meaning |
+|---|---|---|
+| `dataset.ref: bridge_orig` | `--dataset_name bridge_orig` | the OXE **registry key** OpenVLA looks up |
+| `config.data_root_dir: <path>` | `--data_root_dir <path>` | the **parent dir** containing the RLDS dataset folder |
+
+⚠️ **Naming gotcha:** the registry key and the on-disk folder name can differ.
+In validation, `ref: bridge_orig` resolved to data under `~/bridge_dataset/1.0.0/`,
+so `data_root_dir` had to point at the **parent** of that folder — not the key
+name. Check where your download actually landed and set `data_root_dir` to its
+parent.
+
+#### Weights & Biases (W&B)
+
+OpenVLA's `finetune.py` calls `wandb.init()` unconditionally, so a run stalls or
+fails if W&B isn't reachable. Control it yourself:
+
+```bash
+# Disable for local / smoke runs:
+export WANDB_MODE=disabled
+# Or log to your account, then pass project/entity via mission config:
+#   config: { wandb_project: my-project, wandb_entity: my-entity }
+```
+
+Any `config:` key Odyssey doesn't consume is forwarded verbatim as
+`--<key> <value>` to `finetune.py`.
+
+#### What to expect during a run
+
+Timing varies widely with hardware, disk, and network — treat these as
+orientation, not promises:
+
+1. **Base model download** — `openvla-7b` (~14 GB) on first run, unless
+   `OPENVLA_OPENVLA_7B_PATH` is set.
+2. **Dataset load / indexing** — Bridge V2 (~124 GB); RLDS indexing on a cold
+   cache takes a while.
+3. **Training startup** — model load + LoRA wrap, then steps begin.
+4. **Steady state** — throughput logs as `it/s` (~1.49 it/s on an NVIDIA L4 for
+   the quickstart config).
+
+If a stage seems stuck, it's almost always a download in progress or a
+dataset-path / W&B issue rather than a training bug — check those first.
 
 ## Status snapshot (v0.0.x)
 
