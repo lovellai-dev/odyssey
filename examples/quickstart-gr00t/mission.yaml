@@ -54,6 +54,7 @@ tasks:
       # Remaining keys mirror gr00t/experiment/launch_finetune.py flags
       # (underscores become dashes on the CLI).
       embodiment_tag: new_embodiment
+      modality_config_path: examples/SO100/so100_config.py
       global_batch_size: 32
       max_steps: 1000
 

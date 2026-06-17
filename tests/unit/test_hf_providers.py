@@ -86,6 +86,23 @@ async def test_model_resolve_raises_when_api_returns_no_sha() -> None:
         await provider.resolve(HFModelRef(base="x/y"))
 
 
+async def test_model_resolve_falls_back_when_hub_unreachable() -> None:
+    # Offline / air-gapped (or a gated repo with no token): model_info raises,
+    # and resolve falls back to a cache-resolvable revision instead of failing
+    # — HEAD maps to ``main`` (no cached ``HEAD`` ref); a concrete pin is kept.
+    class _OfflineApi:
+        def model_info(self, repo_id: str, revision: str | None = None) -> Any:
+            raise OSError("offline mode is enabled")
+
+    provider = HFModelProvider(api=_OfflineApi())
+    resolved = await provider.resolve(
+        HFModelRef(base="nvidia/GR00T-N1.7-3B", revision="HEAD")
+    )
+    assert resolved.revision == "main"
+    pinned = await provider.resolve(HFModelRef(base="x/y", revision="v9"))
+    assert pinned.revision == "v9"
+
+
 def test_model_provider_lazy_imports_hf() -> None:
     # Constructor without api should not raise; the import only happens
     # when a method is called and api is None.

@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import signal
+import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -61,10 +62,13 @@ class TrainingProcessSpec:
     line_parser: LineParser | None = None
     cwd: str | None = None
     sigterm_grace_seconds: float = 30.0
+    use_torchrun: bool = False
+    torchrun_nproc: int = 1
     # Optional command prefix replacing the default ``python`` for
-    # ``script_path`` invocations — e.g. ["/path/isaaclab.sh", "-p"] so
-    # the script runs under Isaac Sim's bundled interpreter. Not valid
-    # with ``entry_module`` (the ``-m`` form assumes a python launcher).
+    # ``script_path`` invocations — e.g. ["/path/isaaclab.sh", "-p"] so the
+    # script runs under Isaac Sim's bundled interpreter. Not valid with
+    # ``entry_module`` (the ``-m`` form assumes a python launcher), and
+    # mutually exclusive with ``use_torchrun`` (both define the prefix).
     launcher: list[str] | None = None
 
     def __post_init__(self) -> None:
@@ -78,6 +82,11 @@ class TrainingProcessSpec:
                 "TrainingProcessSpec.launcher only applies to script_path "
                 "invocations"
             )
+        if self.launcher is not None and self.use_torchrun:
+            raise ValueError(
+                "TrainingProcessSpec.launcher and use_torchrun are mutually "
+                "exclusive — both define the command prefix"
+            )
 
 
 async def run_training_subprocess(
@@ -90,13 +99,23 @@ async def run_training_subprocess(
     responsible for building ``argv_extra``, picking the entry, and
     post-processing the resulting output directory.
     """
+    if spec.launcher is not None:
+        launcher = spec.launcher
+    elif spec.use_torchrun:
+        launcher = [
+            "torchrun",
+            "--standalone",
+            f"--nproc_per_node={spec.torchrun_nproc}",
+        ]
+    else:
+        launcher = ["python"]
+
     if spec.entry_module is not None:
-        cmd = ["python", "-m", spec.entry_module, *spec.argv_extra]
+        cmd = [*launcher, "-m", spec.entry_module, *spec.argv_extra]
     else:
         # script_path is guaranteed by __post_init__
         assert spec.script_path is not None
-        prefix = spec.launcher if spec.launcher is not None else ["python"]
-        cmd = [*prefix, spec.script_path, *spec.argv_extra]
+        cmd = [*launcher, spec.script_path, *spec.argv_extra]
     env = {**os.environ, **spec.env}
 
     logger.info(
@@ -115,6 +134,10 @@ async def run_training_subprocess(
         cwd=spec.cwd,
         # New process group so SIGTERM targets only this child tree.
         preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        # tqdm progress bars use \r without \n, which can accumulate
+        # into a single "line" that exceeds asyncio's default 64 KB
+        # buffer.  10 MB is enough for long training runs.
+        limit=10 * 1024 * 1024,
     )
 
     stdout_task = asyncio.create_task(
@@ -176,9 +199,10 @@ async def _stream_stdout(
         return
     last_step_emitted = -1
     last_checkpoint_emitted = -1
+    buf = ""
     while True:
         try:
-            raw = await proc.stdout.readline()
+            raw = await proc.stdout.read(8192)
         except Exception:
             logger.exception(
                 "Error reading subprocess stdout for task %s", ctx.task.id
@@ -186,52 +210,59 @@ async def _stream_stdout(
             break
         if not raw:
             break
-        line = raw.decode("utf-8", errors="replace").rstrip()
-        if not line:
-            continue
-        logger.info("[%s] %s", ctx.task.id, line)
+        # Write raw bytes directly to terminal for real-time tqdm output
+        sys.stdout.buffer.write(raw)
+        sys.stdout.buffer.flush()
+        # Also parse lines for structured events
+        buf += raw.decode("utf-8", errors="replace")
+        while "\n" in buf:
+            line, buf = buf.split("\n", 1)
+            line = line.rstrip("\r")
+            if not line:
+                continue
+            logger.info("[%s] %s", ctx.task.id, line)
 
-        parsed: dict[str, Any] | None = None
-        if line_parser is not None:
+            parsed: dict[str, Any] | None = None
+            if line_parser is not None:
+                try:
+                    parsed = line_parser(line)
+                except Exception:
+                    logger.exception(
+                        "line_parser raised for task %s — using fallback", ctx.task.id
+                    )
+
+            if parsed is None:
+                m = _GENERIC_STEP_RE.search(line)
+                if m:
+                    step = int(m.group(1))
+                    if step != last_step_emitted:
+                        last_step_emitted = step
+                        parsed = {
+                            "stage": "executing",
+                            "step": "training_step",
+                            "step_index": step,
+                        }
+                elif _CHECKPOINT_RE.search(line):
+                    m2 = _CHECKPOINT_RE.search(line)
+                    assert m2 is not None  # we just matched
+                    step = int(m2.group(2))
+                    if step != last_checkpoint_emitted:
+                        last_checkpoint_emitted = step
+                        parsed = {
+                            "stage": "checkpoint_saving",
+                            "step": "checkpoint_save",
+                            "step_index": step,
+                        }
+
+            if parsed is None:
+                continue
+
             try:
-                parsed = line_parser(line)
+                await ctx.emit_progress(**parsed)
             except Exception:
                 logger.exception(
-                    "line_parser raised for task %s — using fallback", ctx.task.id
+                    "emit_progress failed for task %s — continuing", ctx.task.id
                 )
-
-        if parsed is None:
-            m = _GENERIC_STEP_RE.search(line)
-            if m:
-                step = int(m.group(1))
-                if step != last_step_emitted:
-                    last_step_emitted = step
-                    parsed = {
-                        "stage": "executing",
-                        "step": "training_step",
-                        "step_index": step,
-                    }
-            elif _CHECKPOINT_RE.search(line):
-                m2 = _CHECKPOINT_RE.search(line)
-                assert m2 is not None  # we just matched
-                step = int(m2.group(2))
-                if step != last_checkpoint_emitted:
-                    last_checkpoint_emitted = step
-                    parsed = {
-                        "stage": "checkpoint_saving",
-                        "step": "checkpoint_save",
-                        "step_index": step,
-                    }
-
-        if parsed is None:
-            continue
-
-        try:
-            await ctx.emit_progress(**parsed)
-        except Exception:
-            logger.exception(
-                "emit_progress failed for task %s — continuing", ctx.task.id
-            )
 
 
 # ---------------------------------------------------------------------------

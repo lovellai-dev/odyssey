@@ -108,6 +108,37 @@ def _default_env_factory(benchmark_name: str, robosuite_robot: str | None) -> An
     return robosuite.make(**kwargs)
 
 
+def _make_eval_env(
+    benchmark_name: str,
+    robosuite_robot: str | None,
+    config: dict[str, Any] | None = None,
+) -> Any:
+    """Create a camera-enabled robosuite env for policy evaluation."""
+    try:
+        import robosuite
+    except ImportError as e:
+        raise RuntimeError(
+            "Robosuite eval requires the 'robosuite' extra. "
+            "Install with: pip install 'lovell-odyssey[robosuite]'"
+        ) from e
+    cfg = config or {}
+    camera_names = cfg.get("camera_names", "agentview")
+    camera_height = cfg.get("camera_height", 256)
+    camera_width = cfg.get("camera_width", 256)
+    kwargs: dict[str, Any] = {
+        "env_name": benchmark_name,
+        "has_renderer": False,
+        "has_offscreen_renderer": True,
+        "use_camera_obs": True,
+        "camera_names": camera_names,
+        "camera_heights": camera_height,
+        "camera_widths": camera_width,
+    }
+    if robosuite_robot is not None:
+        kwargs["robots"] = robosuite_robot
+    return robosuite.make(**kwargs)
+
+
 def _default_policy_factory(checkpoint_path: Path) -> Policy:
     raise NotImplementedError(
         "RobosuiteRunner has no built-in policy for v0.1.0-alpha. "
@@ -157,7 +188,18 @@ class RobosuiteRunner(Runner):
             step="load_policy",
             step_label=str(checkpoint),
         )
-        policy = self._policy_factory(checkpoint)
+
+        # Policy: use OpenVLA when no custom factory was injected
+        if self._policy_factory is _default_policy_factory:
+            from odyssey.runners.openvla import make_openvla_policy
+
+            policy = make_openvla_policy(
+                checkpoint,
+                config=spec.config,
+                benchmark_name=spec.benchmark_name,
+            )
+        else:
+            policy = self._policy_factory(checkpoint)
 
         robosuite_robot = _resolve_robosuite_robot(context.mission.spec.robot)
         await context.emit_progress(
@@ -168,7 +210,12 @@ class RobosuiteRunner(Runner):
                 f"robot={robosuite_robot or 'robosuite-default'}"
             ),
         )
-        env = self._env_factory(spec.benchmark_name, robosuite_robot)
+
+        # Env: use camera-enabled env when no custom factory was injected
+        if self._env_factory is _default_env_factory:
+            env = _make_eval_env(spec.benchmark_name, robosuite_robot, spec.config)
+        else:
+            env = self._env_factory(spec.benchmark_name, robosuite_robot)
 
         num_episodes = spec.num_episodes
         successes = 0
