@@ -1,0 +1,77 @@
+# GR00T policy eval in Isaac Lab, orchestrated by Odyssey (odyssey#17).
+#
+# Fills the eval_script slot that examples/quickstart-gr00t/mission.yaml leaves
+# open: the subprocess IsaacLabRunner launches scripts/eval/gr00t_isaac_eval.py,
+# which drives a GR00T policy server in the Franka visuomotor cube-stack env and
+# reports each episode over the ODYSSEY_* stdout protocol.
+#
+# The training task is a cpu_mock stub — it only yields a PILOT checkpoint so the
+# eval's checkpoint resolution succeeds. No training happens here: GR00T weights
+# live on the server, and the eval connects to it via --host/--port.
+#
+# Plumbing only (no Isaac / GR00T), from the repo root:
+#   uv run odyssey run examples/quickstart-gr00t/isaac_eval_mission.yaml --use-mock-runner
+#
+# Real run (needs an Isaac Lab install + a running GR00T server):
+#   1. start the GR00T server (raw nested obs — NOT a sim-policy wrapper):
+#        CUDA_VISIBLE_DEVICES= <gr00t-venv>/python -m gr00t.eval.run_gr00t_server \
+#          --model-path nvidia/GR00T-N1.7-3B \
+#          --embodiment-tag oxe_droid_relative_eef_relative_joint --device cpu --port 5555
+#   2. point the runner at your Isaac install + run from the repo root:
+#        ISAACLAB_PATH=~/IsaacLab \
+#          uv run odyssey run examples/quickstart-gr00t/isaac_eval_mission.yaml
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: gr00t-isaac-eval
+  description: GR00T N1.7 policy evaluated in Isaac Lab via Odyssey's subprocess runner.
+  tags: [quickstart, gr00t, nvidia, isaac-lab, odyssey17]
+
+objective: |
+  Orchestrate a GR00T policy evaluation in NVIDIA Isaac Lab through an Odyssey
+  mission: the isaac_lab eval task launches the GR00T eval recipe, which drives a
+  GR00T policy server in the Franka cube-stack visuomotor env and reports a
+  success rate over the ODYSSEY_* protocol.
+
+acceptance_criteria: |
+  Mission completes; the isaac_lab eval runs GR00T-in-the-loop episodes against
+  the cube-stack visuomotor env and reports success_rate + performance_score.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: provision-pilot-checkpoint
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    config:
+      runner: cpu_mock   # stub: yields a PILOT checkpoint for the eval's resolution
+
+  - name: gr00t-isaac-eval
+    kind: evaluation
+    evaluation_type: isaac_lab
+    benchmark_name: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    num_episodes: 1   # one episode ~12 min zero-shot on CPU; bump for a real sweep
+    config:
+      # The blessed GR00T eval recipe (relative to the repo root; the runner also
+      # honours $ISAACLAB_EVAL_SCRIPT). Forwarded keys below pass through verbatim.
+      eval_script: scripts/eval/gr00t_isaac_eval.py
+      host: 127.0.0.1
+      port: 5555
+      instruction: "stack the red cube on the green cube"
+      pos_scale: 0.05   # raw GR00T eef deltas are large; scale into the IK-rel action
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false
