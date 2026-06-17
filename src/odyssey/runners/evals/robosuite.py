@@ -261,6 +261,16 @@ class RobosuiteRunner(Runner):
                 first_image = _extract_image(obs, image_key)
                 plan = runtime.begin_episode(task_instruction, first_image)
                 logger.info("Episode %d plan: %s", ep, plan)
+                # Surface the plan in telemetry too — the CLI runs at the root
+                # WARNING level, so the INFO line above is invisible. A 1-phase
+                # plan means the SPECIALIST fell back to single-step.
+                await context.emit_progress(
+                    "executing",
+                    step="episode_plan",
+                    step_index=ep,
+                    step_total=num_episodes,
+                    step_label=f"episode {ep}: {len(plan)} phase(s): {plan}",
+                )
 
             for _step in range(self._max_steps):
                 if context.cancelled():
