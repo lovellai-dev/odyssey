@@ -114,24 +114,23 @@ one's checkpoint. The evaluation task takes no model reference at all:
 it runs the robot — that is, it composes the current checkpoints of
 every agent in the loadout.
 
-**Today, Odyssey fine-tunes the underlying model for one of the
-robot's agents at a time.** v0.0.x enforces exactly one agent on the
-robot (the implicit PILOT), and the eval composes a single policy from
-that single agent. Multi-agent loadouts (PILOT + one or more
-SPECIALISTs) and the multi-agent execution that goes with them ship
-when the multi-agent runtime lands. What v0.0.x does *not* model from
-the brain paper — agent persona / goals / success criteria,
-materialized artifacts that condition runtime behavior, the
-deterministic safety stack, conduct-rule enforcement, the deployment
-contract — is on the roadmap. Where each of those ultimately lives
-(in `src/odyssey/` versus in a hosted Lovell service) is a strategic
-decision still being worked out.
+**Training fine-tunes one agent at a time; evaluation composes the whole
+loadout.** A robot carries one PILOT plus zero or more SPECIALISTs (up to four
+agents total). Each training task updates a single `agent_id` — today only the
+PILOT is trained — and the eval then runs the robot: the trained PILOT executes
+actions while a SPECIALIST planner guides it (see "Multi-agent evaluation"
+below). What Odyssey does *not* yet model from the brain paper — agent persona /
+goals / success criteria, materialized artifacts that condition runtime
+behavior, the deterministic safety stack, conduct-rule enforcement, the
+deployment contract — is on the roadmap. Where each of those ultimately lives
+(in `src/odyssey/` versus in a hosted Lovell service) is a strategic decision
+still being worked out.
 
 ### Robot specs in v0.0.x
 
 The `robot:` block names a robot's embodiment in one of three forms.
 The spec validator enforces that exactly one embodiment form is set
-and that `agents` contains exactly one agent.
+and that `agents` holds one to four agents, including at least one PILOT.
 
 | Form | Example | What it does today |
 |---|---|---|
@@ -145,7 +144,7 @@ the named robot, not its per-env default). The embodiment is what
 categorizes leaderboard submissions when the leaderboard backend ships
 — a Franka Panda result and a Sawyer result are different categories.
 Multi-agent comparison — same loadout, different model checkpoint in
-one agent — will become possible when the agent cap lifts.
+one agent — is possible now that a loadout can hold a PILOT plus SPECIALISTs.
 
 ## Install
 
@@ -337,11 +336,12 @@ with hardware, disk, and network — so treat these as orientation, not promises
 If a stage seems stuck, it is almost always a download in progress or a
 dataset-path / W&B-config issue rather than a training bug — check those first.
 
-**Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
-the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
-adapter. Real eval numbers require supplying a `policy_factory` to
-`RobosuiteRunner` — see the docstring in `src/odyssey/runners/evals/robosuite.py`.
-The built-in adapter is a v0.2.x line item.
+**Evaluation status:** the Robosuite runner auto-wires an
+OpenVLA→robosuite-action adapter (`make_openvla_policy` in
+`runners/models/openvla.py`) when no custom `policy_factory` is injected — it
+loads either a LoRA adapter or a full merged checkpoint, so eval works without
+extra glue. Full episode-completion validation on a real GPU is still in
+progress.
 
 ## Multi-agent evaluation (PILOT + SPECIALIST)
 
@@ -384,17 +384,22 @@ subprocess protocol (the planner runs once per episode, off the per-step hot loo
      -c constraints/specialist-known-good.txt
    ```
 
-2. Point Odyssey at it (per-shell, like other env config):
+2. Point Odyssey at that venv's python. It is read per-process from the
+   environment, so export it in every shell that runs a mission — or add it to
+   your shell profile / VM startup script so it persists:
 
    ```bash
    export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
    ```
 
-The planner is launched in that venv (`RemotePlanner` →
-`python -m odyssey.runners.agents.planner_server`). `ODYSSEY_SPECIALIST_PYTHON`
-is **required** whenever a mission has a SPECIALIST — if it is unset, multi-agent
-eval fails fast with a clear error (the multimodal planner cannot load in the
-main venv). Quick check without a simulator:
+> **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**
+> The planner is launched in that venv (`RemotePlanner` →
+> `python -m odyssey.runners.agents.planner_server`). If it is unset, multi-agent
+> eval fails fast with a clear `RuntimeError`: the multimodal Gemma 4 planner
+> cannot load in the main venv, which pins `transformers==4.40.1` for OpenVLA.
+
+Quick check without a simulator (launches the planner in the specialist venv and
+prints a decomposition — no OpenVLA or simulator needed):
 
 ```bash
 python tests/manual/smoke_remote_planner.py
@@ -455,8 +460,9 @@ src/odyssey/
 | In-memory + SQLite persistence | ✓ | — |
 | Provider ABCs + Local + HF | ✓ | OXE, Lovell-mode |
 | CPU mock runner | ✓ | — |
-| OpenVLA training runner | skeleton + tests | end-to-end smoke with real OpenVLA |
-| Robosuite eval runner | skeleton + tests | built-in OpenVLA→action adapter |
+| OpenVLA training runner | ✓ (validated on L4) | — |
+| Robosuite eval runner | ✓ (auto-wired OpenVLA adapter) | full GPU end-to-end validation |
+| Multi-agent eval (PILOT + SPECIALIST) | ✓ (out-of-process Gemma 4 planner) | full GPU end-to-end validation |
 | `odyssey init / run / list / status / validate` | ✓ | `logs`, `publish` |
 | Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha |
 
