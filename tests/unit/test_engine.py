@@ -365,7 +365,7 @@ async def test_eval_context_receives_all_agents_and_checkpoints() -> None:
                     id="task-planner",
                     role=AgentRole.SPECIALIST,
                     model=HFModelRef(
-                        base="google/gemma-2b-it", quantization="int4"
+                        base="google/gemma-4-E2B-it", quantization="int4"
                     ),
                 ),
             ],

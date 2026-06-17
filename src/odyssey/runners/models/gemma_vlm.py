@@ -1,17 +1,17 @@
 """Gemma 4 multimodal (vision-language) text generation loader.
 
-Loads a multimodal Gemma 4 checkpoint (``google/gemma-4-E4B-it`` and
-friends) and exposes ``generate(messages, image=None) -> str``. Unlike
-``GemmaTextGenerator`` (text-only, ``AutoModelForCausalLM`` +
-``AutoTokenizer``), Gemma 4 vision-language models load through
-``AutoModelForMultimodalLM`` + ``AutoProcessor`` and consume chat messages
-whose ``content`` is a list of typed blocks (image / text).
+Loads a multimodal Gemma 4 checkpoint (``google/gemma-4-E2B-it`` /
+``E4B-it``) and exposes ``generate(messages, image=None) -> str``. Gemma 4
+vision-language models load through ``AutoModelForMultimodalLM`` +
+``AutoProcessor`` (rather than the text-only ``AutoModelForCausalLM`` +
+``AutoTokenizer``) and consume chat messages whose ``content`` is a list of
+typed blocks (image / text). This is the only SPECIALIST planner loader.
 
 We use Gemma 4 (Apache-2.0, no gated license) rather than Gemma 3: Gemma 3
 4B produces NaN logits under int4 bitsandbytes on this stack (verified for
 both eager and sdpa attention, text-only and with-image), so it cannot run
-quantized here. Gemma 4 E4B-it loads cleanly in int4 and grounds plans in
-the scene image.
+quantized here. Gemma 4 loads cleanly in int4 and grounds plans in the scene
+image.
 
 Only viable **out of process** (in the specialist venv): Gemma 4 needs a
 modern ``transformers`` (plus ``torchvision`` for its image processor),
@@ -138,8 +138,8 @@ class GemmaVLMGenerator:
         load_kwargs: dict[str, Any] = {}
         if quant_config is not None:
             # bitsandbytes 4-bit: let the quantization config own dtype/placement.
-            # Mirrors GemmaTextGenerator — passing torch_dtype alongside device_map
-            # makes transformers call model.to(), which bnb forbids for 4-bit.
+            # Passing torch_dtype alongside device_map makes transformers call
+            # model.to(), which bnb forbids for 4-bit.
             load_kwargs["quantization_config"] = quant_config
             # Force the whole model onto GPU 0 instead of device_map="auto".
             # When the PILOT already occupies most of the shared GPU, "auto"

@@ -1,8 +1,8 @@
-# Dependency set for the out-of-process SPECIALIST venv (advanced Gemma planner).
+# Dependency set for the out-of-process SPECIALIST venv (multimodal Gemma 4 planner).
 #
-# This is a SEPARATE venv from the main/OpenVLA one. A modern transformers here
-# lets the planner run an advanced Gemma, free of OpenVLA's pinned
-# transformers==4.40.1 (which stays in the main venv via
+# This is a SEPARATE venv from the main/OpenVLA one. A modern transformers +
+# torchvision here lets the planner run the multimodal Gemma 4 planner, free of
+# OpenVLA's pinned transformers==4.40.1 (which stays in the main venv via
 # constraints/openvla-known-good.txt).
 #
 # Set up the specialist venv:

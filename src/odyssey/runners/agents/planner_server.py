@@ -1,9 +1,9 @@
 """Out-of-process SPECIALIST planner server.
 
-Runs in the *specialist* venv — a modern ``transformers`` that can host an
-advanced Gemma (2/3), free of the OpenVLA-pinned ``transformers==4.40.1`` that
-constrains the main venv. Loads the planner once, then answers planning
-requests over a JSON-lines stdin/stdout protocol:
+Runs in the *specialist* venv — a modern ``transformers`` + ``torchvision``
+that can host the multimodal Gemma 4 planner, free of the OpenVLA-pinned
+``transformers==4.40.1`` that constrains the main venv. Loads the planner once,
+then answers planning requests over a JSON-lines stdin/stdout protocol:
 
     <- {"ready": true}                       (once, after the model loads)
     -> {"instruction": "pick up the cube"}   (one request per line, on stdin)
@@ -16,14 +16,14 @@ requests over a JSON-lines stdin/stdout protocol:
 stderr so it never corrupts the channel; the client (``RemotePlanner``) also
 skips any non-JSON stdout line defensively.
 
-The planner logic is reused verbatim from the in-process path:
-``LLMPlanner`` (``agents/planner.py``) + ``GemmaTextGenerator``
-(``models/gemma.py``). Heavy imports are deferred into ``main()`` so this
-module imports cheaply for unit-testing ``serve()``.
+The planner logic reuses ``LLMPlanner`` (``agents/planner.py``) on top of the
+multimodal ``GemmaVLMGenerator`` (``models/gemma_vlm.py``). Heavy imports are
+deferred into ``main()`` so this module imports cheaply for unit-testing
+``serve()``.
 
 Usage (normally launched by ``RemotePlanner``, not by hand):
     python -m odyssey.runners.agents.planner_server \
-        --model google/gemma-4-E4B-it --quantization int4 --multimodal
+        --model google/gemma-4-E2B-it --quantization int4
 """
 
 from __future__ import annotations
@@ -98,11 +98,6 @@ def main() -> None:
     parser.add_argument("--model", required=True, help="HF id of the SPECIALIST model")
     parser.add_argument("--quantization", default=None, help="e.g. int4 (or omit)")
     parser.add_argument("--max-new-tokens", type=int, default=256)
-    parser.add_argument(
-        "--multimodal",
-        action="store_true",
-        help="Host a vision-language Gemma 3 (GemmaVLMGenerator) instead of text-only.",
-    )
     args = parser.parse_args()
 
     # Keep stdout clean for the protocol: route any model-loading prints to
@@ -111,24 +106,13 @@ def main() -> None:
     sys.stdout = sys.stderr
     try:
         from odyssey.runners.agents.planner import LLMPlanner
+        from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 
-        generator: Any
-        if args.multimodal:
-            from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
-
-            generator = GemmaVLMGenerator(
-                args.model,
-                quantization=args.quantization,
-                max_new_tokens=args.max_new_tokens,
-            )
-        else:
-            from odyssey.runners.models.gemma import GemmaTextGenerator
-
-            generator = GemmaTextGenerator(
-                args.model,
-                quantization=args.quantization,
-                max_new_tokens=args.max_new_tokens,
-            )
+        generator = GemmaVLMGenerator(
+            args.model,
+            quantization=args.quantization,
+            max_new_tokens=args.max_new_tokens,
+        )
         planner: PlannerRuntime = LLMPlanner(generator)
     except BaseException as e:
         sys.stdout = real_stdout

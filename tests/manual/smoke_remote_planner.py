@@ -33,14 +33,6 @@ def main() -> None:
     parser.add_argument("instruction", nargs="?", default="pick up the red cube")
     parser.add_argument("--model", default="google/gemma-4-E4B-it")
     parser.add_argument("--quantization", default="int4")
-    parser.add_argument(
-        "--multimodal",
-        action="store_true",
-        help="Launch the vision-language server (GemmaVLMGenerator). Required "
-        "for Gemma 4 — the text path uses AutoModelForCausalLM, which doesn't "
-        "fit the multimodal E-models. (This smoke sends no image, so the VLM "
-        "just runs text-only here; the mission exercises the image path.)",
-    )
     args = parser.parse_args()
 
     specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
@@ -58,12 +50,11 @@ def main() -> None:
     from odyssey.runners.agents.remote_planner import RemotePlanner
 
     print(f"\n=== Launching SPECIALIST out-of-process: {args.model} "
-          f"(multimodal={args.multimodal}) via {specialist_python} ===", flush=True)
+          f"via {specialist_python} ===", flush=True)
     planner = RemotePlanner(
         args.model,
         args.quantization,
         python_path=specialist_python,
-        multimodal=args.multimodal,
     )
     try:
         print(f"\n=== Decomposing: {args.instruction!r} ===", flush=True)

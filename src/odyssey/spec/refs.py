@@ -26,11 +26,13 @@ class HFModelRef(BaseModel):
     base: str
     revision: str | None = None
     quantization: str | None = None
-    # "text" (default) loads via the text-only path (AutoModelForCausalLM);
-    # "multimodal" selects the vision-language loader (GemmaVLMGenerator,
-    # AutoModelForMultimodalLM) so a SPECIALIST planner can ground its plan in
-    # the scene image.
-    modality: Literal["text", "multimodal"] = "text"
+    # Governs which loader a SPECIALIST planner uses. "multimodal" (default)
+    # selects the vision-language loader (GemmaVLMGenerator,
+    # AutoModelForMultimodalLM) so the planner can ground its plan in the scene
+    # image. "text" is retained for forward compatibility but is not currently
+    # wired to a loader — the only shipped SPECIALIST is the multimodal Gemma 4
+    # planner. Ignored for PILOT / training model refs.
+    modality: Literal["text", "multimodal"] = "multimodal"
 
 
 class LovellModelRef(BaseModel):

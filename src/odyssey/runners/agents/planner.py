@@ -3,7 +3,7 @@
 Takes any ``TextGenerator`` (the model-layer interface defined in
 ``runtime.py``) and uses it to decompose a high-level task instruction
 into ordered sub-instructions. The model loading lives in
-``runners/models/`` (e.g. ``GemmaTextGenerator``) — this module only
+``runners/models/`` (e.g. ``GemmaVLMGenerator``) — this module only
 handles the planning prompt and output parsing.
 
 Satisfies ``PlannerRuntime`` protocol.
@@ -60,7 +60,7 @@ class LLMPlanner:
     Parameters
     ----------
     generator:
-        Any ``TextGenerator`` implementation (e.g. ``GemmaTextGenerator``).
+        Any ``TextGenerator`` implementation (e.g. ``GemmaVLMGenerator``).
         The planner doesn't care which model is behind it.
     """
 

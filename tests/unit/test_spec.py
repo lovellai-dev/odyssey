@@ -194,7 +194,7 @@ def test_robotspec_accepts_pilot_plus_specialist() -> None:
     specialist = AgentSpec(
         id="task-planner",
         role=AgentRole.SPECIALIST,
-        model=HFModelRef(base="google/gemma-2b-it", quantization="int4"),
+        model=HFModelRef(base="google/gemma-4-E2B-it", quantization="int4"),
     )
     robot = RobotSpec(
         embodiment="franka_panda",
@@ -209,7 +209,7 @@ def test_robotspec_rejects_loadout_without_pilot() -> None:
     specialist = AgentSpec(
         id="planner",
         role=AgentRole.SPECIALIST,
-        model=HFModelRef(base="google/gemma-2b-it"),
+        model=HFModelRef(base="google/gemma-4-E2B-it"),
     )
     with pytest.raises(ValidationError, match="at least one PILOT"):
         RobotSpec(embodiment="franka_panda", agents=[specialist])
@@ -249,7 +249,7 @@ def test_training_specialist_rejected() -> None:
     specialist = AgentSpec(
         id="task-planner",
         role=AgentRole.SPECIALIST,
-        model=HFModelRef(base="google/gemma-2b-it"),
+        model=HFModelRef(base="google/gemma-4-E2B-it"),
     )
     robot = RobotSpec(
         embodiment="franka_panda",
@@ -267,7 +267,7 @@ def test_training_pilot_with_specialist_present_accepted() -> None:
     specialist = AgentSpec(
         id="task-planner",
         role=AgentRole.SPECIALIST,
-        model=HFModelRef(base="google/gemma-2b-it"),
+        model=HFModelRef(base="google/gemma-4-E2B-it"),
     )
     robot = RobotSpec(
         embodiment="franka_panda",
@@ -285,7 +285,7 @@ def test_training_pilot_with_specialist_present_accepted() -> None:
 # ---------------------------------------------------------------------------
 
 def test_hfmodelref_accepts_quantization() -> None:
-    ref = HFModelRef(base="google/gemma-2b-it", quantization="int4")
+    ref = HFModelRef(base="google/gemma-4-E2B-it", quantization="int4")
     assert ref.quantization == "int4"
 
 

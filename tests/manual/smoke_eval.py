@@ -13,17 +13,15 @@ done, falling back to ``reward > 0``).
 
 Requirements:
   * robosuite + MuJoCo (headless: ``export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl``)
-  * ~15.5 GB VRAM (OpenVLA bf16 ~14 GB + Gemma int4 ~1.5 GB)
-  * HF auth (both models are gated)
+  * ~19 GB VRAM (OpenVLA bf16 ~14 GB + Gemma 4 E2B-it int4 ~5 GB)
+  * HF auth for the gated OpenVLA pilot (Gemma 4 is Apache-2.0, ungated)
+  * The out-of-process SPECIALIST venv (Gemma 4 can't load in this venv).
 
-Usage (odyssey repo root, venv active):
+Usage (odyssey repo root, MAIN venv active):
+    # The SPECIALIST runs out-of-process; the PILOT stays in this venv:
+    export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
     python tests/manual/smoke_eval.py
     python tests/manual/smoke_eval.py --benchmark Lift --episodes 2 --max-steps 150
-
-    # Out-of-process SPECIALIST (advanced Gemma in a separate venv) — same gate
-    # as the real runner. The PILOT stays in this venv; only the planner moves out:
-    export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
-    python tests/manual/smoke_eval.py --specialist-model google/gemma-4-E4B-it
 """
 
 from __future__ import annotations
@@ -49,46 +47,41 @@ def main() -> None:
     parser.add_argument("--unnorm-key", default="bridge_orig")
     parser.add_argument(
         "--specialist-model",
-        default="google/gemma-2b-it",
-        help="SPECIALIST (planner) model. Use an advanced Gemma (e.g. "
-        "google/gemma-4-E4B-it) together with ODYSSEY_SPECIALIST_PYTHON.",
+        default="google/gemma-4-E2B-it",
+        help="SPECIALIST (planner) model — a multimodal Gemma 4. Runs "
+        "out-of-process via ODYSSEY_SPECIALIST_PYTHON.",
     )
     args = parser.parse_args()
 
     # engine-first import to dodge the pre-existing engine<->runners cycle
     import odyssey.engine  # noqa: F401
     from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
-    from odyssey.runners.agents.planner import LLMPlanner
-    from odyssey.runners.agents.runtime import PlannerRuntime
     from odyssey.runners.evals.robosuite import _make_eval_env
-    from odyssey.runners.models.gemma import GemmaTextGenerator
     from odyssey.runners.models.openvla import _DEFAULT_INSTRUCTIONS, VLARuntime
 
     instruction = _DEFAULT_INSTRUCTIONS.get(args.benchmark, "complete the task")
 
-    # Same gate as the real runner (_build_planned_runtime): out-of-process
-    # SPECIALIST when ODYSSEY_SPECIALIST_PYTHON is set, else in-process.
+    # Same gate as the real runner (_build_planned_runtime): the SPECIALIST runs
+    # out-of-process, so ODYSSEY_SPECIALIST_PYTHON must point at the specialist venv.
     specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
-    planner: PlannerRuntime
-    if specialist_python:
-        from odyssey.runners.agents.remote_planner import RemotePlanner
+    if not specialist_python:
+        print(
+            "ERROR: set ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python, e.g.\n"
+            "  export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python",
+            flush=True,
+        )
+        raise SystemExit(2)
 
-        print(
-            f"\n=== SPECIALIST out-of-process: {args.specialist_model} via "
-            f"{specialist_python} ===",
-            flush=True,
-        )
-        planner = RemotePlanner(
-            args.specialist_model, "int4", python_path=specialist_python
-        )
-    else:
-        print(
-            f"\n=== SPECIALIST in-process: {args.specialist_model} (int4) ===",
-            flush=True,
-        )
-        planner = LLMPlanner(
-            GemmaTextGenerator(args.specialist_model, quantization="int4")
-        )
+    from odyssey.runners.agents.remote_planner import RemotePlanner
+
+    print(
+        f"\n=== SPECIALIST out-of-process: {args.specialist_model} via "
+        f"{specialist_python} ===",
+        flush=True,
+    )
+    planner = RemotePlanner(
+        args.specialist_model, "int4", python_path=specialist_python
+    )
 
     print(f"\n=== Loading PILOT: {args.pilot} ===", flush=True)
     pilot = VLARuntime(args.pilot, unnorm_key=args.unnorm_key)

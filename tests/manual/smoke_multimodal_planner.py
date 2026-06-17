@@ -38,13 +38,13 @@ def _demo_image() -> object:
 def main() -> None:
     instruction = sys.argv[1] if len(sys.argv) > 1 else "pick up the red cube"
 
-    # Import engine first to break the engine<->runners circular import (see
-    # smoke_planner.py for the full explanation).
+    # Import engine first to break the engine<->runners circular import
+    # (importing anything under odyssey.runners triggers the cycle).
     import odyssey.engine  # noqa: F401
     from odyssey.runners.agents.planner import LLMPlanner
     from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 
-    # E2B-it to match mission-multimodal.yaml (one planner model to cache; fits
+    # E2B-it to match the example mission.yaml (one planner model to cache; fits
     # alongside the pilot). Pass a different id below to try E4B standalone.
     print("\n=== Loading SPECIALIST: google/gemma-4-E2B-it (int4, multimodal) ===", flush=True)
     generator = GemmaVLMGenerator("google/gemma-4-E2B-it", quantization="int4")

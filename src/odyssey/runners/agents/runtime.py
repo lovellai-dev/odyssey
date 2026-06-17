@@ -27,7 +27,7 @@ class TextGenerator(Protocol):
     """Generates text from chat messages.
 
     This is the model-layer interface. Implementations live in
-    ``runners/models/`` (e.g. ``GemmaTextGenerator``). The planning
+    ``runners/models/`` (e.g. ``GemmaVLMGenerator``). The planning
     logic in ``runners/agents/planner.py`` consumes this protocol,
     so swapping the underlying model doesn't touch the planner.
 

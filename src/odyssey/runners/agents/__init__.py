@@ -9,7 +9,7 @@ Implementations:
   * ``LLMPlanner`` — planning logic, takes any TextGenerator
   * ``PlannedEvalRuntime`` — composes planner + pilot with phase transitions
 
-Model loading (``VLARuntime``, ``GemmaTextGenerator``) lives in
+Model loading (``VLARuntime``, ``GemmaVLMGenerator``) lives in
 ``runners/models/``.
 """
 

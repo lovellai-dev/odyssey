@@ -222,8 +222,8 @@ license on its HuggingFace page, then authenticate on the machine before the
 first run, or the download fails with `401/403`:
 
 - [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
-- [`google/gemma-2b-it`](https://huggingface.co/google/gemma-2b-it) — the
-  SPECIALIST in the multi-agent example (accept Google's Gemma license)
+- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the
+  SPECIALIST in the multi-agent example (Apache-2.0, no gating)
 
 ```bash
 huggingface-cli login          # paste a token from https://huggingface.co/settings/tokens
@@ -348,6 +348,9 @@ The built-in adapter is a v0.2.x line item.
 A mission with a **SPECIALIST** agent (a task planner) in addition to the
 **PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
 the instruction into sub-steps once per episode, and the PILOT executes each.
+Only the PILOT produces actions and only the PILOT is trained — the SPECIALIST
+is **inference-only** (it runs its base checkpoint to plan and has no training
+task).
 
 ```yaml
 robot:
@@ -357,21 +360,23 @@ robot:
       model: { source: huggingface, base: openvla/openvla-7b }
     - id: task-planner
       role: SPECIALIST
-      model: { source: huggingface, base: google/gemma-2b-it, quantization: int4 }
+      model:
+        source: huggingface
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal
 ```
 
-By default the SPECIALIST loads **in the same process** as the PILOT. Because
-OpenVLA pins `transformers==4.40.1`, that limits the planner to **Gemma 1**
-(`gemma-2b-it`) — the only family compatible with that version.
+The SPECIALIST is a **vision-grounded multimodal Gemma 4** planner: it sees the
+first camera frame of each episode and grounds its plan in the scene. Gemma 4
+needs a modern `transformers` + `torchvision`, which conflicts with OpenVLA's
+pinned `transformers==4.40.1`, so the SPECIALIST **must run out of process** in a
+separate venv. The PILOT stays in the main venv; the two talk over a JSON-lines
+subprocess protocol (the planner runs once per episode, off the per-step hot loop).
 
-### Running an advanced Gemma (out-of-process SPECIALIST)
+### Setting up the out-of-process SPECIALIST
 
-To use a **more capable Gemma (2/3)**, run the planner in a **separate venv**
-with a modern `transformers`, free of OpenVLA's pin. The PILOT stays in the main
-venv; only the planner moves out. They talk over a JSON-lines subprocess protocol
-(the planner runs once per episode, off the per-step hot loop).
-
-1. Create the specialist venv (modern transformers + Gemma deps):
+1. Create the specialist venv (modern transformers + torchvision + Gemma deps):
 
    ```bash
    python -m venv ~/specialist-venv
@@ -385,27 +390,33 @@ venv; only the planner moves out. They talk over a JSON-lines subprocess protoco
    export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
    ```
 
-3. Set an advanced model on the SPECIALIST agent in your mission, e.g.
-   `base: google/gemma-3-4b-it`, and run the mission as usual.
-
-When `ODYSSEY_SPECIALIST_PYTHON` is set, the planner is launched in that venv
-(`RemotePlanner` → `python -m odyssey.runners.agents.planner_server`). When it is
-**unset**, behavior is unchanged (in-process Gemma 1). Quick check without a
-simulator:
+The planner is launched in that venv (`RemotePlanner` →
+`python -m odyssey.runners.agents.planner_server`). `ODYSSEY_SPECIALIST_PYTHON`
+is **required** whenever a mission has a SPECIALIST — if it is unset, multi-agent
+eval fails fast with a clear error (the multimodal planner cannot load in the
+main venv). Quick check without a simulator:
 
 ```bash
-python tests/manual/smoke_remote_planner.py   # plans "pick up the red cube"
+python tests/manual/smoke_remote_planner.py
 ```
 
+> **Why Gemma 4, not Gemma 3, for multimodal.** Gemma 3 4B emits **NaN logits
+> under int4 bitsandbytes** on this stack (verified across eager/sdpa attention,
+> text-only and with-image), so it can't run quantized here. Gemma 4 (Apache-2.0,
+> ungated) loads cleanly in int4 and grounds plans in the scene image.
+
 > **VRAM note.** Both models still share the GPU — the venv split solves the
-> *dependency* conflict, not VRAM. Gemma 3 4B int4 (~3 GB) + OpenVLA (14 GB)
-> fits comfortably on a 24 GB L4; 12B int4 (~8 GB) is tight. The planner can also
-> be run on CPU or a second GPU (it's once-per-episode).
+> *dependency* conflict, not VRAM. The SPECIALIST is pinned to **GPU 0**
+> (`device_map={"": 0}`) so bitsandbytes never silently offloads layers to CPU.
+> Gemma 4 **E4B-it** int4 (~9.3 GB) alongside bf16 OpenVLA (~14 GB) peaks at
+> ~23 GB — tight on a 24 GB L4; drop to **E2B-it** for headroom (this is what the
+> multimodal example mission uses).
 
 > **Two known-good stacks.** The main venv pins OpenVLA's stack
 > (`constraints/openvla-known-good.txt`: torch 2.2.0, transformers 4.40.1); the
-> specialist venv pins a modern one (`constraints/specialist-known-good.txt`).
-> They no longer need to be mutually compatible.
+> specialist venv pins a modern one with torchvision
+> (`constraints/specialist-known-good.txt`). They no longer need to be mutually
+> compatible.
 
 ## CLI reference
 

@@ -8,7 +8,6 @@ from odyssey.runners.models.openvla import (
 )
 
 __all__ = [
-    "GemmaTextGenerator",
     "GemmaVLMGenerator",
     "OpenVLARunner",
     "VLARuntime",
@@ -20,10 +19,6 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     """Lazy-import heavy implementations to avoid pulling in torch at import."""
-    if name == "GemmaTextGenerator":
-        from odyssey.runners.models.gemma import GemmaTextGenerator
-
-        return GemmaTextGenerator
     if name == "GemmaVLMGenerator":
         from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 

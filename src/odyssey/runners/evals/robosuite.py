@@ -407,8 +407,8 @@ def _has_specialist(context: TaskContext) -> bool:
     return False
 
 
-def _find_specialist_model(context: TaskContext) -> tuple[str, str | None, bool]:
-    """Return ``(model_base, quantization, multimodal)`` for the first SPECIALIST."""
+def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
+    """Return ``(model_base, quantization)`` for the first SPECIALIST."""
     from odyssey.spec.agents import AgentRole
     from odyssey.spec.refs import HFModelRef
 
@@ -420,7 +420,7 @@ def _find_specialist_model(context: TaskContext) -> tuple[str, str | None, bool]
                     f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
                     "Only HuggingFace models are supported for SPECIALIST inference."
                 )
-            return model.base, model.quantization, model.modality == "multimodal"
+            return model.base, model.quantization
     raise ValueError("No SPECIALIST agent found in the loadout")
 
 
@@ -452,14 +452,15 @@ def _build_planned_runtime(
 ) -> Any:
     """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST.
 
-    The SPECIALIST (planner) runs **out of process** when
-    ``ODYSSEY_SPECIALIST_PYTHON`` points at a separate venv's python — that
-    frees Gemma from OpenVLA's pinned ``transformers==4.40.1`` so an advanced
-    Gemma (2/3) can be used. Unset → the planner loads in-process as before
-    (Gemma 1), with no behavior change.
+    The SPECIALIST is a multimodal Gemma 4 task planner that runs **out of
+    process**: ``ODYSSEY_SPECIALIST_PYTHON`` must point at a separate venv's
+    python whose modern ``transformers`` + ``torchvision`` can host Gemma 4,
+    free of OpenVLA's pinned ``transformers==4.40.1`` in this venv. The
+    SPECIALIST is inference-only (it runs its base checkpoint to plan); only the
+    PILOT is trained.
     """
     from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
-    from odyssey.runners.agents.runtime import PlannerRuntime, TextGenerator
+    from odyssey.runners.agents.remote_planner import RemotePlanner
     from odyssey.runners.models.openvla import VLARuntime
 
     cfg = spec.config or {}
@@ -468,41 +469,27 @@ def _build_planned_runtime(
     # Load the PILOT as a VLARuntime (per-call instruction)
     pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
 
-    # Resolve the SPECIALIST model, then build the planner — out-of-process if
-    # a specialist venv is configured, else in-process (backward compatible).
-    model_base, quantization, multimodal = _find_specialist_model(context)
+    # The SPECIALIST planner runs out-of-process: Gemma 4 needs a modern
+    # transformers/torchvision incompatible with OpenVLA's pin in this venv.
+    model_base, quantization = _find_specialist_model(context)
     specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
-    planner: PlannerRuntime
-    if specialist_python:
-        from odyssey.runners.agents.remote_planner import RemotePlanner
-
-        logger.info(
-            "SPECIALIST out-of-process: model=%s multimodal=%s via %s",
-            model_base,
-            multimodal,
-            specialist_python,
+    if not specialist_python:
+        raise RuntimeError(
+            "Multi-agent eval requires the out-of-process SPECIALIST: set "
+            "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (see the "
+            "README 'Multi-agent evaluation' section). The multimodal Gemma 4 "
+            "planner cannot load in this venv, which pins transformers==4.40.1 "
+            "for OpenVLA."
         )
-        planner = RemotePlanner(
-            model_base,
-            quantization,
-            python_path=specialist_python,
-            multimodal=multimodal,
-        )
-    elif multimodal:
-        # Multimodal Gemma 3 needs transformers>=4.50, which conflicts with
-        # OpenVLA's 4.40.1 pin in this venv — it can only run out-of-process.
-        from odyssey.runners.agents.planner import LLMPlanner
-        from odyssey.runners.models.gemma_vlm import GemmaVLMGenerator
 
-        logger.info("SPECIALIST in-process multimodal: model=%s", model_base)
-        generator: TextGenerator = GemmaVLMGenerator(model_base, quantization=quantization)
-        planner = LLMPlanner(generator)
-    else:
-        from odyssey.runners.agents.planner import LLMPlanner
-        from odyssey.runners.models.gemma import GemmaTextGenerator
-
-        generator = GemmaTextGenerator(model_base, quantization=quantization)
-        planner = LLMPlanner(generator)
+    logger.info(
+        "SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python
+    )
+    planner = RemotePlanner(
+        model_base,
+        quantization,
+        python_path=specialist_python,
+    )
 
     # Phase config from mission config
     steps_per_phase = cfg.get("steps_per_phase", 50)

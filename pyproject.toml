@@ -65,10 +65,11 @@ openvla = [
     "pillow>=9.0",
 ]
 specialist = [
-    # Out-of-process SPECIALIST planner venv — a modern transformers so it can
-    # host an advanced Gemma (2/3), free of OpenVLA's pinned 4.40.1. Installed
-    # in a SEPARATE venv (see constraints/specialist-known-good.txt) and reached
-    # via ODYSSEY_SPECIALIST_PYTHON; never co-installed with the [openvla] extra.
+    # Out-of-process SPECIALIST planner venv — a modern transformers +
+    # torchvision so it can host the multimodal Gemma 4 planner, free of
+    # OpenVLA's pinned 4.40.1. Installed in a SEPARATE venv (see
+    # constraints/specialist-known-good.txt) and reached via
+    # ODYSSEY_SPECIALIST_PYTHON; never co-installed with the [openvla] extra.
     "transformers>=4.49",
     "accelerate>=0.30",
     "bitsandbytes>=0.43",

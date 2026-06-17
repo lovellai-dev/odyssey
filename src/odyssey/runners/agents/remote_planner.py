@@ -3,7 +3,8 @@
 Implements the ``PlannerRuntime`` protocol but, instead of loading Gemma in
 this process, launches ``planner_server`` in a *separate* venv/process. That
 frees the planner from OpenVLA's pinned ``transformers==4.40.1`` (which lives
-in this, the main, venv) so it can host an advanced Gemma (2/3).
+in this, the main, venv) so it can host the multimodal Gemma 4 planner (which
+needs a modern ``transformers`` + ``torchvision``).
 
 Communicates over the JSON-lines stdin/stdout protocol documented in
 ``planner_server``. The subprocess (and the model) starts lazily on the first
@@ -55,16 +56,14 @@ class RemotePlanner:
     Parameters
     ----------
     model_base:
-        HF id of the SPECIALIST model (e.g. ``google/gemma-4-E4B-it``).
+        HF id of the SPECIALIST model (e.g. ``google/gemma-4-E2B-it``). The
+        server hosts it via the multimodal ``GemmaVLMGenerator``; ``plan`` ships
+        the scene image alongside the instruction when one is provided.
     quantization:
         Quantization string passed through to the server (e.g. ``int4``) or None.
     python_path:
         Path to the *specialist* venv's python interpreter (from
         ``ODYSSEY_SPECIALIST_PYTHON``).
-    multimodal:
-        When True, launch the server with ``--multimodal`` so it hosts a
-        vision-language Gemma 3 (``GemmaVLMGenerator``) and ``plan`` ships
-        the scene image alongside the instruction.
     startup_timeout:
         Seconds to wait for ``{"ready": true}`` — the first run downloads the
         model, so this is generous.
@@ -81,7 +80,6 @@ class RemotePlanner:
         quantization: str | None = None,
         *,
         python_path: str,
-        multimodal: bool = False,
         startup_timeout: float = 600.0,
         request_timeout: float = 120.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
@@ -89,7 +87,6 @@ class RemotePlanner:
         self._model_base = model_base
         self._quantization = quantization
         self._python_path = python_path
-        self._multimodal = multimodal
         self._startup_timeout = startup_timeout
         self._request_timeout = request_timeout
         self._launch_args = list(launch_args)
@@ -108,8 +105,6 @@ class RemotePlanner:
         argv = [self._python_path, *self._launch_args, "--model", self._model_base]
         if self._quantization:
             argv += ["--quantization", self._quantization]
-        if self._multimodal:
-            argv += ["--multimodal"]
         logger.info("RemotePlanner: launching specialist server: %s", " ".join(argv))
         # stderr inherited -> model-loading logs stay visible in the terminal.
         # start_new_session -> own process group for clean teardown.

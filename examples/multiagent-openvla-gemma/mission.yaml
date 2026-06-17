@@ -1,12 +1,27 @@
-# Multi-agent mission: OpenVLA PILOT + Gemma 2B SPECIALIST task planner.
+# Multi-agent mission: OpenVLA PILOT + multimodal Gemma 4 SPECIALIST (out-of-process).
 #
-# The SPECIALIST (Gemma 2B int4) decomposes the task instruction into
-# sub-steps before each episode. The PILOT (OpenVLA 7B LoRA) executes
-# them sequentially. Only the PILOT is trained; the SPECIALIST uses its
-# base model for inference.
+# The SPECIALIST is a VISION-LANGUAGE Gemma 4 E2B-it task planner. It sees the
+# first camera frame of each episode and grounds its plan in the actual scene
+# (objects, positions) rather than planning blind from the instruction text
+# alone. The PILOT (OpenVLA) is the only agent that produces actions and the
+# only agent that is trained; the SPECIALIST is inference-only — it runs its
+# base checkpoint to plan and is never fine-tuned (it has no training task).
 #
-# Hardware: 24 GB GPU (L4, RTX 4090 class).
-# Peak VRAM: ~15.5 GB (14 GB PILOT bf16 + 1.5 GB SPECIALIST int4).
+# REQUIRES the out-of-process setup (see README "Multi-agent evaluation"):
+#   python -m venv ~/specialist-venv
+#   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
+#   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+# Multimodal Gemma 4 needs a modern transformers + torchvision, incompatible
+# with OpenVLA's pinned transformers==4.40.1 in the main venv, so the SPECIALIST
+# can ONLY run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission
+# FAILS at eval with a clear error.
+#
+# Hardware: 24 GB GPU (L4). The SPECIALIST shares the GPU with the ~14 GB bf16
+# PILOT, so it must fit in the remaining headroom. E4B int4 (~9.3 GB) is too
+# tight in practice — it can't be placed and bitsandbytes rejects CPU offload
+# for 4-bit ("Some modules are dispatched on the CPU or the disk"). Use the
+# smaller E2B-it (~5 GB int4): ~14 + 5 = ~19 GB peak, comfortable. (E4B works
+# standalone, e.g. the smoke test, just not alongside the pilot.)
 
 odysseyVersion: "0.1"
 kind: Mission
@@ -14,17 +29,17 @@ kind: Mission
 metadata:
   name: multiagent-lift
   description: >
-    Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2,
-    with Gemma 2B int4 as a task planner. Evaluated on the Robosuite
-    Lift benchmark.
-  tags: [multiagent, openvla, gemma, robosuite]
+    Multi-agent evaluation — OpenVLA pilot fine-tuned on Bridge V2, with a
+    multimodal Gemma 4 task planner running out-of-process that grounds its
+    plan in the scene image. Evaluated on the Robosuite Lift benchmark.
+  tags: [multiagent, openvla, gemma, multimodal, robosuite, out-of-process]
 
 objective: |
-  Demonstrate that an OpenVLA pilot guided by a Gemma task planner
-  can successfully pick up a cube in simulation.
+  Demonstrate that an OpenVLA pilot guided by a vision-language (out-of-process)
+  Gemma 4 planner can pick up a cube in simulation.
 
 acceptance_criteria: |
-  At least one successful lift across 10 evaluation episodes.
+  At least one successful lift across the evaluation episodes.
 
 robot:
   embodiment: franka_panda
@@ -39,10 +54,16 @@ robot:
       role: SPECIALIST
       model:
         source: huggingface
-        # Gemma 1 (gemma-2b-it) — only family compatible with OpenVLA's
-        # transformers 4.40.1 pin. Gemma 2 needs 4.42+, Gemma 3 needs 4.49+.
-        base: google/gemma-2b-it
+        # Vision-language planner — runs in the specialist venv (modern
+        # transformers + torchvision), so it is NOT bound by OpenVLA's 4.40.1
+        # pin. Gemma 4 E2B-it is multimodal (Apache-2.0, no gated license), so
+        # it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
+        # AutoProcessor). The first episode frame is fed to the planner so the
+        # plan is grounded in the scene. E2B (not E4B) so it fits alongside the
+        # 14 GB pilot — see the hardware note above.
+        base: google/gemma-4-E2B-it
         quantization: int4
+        modality: multimodal
 
 tasks:
   - name: finetune-pilot

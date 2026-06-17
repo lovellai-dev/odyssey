@@ -219,16 +219,6 @@ def test_remote_planner_encodes_image_into_request(tmp_path: Path) -> None:
         planner.close()
 
 
-def test_remote_planner_multimodal_flag_appends_argv(tmp_path: Path) -> None:
-    planner = _planner_for(_FAKE_SERVER_ECHO_IMG, tmp_path, multimodal=True)
-    try:
-        # The fake server ignores --multimodal (argparse-free), but the flag
-        # must not break launch; roundtrip still works.
-        assert planner.plan("task") == ["image=False"]
-    finally:
-        planner.close()
-
-
 def test_remote_planner_falls_back_when_server_dies(tmp_path: Path) -> None:
     planner = _planner_for(_FAKE_SERVER_DIES, tmp_path)
     try:
