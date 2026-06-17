@@ -93,6 +93,29 @@ def test_argv_resolves_relative_local_dataset_against_repo(
     assert argv[idx + 1] == "/opt/isaac-gr00t/demo_data/cube_to_bowl_5"
 
 
+def test_argv_resolves_relative_modality_config_against_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # NEW_EMBODIMENT finetunes require a modality config file; a relative ref
+    # resolves against the Isaac-GR00T checkout, exactly like the dataset ref.
+    monkeypatch.setenv("ISAAC_GR00T_REPO_PATH", "/opt/isaac-gr00t")
+    task = _task(config={"modality_config_path": "examples/SO100/so100_config.py"})
+    argv = build_gr00t_argv(
+        task=task, agent_model_base=HF_BASE, output_dir=tmp_path
+    )
+    idx = argv.index("--modality-config-path")
+    assert argv[idx + 1] == "/opt/isaac-gr00t/examples/SO100/so100_config.py"
+
+
+def test_argv_passes_absolute_modality_config_unchanged(tmp_path: Path) -> None:
+    task = _task(config={"modality_config_path": "/abs/cfg.py"})
+    argv = build_gr00t_argv(
+        task=task, agent_model_base=HF_BASE, output_dir=tmp_path
+    )
+    idx = argv.index("--modality-config-path")
+    assert argv[idx + 1] == "/abs/cfg.py"
+
+
 def test_argv_passes_absolute_local_dataset_unchanged(tmp_path: Path) -> None:
     task = _task(
         dataset=DatasetRef(source=DatasetSource.LOCAL, ref="/data/my_episodes"),

@@ -171,9 +171,16 @@ def build_gr00t_argv(
     # Pass through remaining config keys as kebab-case flags. ``runner``
     # is the registry-override key, not an upstream flag.
     handled = {"base_model_path", "dataset_path", "runner"}
+    repo_path = os.getenv("ISAAC_GR00T_REPO_PATH", _DEFAULT_REPO_PATH)
     for key, value in _flatten_config(config):
         if key in handled:
             continue
+        # A relative ``modality_config_path`` resolves against the Isaac-GR00T
+        # checkout (same convention as the dataset ref). The NEW_EMBODIMENT tag
+        # *requires* a modality config file, so this lets a mission point at a
+        # repo-relative config (e.g. examples/SO100/so100_config.py) portably.
+        if key == "modality_config_path" and isinstance(value, str) and not os.path.isabs(value):
+            value = os.path.join(repo_path, value)
         argv += [f"--{key.replace('_', '-')}", str(value)]
     return argv
 
