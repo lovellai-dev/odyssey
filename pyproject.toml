@@ -134,6 +134,15 @@ module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "t
 ignore_missing_imports = true
 follow_imports = "skip"
 
+# The GR00T Isaac Lab eval recipe and its transforms are standalone scripts
+# launched under Isaac Sim's bundled Python (untyped numpy + the gr00t server
+# SDK that only exists in an Isaac-GR00T checkout). The IsaacLabRunner invokes
+# them by path as a subprocess — they're not part of the typed library surface,
+# so they're exempt from strict checking (same spirit as the untyped deps above).
+[[tool.mypy.overrides]]
+module = ["odyssey.runners.evals.gr00t_isaac_eval", "odyssey.runners.evals.gr00t_transforms"]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

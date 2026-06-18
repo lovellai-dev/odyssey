@@ -61,13 +61,18 @@ tasks:
   - name: eval-in-isaac-lab
     kind: evaluation
     evaluation_type: isaac_lab
-    benchmark_name: Isaac-Lift-Cube-Franka-v0
-    num_episodes: 10
-    # For a real run: set $ISAACLAB_PATH and point eval_script at a
-    # script speaking the ODYSSEY_* stdout protocol (see
-    # src/odyssey/runners/isaac_lab.py). Mock-run needs neither.
-    # config:
-    #   eval_script: /path/to/gr00t_isaaclab_eval.py
+    benchmark_name: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    num_episodes: 2
+    # Deploys the GR00T policy in Isaac Lab via the blessed eval recipe: the
+    # runner spawns it under $ISAACLAB_PATH and parses the ODYSSEY_* stdout
+    # protocol. Requires a GR00T policy server reachable at host:port and a
+    # visuomotor (camera) benchmark — see src/odyssey/runners/evals/gr00t_isaac_eval.py.
+    config:
+      eval_script: src/odyssey/runners/evals/gr00t_isaac_eval.py
+      host: 127.0.0.1
+      port: 5555
+      instruction: "stack the red cube on the green cube"
+      pos_scale: 0.05   # raw GR00T eef deltas are large; scale into the IK-rel action
 
 leaderboard:
   publish: false   # Backend not live yet.
