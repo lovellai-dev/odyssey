@@ -1,11 +1,10 @@
 """Agent definitions on a robot.
 
 In the Lovell architecture, a robot is an embodiment plus a loadout of
-agents (see the robot-brain paper). Each agent has an id, a role
-(PILOT or SPECIALIST), and an underlying model checkpoint. The brain
-paper describes the full agent shape — persona, goals, success
-criteria, materialized artifacts — that v0.0.x ``AgentSpec`` does not
-yet model.
+agents. Each agent has an id, a role (PILOT or SPECIALIST), and an
+underlying model checkpoint. Future versions will extend ``AgentSpec``
+with additional fields (persona, goals, success criteria, materialized
+artifacts).
 
 What v0.0.x ships: enough of the agent shape that training tasks can
 reference an agent and the framework can look up that agent's starting

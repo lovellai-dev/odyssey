@@ -44,6 +44,8 @@ to ``ctx.emit_progress(**kwargs)``, or ``None`` to skip emitting.
 class TrainingProcessSpec:
     """How to launch a specific family's training subprocess.
 
+    Also used by subprocess-shaped evaluation runners (Isaac Lab).
+
     Exactly one of ``entry_module`` or ``script_path`` must be set:
       * ``entry_module`` invokes ``python -m <module>`` (suitable for
         packages like ``gr00t.experiment.launch_train`` or
@@ -62,12 +64,28 @@ class TrainingProcessSpec:
     sigterm_grace_seconds: float = 30.0
     use_torchrun: bool = False
     torchrun_nproc: int = 1
+    # Optional command prefix replacing the default ``python`` for
+    # ``script_path`` invocations — e.g. ["/path/isaaclab.sh", "-p"] so the
+    # script runs under Isaac Sim's bundled interpreter. Not valid with
+    # ``entry_module`` (the ``-m`` form assumes a python launcher), and
+    # mutually exclusive with ``use_torchrun`` (both define the prefix).
+    launcher: list[str] | None = None
 
     def __post_init__(self) -> None:
         if (self.entry_module is None) == (self.script_path is None):
             raise ValueError(
                 "TrainingProcessSpec requires exactly one of "
                 "entry_module or script_path"
+            )
+        if self.launcher is not None and self.entry_module is not None:
+            raise ValueError(
+                "TrainingProcessSpec.launcher only applies to script_path "
+                "invocations"
+            )
+        if self.launcher is not None and self.use_torchrun:
+            raise ValueError(
+                "TrainingProcessSpec.launcher and use_torchrun are mutually "
+                "exclusive — both define the command prefix"
             )
 
 
@@ -81,7 +99,9 @@ async def run_training_subprocess(
     responsible for building ``argv_extra``, picking the entry, and
     post-processing the resulting output directory.
     """
-    if spec.use_torchrun:
+    if spec.launcher is not None:
+        launcher = spec.launcher
+    elif spec.use_torchrun:
         launcher = [
             "torchrun",
             "--standalone",

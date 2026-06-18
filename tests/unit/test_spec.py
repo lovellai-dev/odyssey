@@ -30,6 +30,7 @@ from odyssey.spec.loader import LoadError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
+EXAMPLE_MISSION_GR00T = REPO_ROOT / "examples" / "quickstart-gr00t" / "mission.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,26 @@ def test_shipped_example_loads() -> None:
     assert sum(1 for t in mission.tasks if t.kind == "training") == 1
     assert sum(1 for t in mission.tasks if t.kind == "evaluation") == 1
     assert mission.robot.agents[0].id == "pilot"
+
+
+def test_shipped_gr00t_example_loads() -> None:
+    """The GR00T quickstart YAML must always be a valid spec.
+
+    Pins the shapes the v0.2.x GR00T training runner and Isaac Lab
+    eval runner will execute — if the spec moves, this example (and
+    the Command Center import conformance pin) must move with it.
+    """
+    mission = load_mission(EXAMPLE_MISSION_GR00T)
+    assert mission.metadata.name == "gr00t-cube-to-bowl"
+    assert mission.robot.agents[0].model.base == "nvidia/GR00T-N1.7-3B"
+    training = [t for t in mission.tasks if t.kind == "training"]
+    evaluation = [t for t in mission.tasks if t.kind == "evaluation"]
+    assert len(training) == 1 and len(evaluation) == 1
+    assert training[0].dataset is not None
+    assert training[0].dataset.format is not None
+    assert training[0].dataset.format.value == "lerobot"
+    assert evaluation[0].evaluation_type.value == "isaac_lab"
+    assert evaluation[0].benchmark_name == "Isaac-Lift-Cube-Franka-v0"
 
 
 # ---------------------------------------------------------------------------

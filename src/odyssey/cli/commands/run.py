@@ -28,9 +28,11 @@ from odyssey.providers.huggingface import HFDatasetProvider, HFModelProvider
 from odyssey.providers.local import LocalDatasetProvider, LocalRobotProvider
 from odyssey.runners import (
     CPUMockRunner,
+    GR00TRunner,
     OpenVLARunner,
     RunnerRegistry,
 )
+from odyssey.runners.isaac_lab import IsaacLabRunner
 from odyssey.runners.robosuite import RobosuiteRunner
 from odyssey.spec.loader import LoadError, load_mission
 from odyssey.spec.mission import Mission
@@ -38,15 +40,18 @@ from odyssey.telemetry import StdoutEventPublisher
 from odyssey.utils.paths import default_db_path, runs_dir
 
 
-def _build_runners(use_mock: bool) -> RunnerRegistry:
+def _build_runners() -> RunnerRegistry:
     registry = RunnerRegistry()
-    if use_mock:
-        registry.register(CPUMockRunner())
-        return registry
     # Real runners first; CPU mock as a last-resort fallback so unfamiliar
     # task types still produce *something* instead of "no runner registered."
+    # OpenVLA and GR00T are both wildcard training runners — registration
+    # order makes OpenVLA the default; GR00T is selected per-task via
+    # ``config: {runner: gr00t}``. --use-mock-runner forces the mock
+    # through the engine's force_runner, not by thinning this registry.
     registry.register(OpenVLARunner())
+    registry.register(GR00TRunner())
     registry.register(RobosuiteRunner())
+    registry.register(IsaacLabRunner())
     registry.register(CPUMockRunner())
     return registry
 
@@ -100,7 +105,7 @@ def run(
     work_dir = working_dir or runs_dir()
 
     persistence = SqlitePersistence(str(db_path))
-    runners = _build_runners(use_mock=use_mock_runner)
+    runners = _build_runners()
     providers = _build_providers()
     publisher = StdoutEventPublisher()
     engine = MissionEngine(
@@ -109,6 +114,7 @@ def run(
         event_publisher=publisher,
         working_dir=work_dir,
         providers=providers,
+        force_runner="cpu_mock" if use_mock_runner else None,
     )
 
     final = asyncio.run(_run_mission(engine, spec))
