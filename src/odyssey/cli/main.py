@@ -20,7 +20,7 @@ from odyssey.cli.commands.validate import validate
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="odyssey")
 def cli() -> None:
-    """Lovell Odyssey — robot training mission framework."""
+    """Odyssey — robot training mission framework."""
 
 
 cli.add_command(init)

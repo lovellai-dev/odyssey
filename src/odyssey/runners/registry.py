@@ -14,7 +14,6 @@ Selection order:
 
 from __future__ import annotations
 
-from odyssey.engine.errors import NoRunnerForTaskError
 from odyssey.runners.base import WILDCARD_TYPE, Runner
 from odyssey.spec.tasks import EvaluationTask, TaskKind, TaskSpec, TrainingTask
 
@@ -31,6 +30,12 @@ class RunnerRegistry:
                 self._by_key.setdefault((kind, type_value), []).append(runner)
 
     def select(self, task: TaskSpec, *, override: str | None = None) -> Runner:
+        # Imported at call time: the error belongs to the engine's
+        # exception hierarchy, but a module-level import would cycle
+        # (runners package init → registry → engine package init →
+        # mission_engine → runners). Guarded by tests/unit/test_imports.py.
+        from odyssey.engine.errors import NoRunnerForTaskError
+
         if override is not None:
             if override in self._by_name:
                 return self._by_name[override]

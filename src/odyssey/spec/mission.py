@@ -56,9 +56,8 @@ class RobotSpec(BaseModel):
     actuators) plus zero or more SPECIALISTs (running language models
     for delegated reasoning: task planning, map queries, etc.).
 
-    See the Lovell robot-brain paper for the fuller agent shape that
-    v0.0.x's ``AgentSpec`` does not yet model (persona, goals, success
-    criteria, materialized artifacts).
+    Future versions will extend ``AgentSpec`` with additional fields
+    (persona, goals, success criteria, materialized artifacts).
     """
 
     embodiment: str | None = None

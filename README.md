@@ -1,6 +1,11 @@
-# Lovell Odyssey
+<h1 align="center">Odyssey</h1>
 
-Open-source framework for defining, running, and benchmarking robot training missions.
+<p align="center">
+  <a href="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml"><img src="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/status-pre--alpha-orange.svg" alt="Status: Pre-Alpha">
+</p>
 
 > **Status: pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
 > targeted at `v0.1.0-alpha`. The API, CLI, schemas, and wire protocols are
@@ -148,26 +153,31 @@ one agent — is possible now that a loadout can hold a PILOT plus SPECIALISTs.
 
 ## Install
 
+> [!IMPORTANT]
+> **Linux only** — install build dependencies before proceeding (needed by `.[all]`):
+> ```bash
+> sudo apt update && sudo apt install build-essential python3-dev -y
+> ```
+
 ```bash
-git clone https://github.com/femtechie/lovell-odyssey.git
-cd lovell-odyssey
-pip install -e .
+git clone https://github.com/lovellai-dev/odyssey.git
+cd odyssey
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .              # CLI, validate, mock runs (lightweight)
+pip install -e ".[all]"       # real training + evaluation (torch, robosuite…)
+pip install -e ".[all,dev]"   # + pytest, ruff, mypy
 ```
 
 The base install pulls in pydantic, click, pyyaml, and aiosqlite — enough to
 run `validate`, `list`, `status`, and `run --use-mock-runner` against any
-mission spec. Real training and evaluation runners need their own extras:
+mission spec without a GPU. `.[all]` adds everything needed for real training
+and evaluation runs.
+
+## Quick start (no GPU, no network)
 
 ```bash
-pip install -e ".[huggingface]"   # HF model + dataset providers
-pip install -e ".[openvla]"       # OpenVLA training runner deps
-pip install -e ".[robosuite]"     # Robosuite evaluation runner deps
-pip install -e ".[dev]"           # pytest, ruff, mypy
-```
-
-## 60-second smoke test (no GPU, no network)
-
-```bash
+# Validate the mission spec
 $ odyssey validate examples/quickstart-openvla/mission.yaml
 OK  examples/quickstart-openvla/mission.yaml
   spec version : 0.1
@@ -175,6 +185,7 @@ OK  examples/quickstart-openvla/mission.yaml
   robot        : embodiment=franka_panda
   tasks        : 1 training, 1 evaluation
 
+# Run the full mission with a CPU mock (no GPU needed)
 $ odyssey run examples/quickstart-openvla/mission.yaml --use-mock-runner
 {"ts": "...", "event": "mission.created", ...}
 {"ts": "...", "event": "mission.queued", ...}
@@ -185,9 +196,11 @@ $ odyssey run examples/quickstart-openvla/mission.yaml --use-mock-runner
 COMPLETED  c1756bad855e45cc9a95b5b0566c948b
   overall_grade : 1.000
 
+# List all missions from the local DB
 $ odyssey list
 c1756bad855e  COMPLETED   openvla-bridge-lift   2026-05-17T23:18:34+00:00  grade=1.000
 
+# Show details for a specific mission (prefix match)
 $ odyssey status c1756bad
 COMPLETED  c1756bad855e45cc9a95b5b0566c948b
   name         : openvla-bridge-lift
@@ -201,11 +214,14 @@ COMPLETED  c1756bad855e45cc9a95b5b0566c948b
 laptop without a GPU. State is persisted to `~/.odyssey/missions.db`;
 artifacts under `~/.odyssey/runs/<mission-id>/<task-id>/`.
 
-## Real run (OpenVLA + Robosuite)
+## What it is
 
-This works only after the extras are installed AND the upstream
-[openvla](https://github.com/openvla/openvla) repo is cloned somewhere
-findable (`$OPENVLA_REPO_PATH` or `/srv/openvla`):
+You train an agent by describing a mission in YAML — a robot, a model, a dataset to train on, an
+evaluation benchmark to score against — and `odyssey run` walks it through the
+full lifecycle: load → validate → execute training tasks → execute the
+evaluation task → persist results. Local-mode by default; the hosted Lovell
+services (leaderboard, learning graph, hosted runners) are optional layers
+that land in later releases.
 
 ```bash
 pip install -e ".[huggingface,openvla,robosuite]"
@@ -443,13 +459,165 @@ src/odyssey/
   spec/         Pydantic schemas for mission.yaml
   engine/       MissionEngine + lifecycle + runtime records
   runners/      Runner ABC, registry, CPU mock, subprocess infra,
-                OpenVLA training, Robosuite evaluation
+                OpenVLA + GR00T training, Robosuite evaluation
   providers/    Provider ABCs + registry, local/ + huggingface/
   persistence/  Persistence ABC + InMemory + SQLite
   telemetry/    Event vocabulary + stdout publisher
   cli/          Click-based `odyssey` command + subcommands
   utils/        ~/.odyssey/ path management
 ```
+
+## Launching a training mission
+
+Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T, the newer path)
+and **OpenVLA** (the original). Both run through `odyssey run <mission.yaml>` —
+pick the quickstart that matches your model.
+
+### GR00T (Isaac-GR00T + Isaac Lab)
+
+Fine-tunes `nvidia/GR00T-N1.7-3B` on the LeRobot-format demo set that ships
+inside the Isaac-GR00T repo (no separate download), evaluated in the Isaac Lab
+cube-lift environment.
+
+**Prerequisites:**
+
+1. Install the upstream Isaac-GR00T package — it carries the training entry
+   point (`gr00t.experiment.launch_finetune`) and the demo dataset. Accept
+   NVIDIA's weight license:
+   ```bash
+   git clone https://github.com/NVIDIA/Isaac-GR00T.git /srv/Isaac-GR00T
+   pip install -e /srv/Isaac-GR00T
+   export ISAAC_GR00T_REPO_PATH=/srv/Isaac-GR00T   # resolves the demo dataset
+   ```
+2. For the Isaac Lab evaluation, install Isaac Lab and point Odyssey at its
+   launcher:
+   ```bash
+   export ISAACLAB_PATH=/srv/IsaacLab              # provides isaaclab.sh
+   ```
+
+**Run:**
+
+```bash
+odyssey run examples/quickstart-gr00t/mission.yaml
+```
+
+The mission routes its training task to the GR00T runner with
+`config: { runner: gr00t }` — OpenVLA and GR00T both serve wildcard training
+tasks, so the family is selected explicitly.
+
+### OpenVLA (Bridge V2 + Robosuite)
+
+**Prerequisites:**
+
+1. Install the training extras:
+   ```bash
+   pip install -e ".[huggingface,openvla,robosuite]"
+   ```
+2. Clone the upstream OpenVLA repo and install its dependencies (needed for
+   `draccus` and the fine-tuning script):
+   ```bash
+   git clone https://github.com/openvla/openvla.git /srv/openvla
+   pip install -e /srv/openvla
+   export OPENVLA_REPO_PATH=/srv/openvla
+   ```
+3. Download the Bridge V2 dataset in RLDS format (~124 GB):
+   ```bash
+   wget -r -nH --cut-dirs=4 --reject="index.html*" \
+     https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/
+   mv bridge_dataset bridge_orig
+   ```
+   Set `--data_root_dir` to the parent directory containing `bridge_orig/`.
+
+**Run:**
+
+```bash
+odyssey run examples/quickstart-openvla/mission.yaml
+```
+
+Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA LoRA fine-tune.
+
+> [!NOTE]
+> **GCP users:** single-GPU VMs require `export NCCL_NET=Socket` before
+> running, to bypass Google's NCCL plugin. See [issue #5](https://github.com/lovellai-dev/odyssey/issues/5) for details.
+
+> [!NOTE]
+> **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
+> the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
+> adapter. Real eval numbers require supplying a `policy_factory` to
+> `RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
+> The built-in adapter is a v0.2.x line item.
+
+#### Known-good OpenVLA stack
+
+The fine-tune runs through the **cloned OpenVLA repo**, which carries its own
+dependency set — most onboarding friction comes from there, not from Odyssey.
+Mixing versions surfaces as protobuf / TensorFlow / `tensorflow-metadata`
+conflicts or `draccus` import errors. Known-good versions (from OpenVLA's own
+requirements — treat its repo as the source of truth):
+
+```text
+Python        3.10
+torch         2.2.0
+torchvision   0.17.0
+transformers  4.40.1
+tokenizers    0.19.1
+timm          0.9.10
+flash-attn    2.5.5
+```
+
+To avoid re-downloading the 7B base model each run, point its path env var at a
+local copy (HF id upper-cased, `/` and `-` → `_`, suffixed `_PATH`):
+
+```bash
+export OPENVLA_OPENVLA_7B_PATH=/path/to/openvla-7b   # for base: openvla/openvla-7b
+```
+
+#### Dataset: how `source: oxe` / `ref: bridge_orig` resolves
+
+**Odyssey does not download the dataset** — `oxe` is a *pass-through*. The runner
+forwards two values to OpenVLA's `finetune.py`, which loads via TFDS/RLDS:
+
+| mission.yaml | becomes the flag | meaning |
+|---|---|---|
+| `dataset.ref: bridge_orig` | `--dataset_name bridge_orig` | the OXE **registry key** OpenVLA looks up |
+| `config.data_root_dir: <path>` | `--data_root_dir <path>` | the **parent dir** containing the RLDS dataset folder |
+
+⚠️ **Naming gotcha:** the registry key and the on-disk folder name can differ.
+In validation, `ref: bridge_orig` resolved to data under `~/bridge_dataset/1.0.0/`,
+so `data_root_dir` had to point at the **parent** of that folder — not the key
+name. Check where your download actually landed and set `data_root_dir` to its
+parent.
+
+#### Weights & Biases (W&B)
+
+OpenVLA's `finetune.py` calls `wandb.init()` unconditionally, so a run stalls or
+fails if W&B isn't reachable. Control it yourself:
+
+```bash
+# Disable for local / smoke runs:
+export WANDB_MODE=disabled
+# Or log to your account, then pass project/entity via mission config:
+#   config: { wandb_project: my-project, wandb_entity: my-entity }
+```
+
+Any `config:` key Odyssey doesn't consume is forwarded verbatim as
+`--<key> <value>` to `finetune.py`.
+
+#### What to expect during a run
+
+Timing varies widely with hardware, disk, and network — treat these as
+orientation, not promises:
+
+1. **Base model download** — `openvla-7b` (~14 GB) on first run, unless
+   `OPENVLA_OPENVLA_7B_PATH` is set.
+2. **Dataset load / indexing** — Bridge V2 (~124 GB); RLDS indexing on a cold
+   cache takes a while.
+3. **Training startup** — model load + LoRA wrap, then steps begin.
+4. **Steady state** — throughput logs as `it/s` (~1.49 it/s on an NVIDIA L4 for
+   the quickstart config).
+
+If a stage seems stuck, it's almost always a download in progress or a
+dataset-path / W&B issue rather than a training bug — check those first.
 
 ## Status snapshot (v0.0.x)
 
@@ -461,7 +629,9 @@ src/odyssey/
 | Provider ABCs + Local + HF | ✓ | OXE, Lovell-mode |
 | CPU mock runner | ✓ | — |
 | OpenVLA training runner | ✓ (validated on L4) | — |
+| GR00T training runner | ✓ skeleton + tests, task-level `runner: gr00t` routing | end-to-end smoke with real Isaac-GR00T |
 | Robosuite eval runner | ✓ (auto-wired OpenVLA adapter) | full GPU end-to-end validation |
+| Isaac Lab eval runner | ✓ skeleton + tests, subprocess launch + `ODYSSEY_*` stdout protocol | blessed eval script (GR00T/VLA recipe), real-Isaac smoke |
 | Multi-agent eval (PILOT + SPECIALIST) | ✓ (out-of-process Gemma 4 planner) | full GPU end-to-end validation |
 | `odyssey init / run / list / status / validate` | ✓ | `logs`, `publish` |
 | Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha |

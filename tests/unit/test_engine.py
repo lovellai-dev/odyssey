@@ -418,3 +418,104 @@ async def test_eval_context_receives_all_agents_and_checkpoints() -> None:
     assert eval_ctx.agent_checkpoints["pilot"] == "/tmp/trained-checkpoint"
     # Specialist was never trained -> None (uses base model)
     assert eval_ctx.agent_checkpoints["task-planner"] is None
+
+
+# ---------------------------------------------------------------------------
+# Runner selection: task-level override + engine force_runner
+# ---------------------------------------------------------------------------
+
+class _CountingRunner(Runner):
+    """Wildcard runner that counts how many tasks it executed."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self.ran = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def supported_kinds(self) -> set[TaskKind]:
+        return {TaskKind.TRAINING, TaskKind.EVALUATION}
+
+    @property
+    def supported_types(self) -> set[str]:
+        return {WILDCARD_TYPE}
+
+    async def run(self, context: TaskContext) -> dict[str, Any]:
+        self.ran += 1
+        # Eval-shaped summary so mission grading has what it needs.
+        return {
+            "runner": self._name,
+            "success_rate": 1.0,
+            "performance_score": 1.0,
+            "passed": True,
+        }
+
+
+async def _make_engine_with_runners(
+    *runners: Runner, force_runner: str | None = None
+) -> MissionEngine:
+    registry = RunnerRegistry()
+    for runner in runners:
+        registry.register(runner)
+    engine = MissionEngine(
+        persistence=InMemoryPersistence(),
+        runners=registry,
+        event_publisher=CapturingPublisher(),
+        force_runner=force_runner,
+    )
+    await engine.initialize()
+    return engine
+
+
+async def test_task_config_runner_override_selects_named_runner() -> None:
+    # Two wildcard runners: first registered wins by default, but a
+    # task-level ``config: {runner: ...}`` reroutes that task.
+    default = _CountingRunner("default")
+    special = _CountingRunner("special")
+    engine = await _make_engine_with_runners(default, special)
+
+    spec = _spec()
+    spec.tasks[0].config["runner"] = "special"  # training task only
+    run = await engine.create_mission(spec)
+    final = await engine.start_mission(run.id)
+
+    assert final.status == MissionStatus.COMPLETED
+    assert special.ran == 1  # the training task
+    assert default.ran == 1  # the eval task (no override)
+
+
+async def test_force_runner_beats_task_override() -> None:
+    # --use-mock-runner semantics: the forced runner takes every task,
+    # even when the spec names another runner.
+    default = _CountingRunner("default")
+    special = _CountingRunner("special")
+    engine = await _make_engine_with_runners(
+        default, special, force_runner="default"
+    )
+
+    spec = _spec()
+    spec.tasks[0].config["runner"] = "special"
+    run = await engine.create_mission(spec)
+    final = await engine.start_mission(run.id)
+
+    assert final.status == MissionStatus.COMPLETED
+    assert default.ran == 2
+    assert special.ran == 0
+
+
+async def test_unknown_runner_override_fails_task() -> None:
+    default = _CountingRunner("default")
+    engine = await _make_engine_with_runners(default)
+
+    spec = _spec()
+    spec.tasks[0].config["runner"] = "does-not-exist"
+    run = await engine.create_mission(spec)
+    final = await engine.start_mission(run.id)
+
+    assert final.status == MissionStatus.FAILED
+    failed = [t for t in final.tasks if t.status == TaskStatus.FAILED]
+    assert len(failed) == 1
+    assert failed[0].error_code == "no_runner_registered"

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     # the out-of-process planner_server is launched via `python -m`, which
     # imports the odyssey.runners package before any of our code can break the
     # cycle. `from __future__ import annotations` keeps the annotations as
-    # strings, so this stays type-check-only.
+    # strings, so this stays type-check-only. Guarded by tests/unit/test_imports.py.
     from odyssey.engine.records import MissionRun, TaskRun
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
