@@ -32,8 +32,8 @@ from odyssey.runners import (
     OpenVLARunner,
     RunnerRegistry,
 )
-from odyssey.runners.isaac_lab import IsaacLabRunner
-from odyssey.runners.robosuite import RobosuiteRunner
+from odyssey.runners.evals.isaac_lab import IsaacLabRunner
+from odyssey.runners.evals.robosuite import RobosuiteRunner
 from odyssey.spec.loader import LoadError, load_mission
 from odyssey.spec.mission import Mission
 from odyssey.telemetry import StdoutEventPublisher

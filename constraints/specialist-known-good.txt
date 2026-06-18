@@ -1,0 +1,28 @@
+# Dependency set for the out-of-process SPECIALIST venv (multimodal Gemma 4 planner).
+#
+# This is a SEPARATE venv from the main/OpenVLA one. A modern transformers +
+# torchvision here lets the planner run the multimodal Gemma 4 planner, free of
+# OpenVLA's pinned transformers==4.40.1 (which stays in the main venv via
+# constraints/openvla-known-good.txt).
+#
+# Set up the specialist venv:
+#   python -m venv ~/specialist-venv
+#   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
+#   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+#
+# The default SPECIALIST is now Gemma 4 E4B-it (multimodal, Apache-2.0). Gemma 4
+# needs a modern transformers + torchvision (its image processor imports
+# torchvision.transforms.v2). The pins below are the known-good set validated on
+# the GPU box (L4, 24 GB): Gemma 4 E4B-it int4 produces finite logits and a real
+# 4-step plan at ~9.4 GB VRAM.
+#
+# NOTE: Gemma 3 4B NaNs under int4 bitsandbytes on this stack (do NOT use it);
+# Gemma 4 loads cleanly here even on the transformers 5.x line. The eval-side
+# main venv (OpenVLA, transformers 4.40.1) is unaffected.
+transformers==5.12.1
+tokenizers==0.22.2
+accelerate==1.14.0
+bitsandbytes==0.49.2
+torch==2.12.0
+torchvision==0.27.0
+sentencepiece==0.2.0

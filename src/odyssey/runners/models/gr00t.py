@@ -38,7 +38,7 @@ from odyssey.runners.base import (
 
 # Shared with the OpenVLA runner; extract to a common module when a
 # third runner needs them.
-from odyssey.runners.openvla import _flatten_config, _resolve_and_fetch_hf_model
+from odyssey.runners.models.openvla import _flatten_config, _resolve_and_fetch_hf_model
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,

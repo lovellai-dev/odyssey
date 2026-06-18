@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from odyssey.runners.gr00t import _ENTRY_MODULE, build_gr00t_argv
+from odyssey.runners.models.gr00t import _ENTRY_MODULE, build_gr00t_argv
 from odyssey.spec import TrainingTask
 from odyssey.spec.loader import load_mission
 

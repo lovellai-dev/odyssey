@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from odyssey.runners.gr00t import build_gr00t_argv, parse_gr00t_line
+from odyssey.runners.models.gr00t import build_gr00t_argv, parse_gr00t_line
 from odyssey.spec import DatasetRef, DatasetSource, TrainingTask, TrainingType
 
 

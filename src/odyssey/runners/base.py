@@ -23,10 +23,12 @@ from odyssey.telemetry.events import ProgressEvent, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
 
 if TYPE_CHECKING:
-    # Annotation-only: importing engine.records at runtime initializes
-    # the engine package, whose mission_engine imports this module right
-    # back — a cycle that bites when a runner module is the entry
-    # import. Guarded by tests/unit/test_imports.py.
+    # Type-only: TaskContext annotates these (task/mission fields). Importing
+    # them at runtime would create an engine<->runners import cycle — fatal when
+    # the out-of-process planner_server is launched via `python -m`, which
+    # imports the odyssey.runners package before any of our code can break the
+    # cycle. `from __future__ import annotations` keeps the annotations as
+    # strings, so this stays type-check-only. Guarded by tests/unit/test_imports.py.
     from odyssey.engine.records import MissionRun, TaskRun
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
@@ -54,8 +56,7 @@ class TaskContext:
     # without providers (the CPU-mock-only test setup).
     providers: ProviderRegistry | None = None
     # The agent this training task updates. Set by the engine for
-    # training tasks; None for evaluation tasks (which walk all agents
-    # via ``mission.spec.robot.agents`` themselves).
+    # training tasks; None for evaluation tasks.
     agent: AgentSpec | None = None
     # Local path to the checkpoint a training task should start from.
     # Set by the engine when a prior completed training task on the
@@ -63,6 +64,16 @@ class TaskContext:
     # against an agent — runners fall back to ``agent.model`` (the
     # agent's base checkpoint).
     starting_checkpoint: str | None = None
+    # All agents on the robot, set by the engine for evaluation tasks.
+    # Lets eval runners compose multi-agent runtimes (e.g. planner +
+    # pilot) without walking the loadout themselves. Empty list for
+    # training tasks. None only in tests that pre-date multi-agent.
+    agents: list[AgentSpec] = field(default_factory=list)
+    # Per-agent checkpoint map for evaluation tasks. Keys are agent ids,
+    # values are the local checkpoint path from the latest completed
+    # training task for that agent — or None when the agent was never
+    # trained (SPECIALISTs use their base model directly).
+    agent_checkpoints: dict[str, str | None] = field(default_factory=dict)
 
     def cancelled(self) -> bool:
         return self.cancel_event.is_set()

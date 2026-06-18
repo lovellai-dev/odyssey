@@ -43,7 +43,7 @@ from odyssey.runners.base import Runner, TaskContext
 
 # Shared eval helpers; extract to a common module when a third
 # evaluation runner needs them.
-from odyssey.runners.robosuite import _grade, _resolve_eval_checkpoint
+from odyssey.runners.evals.robosuite import _grade, _resolve_eval_checkpoint
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     run_training_subprocess,

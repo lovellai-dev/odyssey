@@ -17,7 +17,7 @@ import pytest
 from odyssey.engine.lifecycle import TaskStatus
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.runners.base import TaskContext
-from odyssey.runners.robosuite import RobosuiteRunner
+from odyssey.runners.evals.robosuite import RobosuiteRunner
 from odyssey.spec import (
     AgentRole,
     AgentSpec,

@@ -314,6 +314,113 @@ async def test_start_already_started_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Multi-agent: engine resolves agents + checkpoints for eval tasks
+# ---------------------------------------------------------------------------
+
+class _CapturingRunner(Runner):
+    """Captures the TaskContext it receives so tests can inspect it."""
+
+    def __init__(self) -> None:
+        self.contexts: list[TaskContext] = []
+
+    @property
+    def name(self) -> str:
+        return "capturing"
+
+    @property
+    def supported_kinds(self) -> set[TaskKind]:
+        return {TaskKind.TRAINING, TaskKind.EVALUATION}
+
+    @property
+    def supported_types(self) -> set[str]:
+        return {WILDCARD_TYPE}
+
+    async def run(self, context: TaskContext) -> dict[str, Any]:
+        self.contexts.append(context)
+        await context.emit_progress("done")
+        if context.task.spec.kind == "training":
+            return {
+                "checkpoint_path": "/tmp/trained-checkpoint",
+                "agent_id": context.task.spec.agent_id,  # type: ignore[union-attr]
+            }
+        return {"success_rate": 0.5, "performance_score": 0.5}
+
+
+async def test_eval_context_receives_all_agents_and_checkpoints() -> None:
+    """When the engine runs an eval task on a multi-agent robot, the
+    TaskContext must carry all agents and their checkpoint mappings."""
+    spec = Mission(
+        metadata=MissionMetadata(name="msn-multi"),
+        objective="objective",
+        acceptance_criteria="acceptance",
+        robot=RobotSpec(
+            embodiment="franka_panda",
+            agents=[
+                AgentSpec(
+                    id="pilot",
+                    role=AgentRole.PILOT,
+                    model=HFModelRef(base="openvla/openvla-7b"),
+                ),
+                AgentSpec(
+                    id="task-planner",
+                    role=AgentRole.SPECIALIST,
+                    model=HFModelRef(
+                        base="google/gemma-4-E2B-it", quantization="int4"
+                    ),
+                ),
+            ],
+        ),
+        tasks=[
+            TrainingTask(
+                name="train-pilot",
+                training_type=TrainingType.DEMONSTRATION,
+                agent_id="pilot",
+            ),
+            EvaluationTask(
+                name="eval-lift",
+                evaluation_type=EvaluationType.ROBOSUITE,
+                benchmark_name="Lift",
+                num_episodes=2,
+            ),
+        ],
+    )
+
+    capturing = _CapturingRunner()
+    persistence = InMemoryPersistence()
+    runners = RunnerRegistry()
+    runners.register(capturing)
+    publisher = CapturingPublisher()
+    engine = MissionEngine(
+        persistence=persistence, runners=runners, event_publisher=publisher
+    )
+    await engine.initialize()
+
+    run = await engine.create_mission(spec)
+    final = await engine.start_mission(run.id)
+    assert final.status == MissionStatus.COMPLETED
+
+    # The capturing runner saw two tasks: training + eval
+    assert len(capturing.contexts) == 2
+
+    # Training context: agent set, agents/agent_checkpoints empty
+    train_ctx = capturing.contexts[0]
+    assert train_ctx.agent is not None
+    assert train_ctx.agent.id == "pilot"
+
+    # Eval context: agents populated with both agents, checkpoints resolved
+    eval_ctx = capturing.contexts[1]
+    assert len(eval_ctx.agents) == 2
+    agent_ids = [a.id for a in eval_ctx.agents]
+    assert "pilot" in agent_ids
+    assert "task-planner" in agent_ids
+
+    # Pilot was trained -> has a checkpoint
+    assert eval_ctx.agent_checkpoints["pilot"] == "/tmp/trained-checkpoint"
+    # Specialist was never trained -> None (uses base model)
+    assert eval_ctx.agent_checkpoints["task-planner"] is None
+
+
+# ---------------------------------------------------------------------------
 # Runner selection: task-level override + engine force_runner
 # ---------------------------------------------------------------------------
 

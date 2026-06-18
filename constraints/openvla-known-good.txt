@@ -1,0 +1,39 @@
+# Known-good dependency versions for the OpenVLA + Gemma multi-agent pipeline,
+# validated end-to-end (training + eval) on a GCP L4 (Python 3.10).
+#
+# OPT-IN pip constraints file — it does NOT change the package's install
+# contract (the [openvla] extra keeps loose floors). Use it to reproduce the
+# exact validated environment:
+#
+#   pip install -c constraints/openvla-known-good.txt \
+#     "torch==2.2.0" "torchvision==0.17.0" "torchaudio==2.2.0" \
+#     --index-url https://download.pytorch.org/whl/cu121
+#   pip install -c constraints/openvla-known-good.txt -e ".[openvla,robosuite]"
+#
+# Why these exact versions (see PR #16 / issue #22):
+#   * torch 2.6   -> training exits 1 silently (inductor fork-after-CUDA race)
+#   * accelerate 1.x -> Gemma int4 fails to load (transformers calls .to() on a
+#                       4-bit model, which bitsandbytes forbids)
+#   * numpy 2.x   -> breaks tensorflow 2.15 (RLDS pipeline) and torch 2.2 import
+# Also requires env: NCCL_NET=Socket (GCP single-GPU), MUJOCO_GL=egl +
+# PYOPENGL_PLATFORM=egl (headless Robosuite eval).
+
+accelerate==0.30.1
+bitsandbytes==0.43.1
+dlimp==0.0.1
+draccus==0.8.0
+mujoco==3.8.1
+numpy==1.26.4
+peft==0.11.1
+pillow==12.2.0
+robosuite==1.5.2
+safetensors==0.7.0
+sentencepiece==0.1.99
+tensorflow==2.15.0
+tensorflow-datasets==4.9.3
+timm==0.9.10
+tokenizers==0.19.1
+torch==2.2.0+cu121
+torchaudio==2.2.0+cu121
+torchvision==0.17.0+cu121
+transformers==4.40.1

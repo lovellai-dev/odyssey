@@ -45,6 +45,7 @@ from odyssey.persistence.base import Persistence
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.runners.base import TaskContext
 from odyssey.runners.registry import RunnerRegistry
+from odyssey.spec.agents import AgentSpec
 from odyssey.spec.mission import Mission
 from odyssey.spec.tasks import EvaluationTask, TaskSpec, TrainingTask
 from odyssey.telemetry.events import MissionEventType, TaskEventType
@@ -285,14 +286,25 @@ class MissionEngine:
             )
             return
 
-        # Resolve agent + starting checkpoint for training tasks so the
-        # runner doesn't have to know about the per-agent chain. Eval
-        # tasks walk the loadout themselves (today: one agent).
+        # Resolve agent context depending on task kind.
         agent = None
         starting_checkpoint = None
+        agents: list[AgentSpec] = []
+        agent_checkpoints: dict[str, str | None] = {}
+
         if isinstance(task.spec, TrainingTask):
+            # Training: resolve the single target agent + its starting
+            # checkpoint so the runner doesn't walk the per-agent chain.
             agent = mission.agent_by_id(task.spec.agent_id)
             starting_checkpoint = mission.latest_checkpoint_for(task.spec.agent_id)
+        elif isinstance(task.spec, EvaluationTask):
+            # Evaluation: resolve ALL agents + their checkpoints so the
+            # runner can compose multi-agent runtimes (planner + pilot).
+            agents = list(mission.spec.robot.agents)
+            agent_checkpoints = {
+                a.id: mission.latest_checkpoint_for(a.id)
+                for a in mission.spec.robot.agents
+            }
 
         ctx = TaskContext(
             task=task,
@@ -303,6 +315,8 @@ class MissionEngine:
             providers=self._providers,
             agent=agent,
             starting_checkpoint=starting_checkpoint,
+            agents=agents,
+            agent_checkpoints=agent_checkpoints,
         )
 
         try:
