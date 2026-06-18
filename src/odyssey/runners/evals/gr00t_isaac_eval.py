@@ -108,9 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--video_dir", default="", help="if set, write one mp4 per episode here.")
     # --- closed-loop auto-serve: deploy the finetuned --checkpoint ---
     ap.add_argument("--serve_checkpoint", type=_bool, default=False,
-                    help="boot a GR00T policy server on --checkpoint here (and tear "
-                         "it down after) instead of connecting to an external one — "
-                         "closes the train -> deploy -> grade loop.")
+                    help="boot a GR00T policy server on the trained checkpoint here "
+                         "(and tear it down after) instead of connecting to an external "
+                         "one — closes the train -> deploy -> grade loop.")
+    ap.add_argument("--served_model_path", default="",
+                    help="explicit path to the checkpoint to serve. Overrides "
+                         "--checkpoint for the server (used when the runner's "
+                         "--checkpoint is a stub, e.g. a Command-Center-delegated eval "
+                         "where training ran as a separate task). Defaults to --checkpoint.")
     ap.add_argument("--embodiment_tag", default="",
                     help="embodiment tag for the served checkpoint; MUST match the "
                          "tag it was finetuned with (required with --serve_checkpoint).")
@@ -221,7 +226,7 @@ def serve_checkpoint(args: argparse.Namespace):
     import subprocess
 
     argv = build_server_command(
-        checkpoint=args.checkpoint,
+        checkpoint=(args.served_model_path or args.checkpoint),
         embodiment_tag=args.embodiment_tag,
         port=args.port,
         server_python=args.server_python or None,
@@ -452,12 +457,13 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = build_parser().parse_args()
     if args.serve_checkpoint:
-        if not args.checkpoint:
-            raise SystemExit("--serve_checkpoint requires --checkpoint (the finetuned weights)")
+        served = args.served_model_path or args.checkpoint
+        if not served:
+            raise SystemExit("--serve_checkpoint requires --served_model_path or --checkpoint")
         if not args.embodiment_tag:
             raise SystemExit("--serve_checkpoint requires --embodiment_tag (server can't infer it)")
         log.info("closed-loop: serving finetuned checkpoint %s (embodiment=%s)",
-                 args.checkpoint, args.embodiment_tag)
+                 served, args.embodiment_tag)
         with serve_checkpoint(args):
             run_eval(args)
     else:

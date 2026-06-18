@@ -196,3 +196,19 @@ def test_wait_for_server_fails_fast_when_proc_dead() -> None:
             return 1
     # Nothing is listening on this port; the dead proc short-circuits the wait.
     assert E._wait_for_server("127.0.0.1", 1, timeout_s=30, proc=_DeadProc()) is False
+
+
+def test_served_model_path_overrides_checkpoint_for_serving() -> None:
+    # --served_model_path lets the server serve an explicit checkpoint even when
+    # the runner's --checkpoint is a stub (e.g. a Command-Center-delegated eval,
+    # where training ran as a separate task and the reconstructed mission's
+    # training stub yields a mock checkpoint). It parses, and is what gets served.
+    args = E.build_parser().parse_args(
+        ["--task", "X", "--num_episodes", "1", "--checkpoint", "/stub",
+         "--serve_checkpoint", "true", "--embodiment_tag", "libero_sim",
+         "--served_model_path", "/real/checkpoint-500"])
+    assert args.served_model_path == "/real/checkpoint-500"
+    argv = E.build_server_command(
+        checkpoint=(args.served_model_path or args.checkpoint),
+        embodiment_tag=args.embodiment_tag, port=5555)
+    assert argv[argv.index("--model-path") + 1] == "/real/checkpoint-500"
