@@ -24,8 +24,8 @@ network):
 odyssey run examples/quickstart-gr00t/mission.yaml --use-mock-runner
 ```
 
-For a real OpenVLA training run, see the prerequisites in the top-level
-README (OpenVLA repo clone, Bridge V2 download, 24 GB GPU).
+For a real GR00T fine-tuning run, see the prerequisites in the top-level
+README (Isaac-GR00T repo clone, a LeRobot-format dataset, and a CUDA GPU).
 
 ## GR00T quickstart status
 

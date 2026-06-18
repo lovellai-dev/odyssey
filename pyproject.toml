@@ -64,9 +64,9 @@ all = [
 odyssey = "odyssey.cli.main:cli"
 
 [project.urls]
-Homepage = "https://github.com/femtechie/lovell-odyssey"
-Repository = "https://github.com/femtechie/lovell-odyssey"
-Issues = "https://github.com/femtechie/lovell-odyssey/issues"
+Homepage = "https://github.com/lovellai-dev/odyssey"
+Repository = "https://github.com/lovellai-dev/odyssey"
+Issues = "https://github.com/lovellai-dev/odyssey/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/odyssey"]
