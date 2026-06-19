@@ -10,7 +10,7 @@ Review.
 Honest framing: the **action policy** (``run_gr00t_server``) is what drives the
 robot. This trace is a *parallel intent narration* from the same backbone family —
 not a literal, action-by-action rationale of the executed motions. Query it **once
-per episode** (cheap; ~1–2 s) rather than per control step.
+per episode** (cheap; ~1-2 s) rather than per control step.
 
 Lives in ``odyssey.runners.evals`` beside the GR00T eval recipe and is **launched /
 imported by path** (the package ``__init__`` pulls heavy sim deps), so the prompt +
@@ -150,7 +150,7 @@ class ReasoningSidecar:
                 out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True
             )[0]
             return clean_reasoning(gen)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("cosmos-reason: generation failed; skipping trace", exc_info=True)
             return ""
 

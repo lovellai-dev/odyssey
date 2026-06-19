@@ -21,12 +21,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(__file__), "..", "..", "src", "odyssey", "runners", "evals"))
 import cosmos_reason as C
-
 
 # ---------------------------------------------------------------------------
 # Heavy deps are deferred — the module imports under the bare stdlib.

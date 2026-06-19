@@ -113,14 +113,14 @@ class EvalProtocolCollector:
             if payload is None:
                 return None
             self.reasoning.append(payload)
-            event: dict[str, Any] = {
+            reasoning_event: dict[str, Any] = {
                 "stage": "executing", "step": "reasoning_received",
                 "step_label": "intent trace",
             }
             episode = payload.get("episode")
             if isinstance(episode, int):
-                event["step_index"] = episode
-            return event
+                reasoning_event["step_index"] = episode
+            return reasoning_event
         return None
 
     @staticmethod
