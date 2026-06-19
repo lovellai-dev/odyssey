@@ -441,7 +441,7 @@ def run_eval(args: argparse.Namespace) -> dict:
                          ep + 1, args.num_episodes, "SUCCESS" if ep_success else "fail", t, ep_return)
                 _emit(episode_line(index=ep + 1, total=args.num_episodes,
                                    success=ep_success, ret=ep_return))
-            except Exception as ep_exc:  # noqa: BLE001
+            except Exception as ep_exc:
                 # A single flaky get_action()/env.step() must not abort the whole
                 # sweep — that would drop the remaining episodes AND the final
                 # ODYSSEY_RESULT line. Record the episode as a failure and continue.
