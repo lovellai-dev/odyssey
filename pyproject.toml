@@ -88,6 +88,9 @@ specialist = [
 all = [
     "lovell-odyssey[huggingface,openvla,robosuite]",
 ]
+all = [
+    "lovell-odyssey[huggingface,openvla,robosuite]",
+]
 
 [project.scripts]
 odyssey = "odyssey.cli.main:cli"
