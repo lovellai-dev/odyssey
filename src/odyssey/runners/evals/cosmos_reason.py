@@ -55,6 +55,23 @@ def clean_reasoning(text: str, *, max_chars: int = 400) -> str:
     return " ".join((text or "").split()).strip()[:max_chars]
 
 
+def _to_pil(frame: Any) -> Any:
+    """Normalise a frame (PIL image or HxWx3 array) to a contiguous RGB PIL image.
+
+    Two real-frame hazards this guards against (both caught by a live LIBERO
+    rollout): a numpy array also has ``.size`` so it can't be distinguished from a
+    PIL image by attribute, and sim agentviews are often flipped (``[::-1, ::-1]``)
+    into a negative-stride view that transformers' fast image processor rejects —
+    ``np.ascontiguousarray`` makes a positive-stride copy.
+    """
+    import numpy as np
+    from PIL import Image
+
+    if isinstance(frame, Image.Image):
+        return frame
+    return Image.fromarray(np.ascontiguousarray(frame, dtype=np.uint8))
+
+
 def reasoning_line(*, episode: int, instruction: str, reasoning: str) -> str:
     """One ``ODYSSEY_REASONING`` protocol line — mirrors the recipe's
     ``episode_line`` / ``result_line`` so a runner/collector can pick it up and
@@ -104,12 +121,15 @@ class ReasoningSidecar:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         log.info("cosmos-reason: loading %s on %s", self.model_id, self.device)
         self._proc = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+        # Load then ``.to(device)`` rather than ``device_map=`` — the latter requires
+        # `accelerate`, which isn't in every eval env (the LIBERO/Isaac sim venvs lack
+        # it). A live LIBERO rollout caught device_map raising -> guarded -> silent
+        # empty trace; .to() keeps the sidecar portable to any torch+transformers env.
         self._model = AutoModelForImageTextToText.from_pretrained(
             self.model_id,
             torch_dtype=torch.bfloat16,
-            device_map=self.device,
             trust_remote_code=True,
-        ).eval()
+        ).to(self.device).eval()
 
     def reason(self, frame: Any, instruction: str) -> str:
         """Return a short intent trace for ``instruction`` grounded in ``frame``
@@ -119,14 +139,10 @@ class ReasoningSidecar:
         nice-to-have narration; it must never break or fail an eval.
         """
         try:
-            import numpy as np
             import torch
-            from PIL import Image
 
             self.load()
-            img = frame if hasattr(frame, "size") else Image.fromarray(
-                np.asarray(frame).astype("uint8")
-            )
+            img = _to_pil(frame)
             messages = [
                 {
                     "role": "user",

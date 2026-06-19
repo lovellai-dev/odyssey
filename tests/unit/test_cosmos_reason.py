@@ -116,6 +116,28 @@ def test_sidecar_constructs_without_loading() -> None:
     assert sc._model is None and sc._proc is None
 
 
+def test_to_pil_handles_negative_stride_view() -> None:
+    # A live LIBERO rollout passes obs["agentview_image"][::-1, ::-1] — a
+    # negative-stride view that transformers' fast image processor rejects.
+    import numpy as np
+    from PIL import Image
+
+    arr = (np.arange(16 * 16 * 3).reshape(16, 16, 3) % 255).astype("uint8")
+    flipped = arr[::-1, ::-1]
+    assert not flipped.flags["C_CONTIGUOUS"]
+    img = C._to_pil(flipped)
+    assert isinstance(img, Image.Image)
+    assert img.size == (16, 16)
+    assert np.asarray(img).flags["C_CONTIGUOUS"]
+
+
+def test_to_pil_passes_through_pil_image() -> None:
+    from PIL import Image
+
+    im = Image.new("RGB", (8, 8))
+    assert C._to_pil(im) is im
+
+
 def test_reason_returns_empty_string_on_failure() -> None:
     sc = C.ReasoningSidecar()
 
