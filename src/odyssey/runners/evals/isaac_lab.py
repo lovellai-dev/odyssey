@@ -26,9 +26,14 @@ expected)::
 
     ODYSSEY_EPISODE {"index": 1, "total": 10, "success": true, "return": 1.5}
     ODYSSEY_RESULT {"success_rate": 0.4, "performance_score": 0.7, "metrics": {}}
+    ODYSSEY_REASONING {"episode": 1, "instruction": "...", "reasoning": "..."}
 
 ``ODYSSEY_RESULT`` is optional — when absent, the summary is computed
-from the episode lines.
+from the episode lines. ``ODYSSEY_REASONING`` is also optional — a
+per-episode intent trace from the Cosmos-Reason sidecar
+(``cosmos_reason.py``); when present, the traces are carried into
+``metrics["reasoning"]`` so Command Center / Episode Review can show
+reasoning beside the grade.
 """
 
 from __future__ import annotations
@@ -55,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 _EPISODE_PREFIX = "ODYSSEY_EPISODE "
 _RESULT_PREFIX = "ODYSSEY_RESULT "
+# Optional per-episode intent trace from the Cosmos-Reason sidecar. Purely
+# additive: an eval that never emits it behaves exactly as before.
+_REASONING_PREFIX = "ODYSSEY_REASONING "
 
 # Config keys consumed by the runner itself, never forwarded as flags.
 _HANDLED_CONFIG_KEYS = {"eval_script", "runner", "headless"}
@@ -72,6 +80,7 @@ class EvalProtocolCollector:
     def __init__(self) -> None:
         self.episodes: list[dict[str, Any]] = []
         self.result: dict[str, Any] | None = None
+        self.reasoning: list[dict[str, Any]] = []
 
     def parse(self, line: str) -> dict[str, Any] | None:
         stripped = line.strip()
@@ -99,6 +108,19 @@ class EvalProtocolCollector:
                 return None
             self.result = payload
             return {"stage": "executing", "step": "result_received"}
+        if stripped.startswith(_REASONING_PREFIX):
+            payload = self._load_json(stripped[len(_REASONING_PREFIX):])
+            if payload is None:
+                return None
+            self.reasoning.append(payload)
+            event: dict[str, Any] = {
+                "stage": "executing", "step": "reasoning_received",
+                "step_label": "intent trace",
+            }
+            episode = payload.get("episode")
+            if isinstance(episode, int):
+                event["step_index"] = episode
+            return event
         return None
 
     @staticmethod
@@ -213,6 +235,11 @@ def summarize(
     metrics.setdefault("benchmark", spec.benchmark_name)
     metrics.setdefault("checkpoint_path", str(checkpoint))
     metrics.setdefault("eval_script", eval_script)
+    # Carry the per-episode intent traces (if the eval emitted any) into the
+    # summary so Command Center / Episode Review can show reasoning beside the
+    # grade. Absent when the eval doesn't speak ODYSSEY_REASONING.
+    if collector.reasoning:
+        metrics.setdefault("reasoning", collector.reasoning)
     return {
         "num_episodes": num_episodes,
         "success_rate": round(success_rate, 4),

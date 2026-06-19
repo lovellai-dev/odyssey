@@ -148,6 +148,37 @@ def test_collector_ignores_boot_noise() -> None:
     assert collector.parse("[INFO] Simulation App Startup Complete") is None
 
 
+def test_collector_records_reasoning_and_emits_progress() -> None:
+    collector = EvalProtocolCollector()
+    event = collector.parse(
+        'ODYSSEY_REASONING {"episode": 2, "instruction": "stack the cubes", '
+        '"reasoning": "locate, grasp, place"}'
+    )
+    assert event is not None
+    assert event["step"] == "reasoning_received"
+    assert event["step_index"] == 2
+    assert collector.reasoning[0]["reasoning"] == "locate, grasp, place"
+
+
+def test_collector_skips_malformed_reasoning_line() -> None:
+    collector = EvalProtocolCollector()
+    assert collector.parse("ODYSSEY_REASONING {not json") is None
+    assert collector.reasoning == []
+
+
+def test_collector_distinguishes_result_from_reasoning() -> None:
+    # ODYSSEY_RESULT and ODYSSEY_REASONING share the ODYSSEY_RE prefix; each
+    # must land in its own bucket and not be mistaken for the other.
+    collector = EvalProtocolCollector()
+    collector.parse('ODYSSEY_RESULT {"success_rate": 0.5}')
+    collector.parse(
+        'ODYSSEY_REASONING {"episode": 1, "instruction": "x", "reasoning": "y"}'
+    )
+    assert collector.result == {"success_rate": 0.5}
+    assert len(collector.reasoning) == 1
+    assert collector.reasoning[0]["episode"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Summary scoring
 # ---------------------------------------------------------------------------
@@ -196,6 +227,34 @@ def test_summary_prefers_explicit_result(tmp_path: Path) -> None:
     assert summary["metrics"]["sim_steps"] == 1234
 
 
+def test_summary_includes_reasoning_when_present(tmp_path: Path) -> None:
+    collector = _collector_with_episodes(True, False)
+    collector.parse(
+        'ODYSSEY_REASONING {"episode": 1, "instruction": "lift the cube", '
+        '"reasoning": "locate the cube, grasp it, lift"}'
+    )
+    summary = summarize(
+        collector=collector,
+        spec=_eval_task(),
+        checkpoint=tmp_path,
+        eval_script="/opt/eval.py",
+    )
+    traces = summary["metrics"]["reasoning"]
+    assert len(traces) == 1
+    assert traces[0]["episode"] == 1
+    assert "grasp" in traces[0]["reasoning"]
+
+
+def test_summary_omits_reasoning_when_absent(tmp_path: Path) -> None:
+    summary = summarize(
+        collector=_collector_with_episodes(True, True),
+        spec=_eval_task(),
+        checkpoint=tmp_path,
+        eval_script="/opt/eval.py",
+    )
+    assert "reasoning" not in summary["metrics"]
+
+
 def test_summary_without_protocol_output_raises(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="protocol"):
         summarize(
@@ -220,6 +279,9 @@ import json, sys
 args = sys.argv[1:]
 num_episodes = int(args[args.index("--num_episodes") + 1])
 for i in range(1, num_episodes + 1):
+    print("ODYSSEY_REASONING " + json.dumps(
+        {"episode": i, "instruction": "lift the cube", "reasoning": "grasp then lift"}
+    ))
     print("ODYSSEY_EPISODE " + json.dumps(
         {"index": i, "total": num_episodes, "success": i % 2 == 1, "return": 1.0}
     ))
@@ -279,3 +341,10 @@ def test_runner_end_to_end_with_fake_script(tmp_path: Path) -> None:
     assert summary["success_rate"] == 0.5
     assert summary["passed"] is True
     assert summary["metrics"]["successes"] == 2
+    # The ODYSSEY_REASONING lines flowed through the real subprocess +
+    # collector and landed in the summary, one trace per episode.
+    traces = summary["metrics"]["reasoning"]
+    assert len(traces) == 4
+    assert traces[0] == {
+        "episode": 1, "instruction": "lift the cube", "reasoning": "grasp then lift"
+    }
