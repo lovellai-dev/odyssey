@@ -392,6 +392,16 @@ def run_eval(args: argparse.Namespace) -> dict:
     if args.checkpoint:
         log.info("checkpoint (informational; weights on server): %s", args.checkpoint)
     client = PolicyClient(host=args.host, port=args.port, timeout_ms=args.timeout_ms)
+    # This recipe drives a SINGLE-env rollout — it reads env 0 only
+    # (_np(reward).reshape(-1)[0]) and steps one action (.unsqueeze(0)).
+    # num_envs > 1 would run but silently grade just one env, giving misleading
+    # numbers. Clamp to 1 with a warning rather than score a fraction of the batch.
+    if args.num_envs != 1:
+        log.warning(
+            "num_envs=%d ignored — this recipe is single-env (grades env 0 only); "
+            "clamping to 1.", args.num_envs,
+        )
+        args.num_envs = 1
     env_cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
     env = gym.make(args.task, cfg=env_cfg, render_mode="rgb_array")
     dev = getattr(env.unwrapped, "device", "cpu")
@@ -400,35 +410,48 @@ def run_eval(args: argparse.Namespace) -> dict:
     frames = [] if args.video_dir else None  # one combined clip across all episodes
     try:
         for ep in range(args.num_episodes):
-            obs, _ = env.reset()
-            hist: collections.deque = collections.deque(maxlen=16)
             done, t, ep_success, ep_return = False, 0, False, 0.0
-            while not done and t < args.max_steps:
-                result = client.get_action(_build_obs(obs, hist, args.instruction))
-                chunk = result[0] if isinstance(result, tuple) else result
-                for k in range(args.n_action_steps):
-                    a = gr00t_action_to_isaac(
-                        chunk, k, pos_scale=args.pos_scale,
-                        rot_scale=0.0 if args.translation_only else args.rot_scale)
-                    if args.translation_only:
-                        a[6] = 1.0  # fixed-open gripper
-                    a_t = torch.as_tensor(a, dtype=torch.float32, device=dev).unsqueeze(0)
-                    obs, reward, terminated, truncated, _ = env.step(a_t)
-                    ep_return += float(_np(reward).reshape(-1)[0])
-                    if frames is not None:
-                        frames.append(_video_frame(env, obs))
-                    if bool(_np(terminated).reshape(-1)[0]):
-                        ep_success = _read_success(env)  # capture pre auto-reset
-                    done = bool(_np(terminated).reshape(-1)[0]) or bool(_np(truncated).reshape(-1)[0])
-                    t += 1
-                    if done:
-                        break
-            successes += int(ep_success)
-            returns.append(ep_return)
-            log.info("episode %d/%d: %s (steps=%d, return=%.3f)",
-                     ep + 1, args.num_episodes, "SUCCESS" if ep_success else "fail", t, ep_return)
-            _emit(episode_line(index=ep + 1, total=args.num_episodes,
-                               success=ep_success, ret=ep_return))
+            try:
+                obs, _ = env.reset()
+                hist: collections.deque = collections.deque(maxlen=16)
+                while not done and t < args.max_steps:
+                    result = client.get_action(_build_obs(obs, hist, args.instruction))
+                    chunk = result[0] if isinstance(result, tuple) else result
+                    for k in range(args.n_action_steps):
+                        a = gr00t_action_to_isaac(
+                            chunk, k, pos_scale=args.pos_scale,
+                            rot_scale=0.0 if args.translation_only else args.rot_scale)
+                        if args.translation_only:
+                            a[6] = 1.0  # fixed-open gripper
+                        a_t = torch.as_tensor(a, dtype=torch.float32, device=dev).unsqueeze(0)
+                        obs, reward, terminated, truncated, _ = env.step(a_t)
+                        ep_return += float(_np(reward).reshape(-1)[0])
+                        if frames is not None:
+                            frames.append(_video_frame(env, obs))
+                        if bool(_np(terminated).reshape(-1)[0]):
+                            ep_success = _read_success(env)  # capture pre auto-reset
+                        done = bool(_np(terminated).reshape(-1)[0]) or bool(_np(truncated).reshape(-1)[0])
+                        t += 1
+                        if done:
+                            break
+                successes += int(ep_success)
+                returns.append(ep_return)
+                log.info("episode %d/%d: %s (steps=%d, return=%.3f)",
+                         ep + 1, args.num_episodes, "SUCCESS" if ep_success else "fail", t, ep_return)
+                _emit(episode_line(index=ep + 1, total=args.num_episodes,
+                                   success=ep_success, ret=ep_return))
+            except Exception as ep_exc:  # noqa: BLE001
+                # A single flaky get_action()/env.step() must not abort the whole
+                # sweep — that would drop the remaining episodes AND the final
+                # ODYSSEY_RESULT line. Record the episode as a failure and continue.
+                log.warning(
+                    "episode %d/%d aborted mid-rollout (%s) — recording as fail, "
+                    "continuing.", ep + 1, args.num_episodes, ep_exc, exc_info=True,
+                )
+                returns.append(ep_return)
+                _emit(episode_line(index=ep + 1, total=args.num_episodes,
+                                   success=False, ret=ep_return))
+                continue
         if frames:
             os.makedirs(args.video_dir, exist_ok=True)
             _save_video(frames, os.path.join(args.video_dir, "rollout.mp4"))

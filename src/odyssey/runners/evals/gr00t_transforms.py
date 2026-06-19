@@ -104,5 +104,13 @@ def gr00t_action_to_isaac(chunk, k, *, pos_scale=1.0, rot_scale=1.0,
     grip = float(np.asarray(chunk["gripper_position"]).reshape(-1, 1)[k, 0])
     dpos = eef[0:3].astype(np.float64) * pos_scale
     drot = rot6d_to_axis_angle(eef[3:9]).astype(np.float64) * rot_scale
+    # Gripper polarity (justified + configurable): GR00T emits `gripper_position`
+    # in [0, 1]; this recipe assumes a LOW value means "open", so
+    # grip < gripper_threshold ⇒ command the env's binary gripper OPEN
+    # (gripper_open = +1.0), else CLOSE (-1.0) — matching Isaac's IK-rel
+    # visuomotor convention (+1 open / -1 close). If a checkpoint's gripper
+    # convention is inverted, flip it with no code change via the gripper_open /
+    # gripper_close kwargs. NOTE: confirm the direction against the GR00T server
+    # on the first live Cosmos rollout (silent-failure footgun if reversed).
     g = gripper_open if grip < gripper_threshold else gripper_close
     return np.concatenate([dpos, drot, [g]]).astype(np.float32)
