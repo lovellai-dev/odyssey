@@ -81,21 +81,23 @@ prints a decomposition — no OpenVLA or simulator needed):
 python tests/manual/smoke_remote_planner.py
 ```
 
-### 3. HuggingFace login (gated models)
+### 3. HuggingFace access
 
-**Both** models are **gated** — you must accept each one's license on its
-HuggingFace page, then authenticate on the machine before the first run, or the
-download fails with `401/403`:
+Both default models are **ungated** — they download without a token (Hub API
+reports `gated: false` for both):
 
 - [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
-- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the
-  SPECIALIST (Apache-2.0 license, but gated like every Gemma release — accept
-  Google's terms on the model page first)
+- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the SPECIALIST (Apache-2.0)
+
+So **no login is required** for the shipped mission. Logging in is still
+*recommended* (avoids anonymous download rate limits) and becomes **required**
+only if you swap in a gated model — e.g. the larger **Gemma 4 E4B**, or
+`gemma-2` / `gemma-3`, which 401/403 until you accept Google's terms and pass a token:
 
 ```bash
 huggingface-cli login          # paste a token from https://huggingface.co/settings/tokens
 # or, non-interactive (CI / headless VM):
-export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
+export HF_TOKEN=hf_xxx
 ```
 
 ### 4. Hardware
@@ -105,10 +107,18 @@ export HF_TOKEN=hf_xxx          # a read token on an account that accepted the l
 
 ## Notes / gotchas
 
+> **What to expect from the eval.** This example exercises the full multi-agent
+> *plan-then-execute* pipeline; it does **not** guarantee a successful lift. The
+> PILOT is OpenVLA fine-tuned on `bridge_orig` (real-robot Bridge data), so there
+> is a real sim-to-real domain gap into Robosuite Lift — runs of 0 successful
+> lifts are common even at higher step counts, while the Gemma planner still
+> produces correct per-episode plans. Treat the lift as aspirational; the
+> demonstrable result here is the working PILOT+SPECIALIST loop.
+
 > **Why Gemma 4, not Gemma 3, for multimodal.** Gemma 3 4B emits **NaN logits
 > under int4 bitsandbytes** on this stack (verified across eager/sdpa attention,
-> text-only and with-image), so it can't run quantized here. Gemma 4 (Apache-2.0,
-> gated like every Gemma release) loads cleanly in int4 and grounds plans in the scene image.
+> text-only and with-image), so it can't run quantized here. Gemma 4 E2B-it (Apache-2.0,
+> ungated — `gated: false` on the Hub) loads cleanly in int4 and grounds plans in the scene image.
 
 > **VRAM note.** Both models share the GPU — the venv split solves the
 > *dependency* conflict, not VRAM. The SPECIALIST is pinned to **GPU 0**

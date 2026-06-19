@@ -56,9 +56,9 @@ robot:
         source: huggingface
         # Vision-language planner — runs in the specialist venv (modern
         # transformers + torchvision), so it is NOT bound by OpenVLA's 4.40.1
-        # pin. Gemma 4 E2B-it is multimodal (Apache-2.0 license, but GATED on
-        # HF — accept the license + `huggingface-cli login` before first run),
-        # so it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
+        # pin. Gemma 4 E2B-it is multimodal and ungated on HF (Apache-2.0,
+        # `gated: false` — downloads without a token; the larger E4B variant
+        # and gemma-2/3 ARE gated), so it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
         # AutoProcessor). The first episode frame is fed to the planner so the
         # plan is grounded in the scene. E2B (not E4B) so it fits alongside the
         # 14 GB pilot — see the hardware note above.
