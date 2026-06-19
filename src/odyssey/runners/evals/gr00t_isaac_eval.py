@@ -408,6 +408,7 @@ def run_eval(args: argparse.Namespace) -> dict:
 
     successes, returns = 0, []
     frames = [] if args.video_dir else None  # one combined clip across all episodes
+    summary: dict = {"success_rate": 0.0, "performance_score": 0.0, "metrics": {}}
     try:
         for ep in range(args.num_episodes):
             done, t, ep_success, ep_return = False, 0, False, 0.0
@@ -455,24 +456,26 @@ def run_eval(args: argparse.Namespace) -> dict:
         if frames:
             os.makedirs(args.video_dir, exist_ok=True)
             _save_video(frames, os.path.join(args.video_dir, "rollout.mp4"))
+        # Emit ODYSSEY_RESULT *before* tearing down the sim: simulation_app.close()
+        # ends the process, so anything after the `finally` never runs (this is why
+        # the result line was being lost on real Isaac runs — caught by an e2e run).
+        n = max(args.num_episodes, 1)
+        success_rate = successes / n
+        summary = {
+            "success_rate": success_rate,
+            "performance_score": success_rate,
+            "metrics": {
+                "successes": successes,
+                "episode_returns": [round(r, 4) for r in returns],
+                "benchmark": args.task,
+            },
+        }
+        _emit(result_line(**summary))
     finally:
         try:
             env.close()
         finally:
             simulation_app.close()
-
-    n = max(args.num_episodes, 1)
-    success_rate = successes / n
-    summary = {
-        "success_rate": success_rate,
-        "performance_score": success_rate,
-        "metrics": {
-            "successes": successes,
-            "episode_returns": [round(r, 4) for r in returns],
-            "benchmark": args.task,
-        },
-    }
-    _emit(result_line(**summary))
     return summary
 
 
