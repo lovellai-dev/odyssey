@@ -4,6 +4,7 @@
 |---|---|---|
 | `quickstart-openvla/` | OpenVLA 7B LoRA fine-tune on Bridge V2 + Robosuite Lift eval. | 24 GB GPU |
 | `quickstart-gr00t/` | GR00T N1.7 3B fine-tune on the Isaac-GR00T demo set + Isaac Lab eval. | 24 GB+ GPU for training; eval mock-only until the Isaac Lab runner lands |
+| `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
 
 More quickstarts (Octo, Pi0.5) arrive in later releases. See the
 publication plan for the cadence.
@@ -15,6 +16,7 @@ Once `lovell-odyssey` is installed:
 ```bash
 odyssey validate examples/quickstart-openvla/mission.yaml
 odyssey validate examples/quickstart-gr00t/mission.yaml
+odyssey validate examples/multiagent-openvla-gemma/mission.yaml
 ```
 
 Every example also runs end-to-end with the CPU mock (no GPU, no

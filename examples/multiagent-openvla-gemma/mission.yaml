@@ -56,8 +56,9 @@ robot:
         source: huggingface
         # Vision-language planner — runs in the specialist venv (modern
         # transformers + torchvision), so it is NOT bound by OpenVLA's 4.40.1
-        # pin. Gemma 4 E2B-it is multimodal (Apache-2.0, no gated license), so
-        # it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
+        # pin. Gemma 4 E2B-it is multimodal and ungated on HF (Apache-2.0,
+        # `gated: false` — downloads without a token; the larger E4B variant
+        # and gemma-2/3 ARE gated), so it loads via GemmaVLMGenerator (AutoModelForMultimodalLM +
         # AutoProcessor). The first episode frame is fed to the planner so the
         # plan is grounded in the scene. E2B (not E4B) so it fits alongside the
         # 14 GB pilot — see the hardware note above.
@@ -80,10 +81,10 @@ tasks:
       lora_alpha: 16
       batch_size: 2
       learning_rate: 5.0e-5
-      max_steps: 10
-      save_steps: 5
-      epochs: 1
-      data_root_dir: /home/gema
+      max_steps: 500
+      save_steps: 250
+      epochs: 1   # ignored when max_steps is set — OpenVLA's HF Trainer lets max_steps win
+      data_root_dir: /path/to/dataset   # parent dir of the RLDS dataset folder; edit to your path
       # Keep the RLDS shuffle buffer small — the upstream default (256k) eats
       # all 32 GB RAM on g2-standard-8 and freezes the VM.
       shuffle_buffer_size: 10000
@@ -92,7 +93,7 @@ tasks:
     kind: evaluation
     evaluation_type: robosuite
     benchmark_name: Lift
-    num_episodes: 2
+    num_episodes: 10
     config:
       unnorm_key: bridge_orig
 
