@@ -11,6 +11,10 @@
 > targeted at `v0.1.0-alpha`. The API, CLI, schemas, and wire protocols are
 > still subject to change without notice. See `docs/` for the design refs.
 
+<p align="center">
+  <img src="docs/Odyssey-intro.gif" alt="Odyssey intro" width="800">
+</p>
+
 ## Install
 
 > [!IMPORTANT]
