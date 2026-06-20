@@ -83,13 +83,6 @@ evaluation task → persist results. Local-mode by default; the hosted Lovell
 services (leaderboard, learning graph, hosted runners) are optional layers
 that land in later releases.
 
-```bash
-pip install -e ".[huggingface,openvla,robosuite]"
-git clone https://github.com/openvla/openvla.git /srv/openvla
-
-odyssey run examples/quickstart-openvla/mission.yaml
-```
-
 ### HuggingFace login (gated models)
 
 The models pulled from the Hub are **gated** — you must accept each model's
@@ -105,119 +98,6 @@ huggingface-cli login          # paste a token from https://huggingface.co/setti
 # or, non-interactive (CI / headless VM):
 export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
 ```
-
-Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA fine-tune.
-
-### Environment setup (known-good)
-
-Odyssey's `openvla` extra installs only the inference-side glue
-(`transformers`, `peft`, `torch`, `pillow`). The fine-tune itself runs through
-the **cloned OpenVLA repo**, which carries its own dependency set — most
-onboarding friction comes from there, not from Odyssey. OpenVLA is tested
-against a specific, pinned stack; mixing versions surfaces as protobuf /
-TensorFlow / `tensorflow-metadata` conflicts or `draccus` import errors.
-Known-good versions (from OpenVLA's own requirements — treat its repo as the
-source of truth):
-
-```text
-Python        3.10
-torch         2.2.0
-torchvision   0.17.0
-transformers  4.40.1
-tokenizers    0.19.1
-timm          0.9.10
-flash-attn    2.5.5
-draccus       (OpenVLA's CLI parser; installed with the OpenVLA repo)
-```
-
-Install the OpenVLA repo's own requirements after cloning it, and point
-Odyssey at it:
-
-```bash
-git clone https://github.com/openvla/openvla.git /srv/openvla
-export OPENVLA_REPO_PATH=/srv/openvla
-pip install -e "$OPENVLA_REPO_PATH"   # pulls OpenVLA's pinned deps (draccus, TF, wandb, ...)
-```
-
-> On a single-GPU cloud VM you may also need `export NCCL_NET=Socket` to avoid
-> NCCL init hangs (bypasses the gIB NCCL plugin).
-
-To avoid re-downloading the 7B base model on every run, point its path env var
-at a local copy. The convention is the HF id upper-cased with `/` and `-`
-replaced by `_`, suffixed `_PATH`:
-
-```bash
-export OPENVLA_OPENVLA_7B_PATH=/path/to/openvla-7b   # for base: openvla/openvla-7b
-```
-
-### Dataset: how `source: oxe` / `ref: bridge_orig` resolves
-
-**Odyssey does not download the dataset.** There is no OXE provider — the
-`oxe` source is a *pass-through*. The runner forwards two values to OpenVLA's
-`finetune.py` and OpenVLA (via TFDS/RLDS) does the actual loading:
-
-| mission.yaml | becomes the flag | meaning |
-|---|---|---|
-| `dataset.ref: bridge_orig` | `--dataset_name bridge_orig` | the OXE **registry key** OpenVLA looks up |
-| `config.data_root_dir: <path>` | `--data_root_dir <path>` | the **parent dir** that contains the RLDS dataset folder |
-
-OpenVLA loads from `<data_root_dir>/<dataset-folder>/<version>/`. You must have
-the RLDS dataset on disk first — Odyssey does not fetch it. See OpenVLA's
-[fine-tuning / dataset instructions](https://github.com/openvla/openvla)
-(Bridge V2 is ~124 GB: 1024 train + 128 validation shards).
-
-⚠️ **Naming gotcha (biggest source of confusion):** the OXE registry key and
-the on-disk folder name can differ. In validation, `ref: bridge_orig` resolved
-to data stored under `~/bridge_dataset/1.0.0/` — so `data_root_dir` had to point
-at the **parent** of that folder (`~`, the dir containing `bridge_dataset/`),
-**not** at the key name. Check where your download actually landed and set
-`data_root_dir` to its parent. (The example mission ships `data_root_dir:
-/path/to/dataset` as a placeholder you must edit.)
-
-### Weights & Biases (W&B)
-
-OpenVLA's `finetune.py` calls `wandb.init()` unconditionally, so a run will
-stall or fail if W&B isn't reachable. Odyssey does not manage W&B — control it
-yourself:
-
-```bash
-# Option A — disable it for local testing (recommended for smoke runs):
-export WANDB_MODE=disabled
-
-# Option B — log to your account, then pass project/entity via mission config:
-wandb login
-#   config:
-#     wandb_project: my-project
-#     wandb_entity:  my-entity
-```
-
-Any `config:` key Odyssey doesn't consume is forwarded verbatim as
-`--<key> <value>` to `finetune.py` — that's how `wandb_project` / `wandb_entity`
-reach it. This also lets you cleanly separate a *training* failure from a
-*logging/auth* failure.
-
-### What to expect during a run
-
-Several stages run before you see training throughput, and timing varies widely
-with hardware, disk, and network — so treat these as orientation, not promises:
-
-1. **Base model download** — `openvla-7b` (~14 GB) on first run, unless
-   `OPENVLA_OPENVLA_7B_PATH` points at a local copy.
-2. **Dataset load / indexing** — Bridge V2 (~124 GB, 1024 train + 128 val
-   shards); RLDS indexing on a cold cache takes a while.
-3. **Training startup** — model load + LoRA wrap, then steps begin.
-4. **Steady state** — throughput logs as `it/s` (reference: ~1.49 it/s on an
-   NVIDIA L4 for the quickstart config).
-
-If a stage seems stuck, it is almost always a download in progress or a
-dataset-path / W&B-config issue rather than a training bug — check those first.
-
-**Evaluation status:** the Robosuite runner auto-wires an
-OpenVLA→robosuite-action adapter (`make_openvla_policy` in
-`runners/models/openvla.py`) when no custom `policy_factory` is injected — it
-loads either a LoRA adapter or a full merged checkpoint, so eval works without
-extra glue. Full episode-completion validation on a real GPU is still in
-progress.
 
 ## Multi-agent evaluation (PILOT + SPECIALIST)
 
@@ -401,11 +281,11 @@ Hardware: 24 GB GPU (RTX 4090-class or better) for the OpenVLA LoRA fine-tune.
 > running, to bypass Google's NCCL plugin. See [issue #5](https://github.com/lovellai-dev/odyssey/issues/5) for details.
 
 > [!NOTE]
-> **Known gap for v0.1.0-alpha:** the Robosuite evaluation runner ships with
-> the lifecycle plumbing wired but no built-in OpenVLA→robosuite-action
-> adapter. Real eval numbers require supplying a `policy_factory` to
-> `RobosuiteRunner` — see the docstring in `src/odyssey/runners/robosuite.py`.
-> The built-in adapter is a v0.2.x line item.
+> **Evaluation:** the Robosuite runner auto-wires an OpenVLA→robosuite-action
+> adapter (`make_openvla_policy` in `runners/models/openvla.py`) when no custom
+> `policy_factory` is injected — it loads either a LoRA adapter or a full merged
+> checkpoint, so eval works without extra glue. Full episode-completion
+> validation on a real GPU is still in progress.
 
 #### Known-good OpenVLA stack
 
