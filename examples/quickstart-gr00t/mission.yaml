@@ -1,0 +1,76 @@
+# GR00T quickstart mission.
+#
+# Fine-tunes NVIDIA Isaac GR00T N1.7 (3B) on the LeRobot-format demo
+# set that ships inside the Isaac-GR00T repo, then evaluates the
+# resulting policy in the Isaac Lab cube-lift environment.
+#
+# Status (v0.1.x): `odyssey validate` and `odyssey run --use-mock-runner`
+# work today. The GR00T training runner and the Isaac Lab evaluation
+# runner are v0.2.x line items — this mission pins the spec-level
+# contract they will execute. See examples/README.md.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: gr00t-cube-to-bowl
+  description: GR00T N1.7 fine-tune on the Isaac-GR00T demo set, evaluated in Isaac Lab.
+  tags: [quickstart, gr00t, nvidia, isaac-lab]
+
+objective: |
+  Demonstrate that the GR00T N1.7 3B foundation model fine-tuned on a
+  small LeRobot-format demonstration set can pick up a cube and place
+  it in a bowl, evaluated in the Isaac Lab lift environment.
+
+acceptance_criteria: |
+  At least one successful lift across 10 evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: finetune-gr00t
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # Ships inside the Isaac-GR00T repo (no separate download);
+      # resolved against $ISAAC_GR00T_REPO_PATH by the runner.
+      ref: demo_data/cube_to_bowl_5
+      # GR00T trains on a flavor of LeRobot v2 with an additional
+      # meta/modality.json describing state/action/video keys.
+      format: lerobot
+    config:
+      # OpenVLA and GR00T both serve wildcard training tasks — this key
+      # routes the task to the GR00T runner explicitly.
+      runner: gr00t
+      # Remaining keys mirror gr00t/experiment/launch_finetune.py flags
+      # (underscores become dashes on the CLI).
+      embodiment_tag: new_embodiment
+      modality_config_path: examples/SO100/so100_config.py
+      global_batch_size: 32
+      max_steps: 1000
+
+  - name: eval-in-isaac-lab
+    kind: evaluation
+    evaluation_type: isaac_lab
+    benchmark_name: Isaac-Lift-Cube-Franka-v0
+    num_episodes: 10
+    # For a real run: set $ISAACLAB_PATH and point eval_script at a
+    # script speaking the ODYSSEY_* stdout protocol (see
+    # src/odyssey/runners/isaac_lab.py). Mock-run needs neither.
+    # config:
+    #   eval_script: /path/to/gr00t_isaaclab_eval.py
+
+leaderboard:
+  publish: false   # Backend not live yet.
+
+graph:
+  contribute: false   # Backend not live yet.

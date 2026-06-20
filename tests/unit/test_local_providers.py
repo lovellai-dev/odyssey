@@ -76,8 +76,8 @@ def test_known_embodiments_covers_robosuite_robots() -> None:
     # The trimmed allowlist is the set of embodiments at least one
     # shipped runner can drive end-to-end. Robosuite is the eval
     # runner today, so every name here must also have a translation in
-    # runners.robosuite.ROBOSUITE_ROBOT_NAMES.
-    from odyssey.runners.robosuite import ROBOSUITE_ROBOT_NAMES
+    # runners.evals.robosuite.ROBOSUITE_ROBOT_NAMES.
+    from odyssey.runners.evals.robosuite import ROBOSUITE_ROBOT_NAMES
 
     assert set(ROBOSUITE_ROBOT_NAMES.keys()) == KNOWN_EMBODIMENTS
     # franka_panda is the alias most OpenVLA / LeRobot specs use.

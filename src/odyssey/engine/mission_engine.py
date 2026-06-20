@@ -45,8 +45,9 @@ from odyssey.persistence.base import Persistence
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.runners.base import TaskContext
 from odyssey.runners.registry import RunnerRegistry
+from odyssey.spec.agents import AgentSpec
 from odyssey.spec.mission import Mission
-from odyssey.spec.tasks import EvaluationTask, TrainingTask
+from odyssey.spec.tasks import EvaluationTask, TaskSpec, TrainingTask
 from odyssey.telemetry.events import MissionEventType, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
 
@@ -80,6 +81,20 @@ def _task_payload(mission: MissionRun, task: TaskRun) -> dict[str, Any]:
     }
 
 
+def _runner_override(spec: TaskSpec) -> str | None:
+    """Task-level runner selection: ``config: {runner: <name>}``.
+
+    Lets a mission disambiguate when several runners serve the same
+    (kind, type) routing key — e.g. OpenVLA and GR00T are both wildcard
+    training runners, and the model family isn't visible to the
+    registry. Non-string or empty values are ignored.
+    """
+    value = spec.config.get("runner")
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 class MissionEngine:
     def __init__(
         self,
@@ -89,10 +104,15 @@ class MissionEngine:
         event_publisher: EventPublisher,
         working_dir: Path | None = None,
         providers: ProviderRegistry | None = None,
+        force_runner: str | None = None,
     ):
         self._persistence = persistence
         self._runners = runners
         self._publisher = event_publisher
+        # When set, every task dispatches to this runner regardless of
+        # task-level ``config: {runner: ...}`` overrides. The CLI sets
+        # it to "cpu_mock" for --use-mock-runner.
+        self._force_runner = force_runner
         # Per-mission working dirs live under here. Lazy-init to a tempdir
         # on first use if the caller didn't supply one — keeps tests cheap.
         self._working_dir = working_dir
@@ -252,7 +272,10 @@ class MissionEngine:
         )
 
         try:
-            runner = self._runners.select(task.spec)
+            runner = self._runners.select(
+                task.spec,
+                override=self._force_runner or _runner_override(task.spec),
+            )
         except NoRunnerForTaskError as e:
             await self._finalize_task(
                 mission,
@@ -263,14 +286,25 @@ class MissionEngine:
             )
             return
 
-        # Resolve agent + starting checkpoint for training tasks so the
-        # runner doesn't have to know about the per-agent chain. Eval
-        # tasks walk the loadout themselves (today: one agent).
+        # Resolve agent context depending on task kind.
         agent = None
         starting_checkpoint = None
+        agents: list[AgentSpec] = []
+        agent_checkpoints: dict[str, str | None] = {}
+
         if isinstance(task.spec, TrainingTask):
+            # Training: resolve the single target agent + its starting
+            # checkpoint so the runner doesn't walk the per-agent chain.
             agent = mission.agent_by_id(task.spec.agent_id)
             starting_checkpoint = mission.latest_checkpoint_for(task.spec.agent_id)
+        elif isinstance(task.spec, EvaluationTask):
+            # Evaluation: resolve ALL agents + their checkpoints so the
+            # runner can compose multi-agent runtimes (planner + pilot).
+            agents = list(mission.spec.robot.agents)
+            agent_checkpoints = {
+                a.id: mission.latest_checkpoint_for(a.id)
+                for a in mission.spec.robot.agents
+            }
 
         ctx = TaskContext(
             task=task,
@@ -281,6 +315,8 @@ class MissionEngine:
             providers=self._providers,
             agent=agent,
             starting_checkpoint=starting_checkpoint,
+            agents=agents,
+            agent_checkpoints=agent_checkpoints,
         )
 
         try:

@@ -58,8 +58,17 @@ class HFModelProvider(ModelProvider):
         api = self._get_api()
         # model_info accepts revision=None and returns the latest commit
         # sha, which we then pin into the resolved record.
-        info = api.model_info(repo_id=ref.base, revision=ref.revision)
-        sha = getattr(info, "sha", None) or ref.revision
+        try:
+            info = api.model_info(repo_id=ref.base, revision=ref.revision)
+            sha = getattr(info, "sha", None) or ref.revision
+        except Exception:
+            # Hub unreachable (HF_HUB_OFFLINE / air-gapped) or a gated repo with
+            # no token: fall back to a cached revision and let the downstream
+            # loader resolve weights from the local HF cache. ``HEAD`` is a
+            # non-cached alias for the default branch, so map it to ``main`` so
+            # the cache lookup (refs/main) succeeds. Keeps training runnable
+            # offline once the base model is cached.
+            sha = ref.revision if (ref.revision and ref.revision != "HEAD") else "main"
         if not sha:
             raise RuntimeError(
                 f"HF model_info returned no sha for {ref.base!r}"
@@ -73,12 +82,27 @@ class HFModelProvider(ModelProvider):
         )
 
     async def fetch(self, resolved: ResolvedModel, dest: Path) -> Path:
+        import os
+
         try:
             from huggingface_hub import snapshot_download
         except ImportError as e:
             raise RuntimeError(
                 "HuggingFace fetch requires the 'huggingface' extra."
             ) from e
+
+        # Offline / air-gapped: resolve straight from the local HF cache. We
+        # avoid ``local_dir`` here because it triggers a network ``repo_info``
+        # call (which raises under HF_HUB_OFFLINE) plus a multi-GB copy; instead
+        # we hand the cached snapshot path to the downstream loader.
+        if os.getenv("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes"):
+            return Path(
+                snapshot_download(
+                    repo_id=resolved.identifier,
+                    revision=resolved.revision,
+                    local_files_only=True,
+                )
+            )
 
         dest.mkdir(parents=True, exist_ok=True)
         local_path = snapshot_download(

@@ -9,7 +9,8 @@ You train an agent by describing a mission in YAML — specifying a robot, a mod
 - **Missions** — YAML specs that define what to train, how to evaluate, and on which robot
 - **Runners** — Pluggable backends that execute tasks (CPU mock for testing, OpenVLA for real training, Robosuite for evaluation)
 - **Models** — The neural network being trained (e.g. OpenVLA). A mission specifies which model to fine-tune and how
-- **Agents** — The autonomous entity resulting from training a mission. It becomes part of the robot as a PILOT or SPECIALIST
+- **Agents** — The autonomous entities that define the models to use and provide instructions for models to follow.
+- **Robots** — The embodiment of the physical robot and a collection of agents purposely collaborating to operate the robot.
 - **Providers** — Abstractions for data/model sources (local filesystem, HuggingFace)
 
 ## Codebase Structure (`src/odyssey/`)

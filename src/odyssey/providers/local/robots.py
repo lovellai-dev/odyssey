@@ -29,7 +29,7 @@ from odyssey.spec.mission import RobotSpec
 
 # Scoped to embodiments at least one shipped runner can actually drive
 # end-to-end. Today that means the arms Robosuite's built-in robot
-# models cover (``ROBOSUITE_ROBOT_NAMES`` in runners/robosuite.py is the
+# models cover (``ROBOSUITE_ROBOT_NAMES`` in runners/evals/robosuite.py is the
 # matching translation table). Quadrupeds (unitree_go2/h1), mobile bases
 # (tiago, stretch3), and arms Robosuite doesn't ship (ur10e) were
 # removed in this trim — they accepted with a green spec, then produced

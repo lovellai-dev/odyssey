@@ -170,7 +170,7 @@ async def test_openvla_runner_substitutes_provider_fetched_path(
     """When ctx.providers is set and model is HFModelRef, the runner
     should call provider.resolve + provider.fetch and use the resulting
     path as vla_path — overriding env-var fallbacks."""
-    from odyssey.runners.openvla import _resolve_and_fetch_hf_model
+    from odyssey.runners.models.openvla import _resolve_and_fetch_hf_model
 
     fetched_path = tmp_path / "fetched-model"
     fetched_path.mkdir()
@@ -211,7 +211,7 @@ async def test_openvla_runner_works_without_providers(
     """Back-compat: when providers is None, the runner relies on
     build_openvla_argv's existing env/config/HF-id fallback against
     the agent's model base."""
-    from odyssey.runners.openvla import build_openvla_argv
+    from odyssey.runners.models.openvla import build_openvla_argv
 
     monkeypatch.delenv("OPENVLA_OPENVLA_7B_PATH", raising=False)
     task = TrainingTask(

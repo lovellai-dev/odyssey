@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   test:
@@ -36,21 +36,3 @@ jobs:
 
       - name: Pytest
         run: pytest -v
-
-  dco:
-    name: DCO sign-off
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    permissions:
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: tim-actions/get-pr-commits@v1.3.1
-        id: pr-commits
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: tim-actions/dco@v1.1.0
-        with:
-          commits: ${{ steps.pr-commits.outputs.commits }}

@@ -32,6 +32,7 @@ end-to-end. Pair it with a custom policy and you get real numbers.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,37 @@ def _default_env_factory(benchmark_name: str, robosuite_robot: str | None) -> An
     return robosuite.make(**kwargs)
 
 
+def _make_eval_env(
+    benchmark_name: str,
+    robosuite_robot: str | None,
+    config: dict[str, Any] | None = None,
+) -> Any:
+    """Create a camera-enabled robosuite env for policy evaluation."""
+    try:
+        import robosuite
+    except ImportError as e:
+        raise RuntimeError(
+            "Robosuite eval requires the 'robosuite' extra. "
+            "Install with: pip install 'lovell-odyssey[robosuite]'"
+        ) from e
+    cfg = config or {}
+    camera_names = cfg.get("camera_names", "agentview")
+    camera_height = cfg.get("camera_height", 256)
+    camera_width = cfg.get("camera_width", 256)
+    kwargs: dict[str, Any] = {
+        "env_name": benchmark_name,
+        "has_renderer": False,
+        "has_offscreen_renderer": True,
+        "use_camera_obs": True,
+        "camera_names": camera_names,
+        "camera_heights": camera_height,
+        "camera_widths": camera_width,
+    }
+    if robosuite_robot is not None:
+        kwargs["robots"] = robosuite_robot
+    return robosuite.make(**kwargs)
+
+
 def _default_policy_factory(checkpoint_path: Path) -> Policy:
     raise NotImplementedError(
         "RobosuiteRunner has no built-in policy for v0.1.0-alpha. "
@@ -157,7 +189,34 @@ class RobosuiteRunner(Runner):
             step="load_policy",
             step_label=str(checkpoint),
         )
-        policy = self._policy_factory(checkpoint)
+
+        cfg = spec.config or {}
+        image_key = cfg.get("image_key", "agentview_image")
+        use_planned = (
+            self._policy_factory is _default_policy_factory
+            and _has_specialist(context)
+        )
+
+        if use_planned:
+            runtime = _build_planned_runtime(context, checkpoint, spec)
+            await context.emit_progress(
+                "model_loading",
+                step="load_specialist",
+                step_label="PlannedEvalRuntime (PILOT + SPECIALIST)",
+            )
+            policy = None
+        elif self._policy_factory is _default_policy_factory:
+            from odyssey.runners.models.openvla import make_openvla_policy
+
+            policy = make_openvla_policy(
+                checkpoint,
+                config=spec.config,
+                benchmark_name=spec.benchmark_name,
+            )
+            runtime = None
+        else:
+            policy = self._policy_factory(checkpoint)
+            runtime = None
 
         robosuite_robot = _resolve_robosuite_robot(context.mission.spec.robot)
         await context.emit_progress(
@@ -168,11 +227,19 @@ class RobosuiteRunner(Runner):
                 f"robot={robosuite_robot or 'robosuite-default'}"
             ),
         )
-        env = self._env_factory(spec.benchmark_name, robosuite_robot)
+
+        # Env: use camera-enabled env when no custom factory was injected
+        if self._env_factory is _default_env_factory:
+            env = _make_eval_env(spec.benchmark_name, robosuite_robot, spec.config)
+        else:
+            env = self._env_factory(spec.benchmark_name, robosuite_robot)
 
         num_episodes = spec.num_episodes
         successes = 0
         episode_returns: list[float] = []
+
+        # Resolve the task instruction for PlannedEvalRuntime
+        task_instruction = _resolve_task_instruction(spec) if runtime else ""
 
         for ep in range(1, num_episodes + 1):
             if context.cancelled():
@@ -187,10 +254,35 @@ class RobosuiteRunner(Runner):
             obs = env.reset()
             episode_return = 0.0
             success = False
+
+            if runtime:
+                # Plan from the first frame so a multimodal SPECIALIST can
+                # ground its plan in the scene (text planners ignore it).
+                first_image = _extract_image(obs, image_key)
+                plan = runtime.begin_episode(task_instruction, first_image)
+                logger.info("Episode %d plan: %s", ep, plan)
+                # Surface the plan in telemetry too — the CLI runs at the root
+                # WARNING level, so the INFO line above is invisible. A 1-phase
+                # plan means the SPECIALIST fell back to single-step.
+                await context.emit_progress(
+                    "executing",
+                    step="episode_plan",
+                    step_index=ep,
+                    step_total=num_episodes,
+                    step_label=f"episode {ep}: {len(plan)} phase(s): {plan}",
+                )
+
             for _step in range(self._max_steps):
                 if context.cancelled():
                     break
-                action = policy(obs if isinstance(obs, dict) else {"observation": obs})
+
+                if runtime:
+                    image = _extract_image(obs, image_key)
+                    action = runtime.get_action(image)
+                else:
+                    assert policy is not None
+                    action = policy(obs if isinstance(obs, dict) else {"observation": obs})
+
                 step_result = env.step(action)
                 # robosuite returns (obs, reward, done, info)
                 obs, reward, done, info = step_result
@@ -213,6 +305,12 @@ class RobosuiteRunner(Runner):
                 step_total=num_episodes,
                 step_label=f"episode {ep}: {'PASS' if success else 'FAIL'} return={episode_return:.3f}",
             )
+
+        # Tear down the planner once rollouts finish — closes the
+        # out-of-process RemotePlanner subprocess (no-op for in-process /
+        # the single-agent policy path). atexit covers the exception path.
+        if runtime is not None:
+            runtime.close()
 
         attempted = len(episode_returns)
         success_rate = (successes / attempted) if attempted else 0.0
@@ -275,28 +373,133 @@ def _resolve_robosuite_robot(robot: RobotSpec) -> str | None:
 
 
 def _resolve_eval_checkpoint(context: TaskContext) -> Path:
-    """Find the checkpoint the eval should run.
+    """Find the PILOT checkpoint the eval should run.
 
-    Today: walks the robot's loadout (exactly one agent), takes the
-    latest completed training task's checkpoint for that agent, fails
-    cleanly if none exists.
-
-    When multi-agent evaluation arrives, this becomes "compose the
-    loadout" — assemble each agent's current checkpoint and hand the
-    runtime a brain rather than a single policy.
+    Uses ``context.agent_checkpoints`` (populated by the engine) to find
+    the first PILOT agent with a trained checkpoint. Multi-agent loadouts
+    (PILOT + SPECIALIST) are supported — the SPECIALIST doesn't need a
+    checkpoint (it uses its base model for inference only).
     """
-    agents = context.mission.spec.robot.agents
-    if len(agents) != 1:
-        raise NotImplementedError(
-            f"RobosuiteRunner expects exactly one agent on the robot "
-            f"(got {len(agents)}). Multi-agent eval arrives with the "
-            "multi-agent runtime."
+    from odyssey.spec.agents import AgentRole
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role != AgentRole.PILOT:
+            continue
+        checkpoint = (context.agent_checkpoints or {}).get(agent.id)
+        if not checkpoint:
+            checkpoint = context.mission.latest_checkpoint_for(agent.id)
+        if checkpoint:
+            return Path(checkpoint)
+
+    raise ValueError(
+        "No completed training task produced a checkpoint for any PILOT "
+        "agent on this mission — cannot evaluate."
+    )
+
+
+def _has_specialist(context: TaskContext) -> bool:
+    """Check whether the loadout includes a SPECIALIST agent."""
+    from odyssey.spec.agents import AgentRole
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role == AgentRole.SPECIALIST:
+            return True
+    return False
+
+
+def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
+    """Return ``(model_base, quantization)`` for the first SPECIALIST."""
+    from odyssey.spec.agents import AgentRole
+    from odyssey.spec.refs import HFModelRef
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role == AgentRole.SPECIALIST:
+            model = agent.model
+            if not isinstance(model, HFModelRef):
+                raise ValueError(
+                    f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
+                    "Only HuggingFace models are supported for SPECIALIST inference."
+                )
+            return model.base, model.quantization
+    raise ValueError("No SPECIALIST agent found in the loadout")
+
+
+def _extract_image(obs: Any, image_key: str) -> Any:
+    """Pull the RGB camera frame out of a robosuite observation.
+
+    Prefers ``image_key`` (e.g. ``agentview_image``); falls back to the first
+    value when the obs isn't the expected dict shape.
+    """
+    obs_dict = obs if isinstance(obs, dict) else {"observation": obs}
+    return obs_dict.get(image_key, next(iter(obs_dict.values())))
+
+
+def _resolve_task_instruction(spec: EvaluationTask) -> str:
+    """Resolve the natural-language task instruction for the benchmark."""
+    from odyssey.runners.models.openvla import _DEFAULT_INSTRUCTIONS
+
+    cfg = spec.config or {}
+    return str(
+        cfg.get("task_instruction")
+        or _DEFAULT_INSTRUCTIONS.get(spec.benchmark_name, "complete the task")
+    )
+
+
+def _build_planned_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    spec: EvaluationTask,
+) -> Any:
+    """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST.
+
+    The SPECIALIST is a multimodal Gemma 4 task planner that runs **out of
+    process**: ``ODYSSEY_SPECIALIST_PYTHON`` must point at a separate venv's
+    python whose modern ``transformers`` + ``torchvision`` can host Gemma 4,
+    free of OpenVLA's pinned ``transformers==4.40.1`` in this venv. The
+    SPECIALIST is inference-only (it runs its base checkpoint to plan); only the
+    PILOT is trained.
+    """
+    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+    from odyssey.runners.agents.remote_planner import RemotePlanner
+    from odyssey.runners.models.openvla import VLARuntime
+
+    cfg = spec.config or {}
+    unnorm_key = cfg.get("unnorm_key", "bridge_orig")
+
+    # Load the PILOT as a VLARuntime (per-call instruction)
+    pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
+
+    # The SPECIALIST planner runs out-of-process: Gemma 4 needs a modern
+    # transformers/torchvision incompatible with OpenVLA's pin in this venv.
+    model_base, quantization = _find_specialist_model(context)
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    if not specialist_python:
+        raise RuntimeError(
+            "Multi-agent eval requires the out-of-process SPECIALIST: set "
+            "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (see the "
+            "README 'Multi-agent evaluation' section). The multimodal Gemma 4 "
+            "planner cannot load in this venv, which pins transformers==4.40.1 "
+            "for OpenVLA."
         )
-    agent = agents[0]
-    checkpoint = context.mission.latest_checkpoint_for(agent.id)
-    if not checkpoint:
-        raise ValueError(
-            f"No completed training task produced a checkpoint for agent "
-            f"{agent.id!r} on this mission — cannot evaluate."
-        )
-    return Path(checkpoint)
+
+    logger.info(
+        "SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python
+    )
+    planner = RemotePlanner(
+        model_base,
+        quantization,
+        python_path=specialist_python,
+    )
+
+    # Phase config from mission config
+    steps_per_phase = cfg.get("steps_per_phase", 50)
+    phase_config = PhaseConfig(steps_per_phase=steps_per_phase)
+
+    task_instruction = _resolve_task_instruction(spec)
+
+    return PlannedEvalRuntime(
+        pilot=pilot,
+        planner=planner,
+        phase_config=phase_config,
+        fallback_instruction=task_instruction,
+    )

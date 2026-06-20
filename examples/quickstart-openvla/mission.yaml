@@ -36,10 +36,9 @@ tasks:
     training_type: demonstration
     agent_id: pilot
     dataset:
-      source: huggingface
-      ref: lerobot/bridge_v2
-      partial: 1000
-      format: lerobot
+      source: oxe
+      ref: bridge_orig            # OXE registry key used by OpenVLA's finetune.py
+      format: rlds
     config:
       method: peft_lora
       lora_rank: 8
@@ -47,12 +46,18 @@ tasks:
       batch_size: 2
       learning_rate: 5.0e-5
       epochs: 1
+      # Parent dir of the on-disk RLDS dataset folder. The OXE key (above) and
+      # the folder name can differ (e.g. bridge_orig -> bridge_dataset/1.0.0/).
+      # See README -> "Dataset: how source: oxe / ref: bridge_orig resolves".
+      data_root_dir: /path/to/dataset
 
   - name: eval-on-robosuite-lift
     kind: evaluation
     evaluation_type: robosuite
     benchmark_name: Lift
     num_episodes: 10
+    config:
+      unnorm_key: bridge_orig
 
 leaderboard:
   publish: false   # Backend not live yet in v0.1.0-alpha.

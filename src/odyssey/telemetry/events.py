@@ -8,6 +8,9 @@ shape.
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel
 
 
 class MissionEventType(str, Enum):
@@ -26,3 +29,21 @@ class TaskEventType(str, Enum):
     COMPLETED = "task.completed"
     FAILED = "task.failed"
     CANCELLED = "task.cancelled"
+
+
+class ProgressEvent(BaseModel):
+    """Structured progress event emitted by runners.
+
+    Validated at emission time by ``TaskContext.emit_progress()``.
+    """
+
+    mission_id: str
+    task_id: str
+    task_name: str
+    stage: str
+    seq: int
+    step: str | None = None
+    step_index: int | None = None
+    step_total: int | None = None
+    step_label: str | None = None
+    metadata: dict[str, Any] | None = None

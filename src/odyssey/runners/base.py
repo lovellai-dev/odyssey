@@ -14,14 +14,22 @@ import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.providers.registry import ProviderRegistry
 from odyssey.spec.agents import AgentSpec
 from odyssey.spec.tasks import TaskKind
-from odyssey.telemetry.events import TaskEventType
+from odyssey.telemetry.events import ProgressEvent, TaskEventType
 from odyssey.telemetry.publishers.base import EventPublisher
+
+if TYPE_CHECKING:
+    # Type-only: TaskContext annotates these (task/mission fields). Importing
+    # them at runtime would create an engine<->runners import cycle — fatal when
+    # the out-of-process planner_server is launched via `python -m`, which
+    # imports the odyssey.runners package before any of our code can break the
+    # cycle. `from __future__ import annotations` keeps the annotations as
+    # strings, so this stays type-check-only. Guarded by tests/unit/test_imports.py.
+    from odyssey.engine.records import MissionRun, TaskRun
 
 # Sentinel meaning "this runner accepts any training_type / evaluation_type
 # value." Used by CPUMockRunner so a single registration covers every task
@@ -37,6 +45,7 @@ class TaskContext:
     mission: MissionRun
     publisher: EventPublisher
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
+    _progress_seq: int = field(default=0, init=False, repr=False)
     # Per-task working directory where checkpoints, logs, and other
     # artifacts should land. The engine creates this dir before invoking
     # the runner. None only in tests that don't go through the engine.
@@ -47,8 +56,7 @@ class TaskContext:
     # without providers (the CPU-mock-only test setup).
     providers: ProviderRegistry | None = None
     # The agent this training task updates. Set by the engine for
-    # training tasks; None for evaluation tasks (which walk all agents
-    # via ``mission.spec.robot.agents`` themselves).
+    # training tasks; None for evaluation tasks.
     agent: AgentSpec | None = None
     # Local path to the checkpoint a training task should start from.
     # Set by the engine when a prior completed training task on the
@@ -56,6 +64,16 @@ class TaskContext:
     # against an agent — runners fall back to ``agent.model`` (the
     # agent's base checkpoint).
     starting_checkpoint: str | None = None
+    # All agents on the robot, set by the engine for evaluation tasks.
+    # Lets eval runners compose multi-agent runtimes (e.g. planner +
+    # pilot) without walking the loadout themselves. Empty list for
+    # training tasks. None only in tests that pre-date multi-agent.
+    agents: list[AgentSpec] = field(default_factory=list)
+    # Per-agent checkpoint map for evaluation tasks. Keys are agent ids,
+    # values are the local checkpoint path from the latest completed
+    # training task for that agent — or None when the agent was never
+    # trained (SPECIALISTs use their base model directly).
+    agent_checkpoints: dict[str, str | None] = field(default_factory=dict)
 
     def cancelled(self) -> bool:
         return self.cancel_event.is_set()
@@ -73,23 +91,23 @@ class TaskContext:
         step_label: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        payload: dict[str, Any] = {
-            "mission_id": self.mission.id,
-            "task_id": self.task.id,
-            "task_name": self.task.spec.name,
-            "stage": stage,
-        }
-        if step is not None:
-            payload["step"] = step
-        if step_index is not None:
-            payload["step_index"] = step_index
-        if step_total is not None:
-            payload["step_total"] = step_total
-        if step_label is not None:
-            payload["step_label"] = step_label
-        if metadata:
-            payload["metadata"] = metadata
-        await self.publisher.publish(TaskEventType.PROGRESS.value, payload)
+        self._progress_seq += 1
+        event = ProgressEvent(
+            mission_id=self.mission.id,
+            task_id=self.task.id,
+            task_name=self.task.spec.name,
+            stage=stage,
+            seq=self._progress_seq,
+            step=step,
+            step_index=step_index,
+            step_total=step_total,
+            step_label=step_label,
+            metadata=metadata,
+        )
+        await self.publisher.publish(
+            TaskEventType.PROGRESS.value,
+            event.model_dump(exclude_none=True),
+        )
 
 
 class Runner(ABC):
