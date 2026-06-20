@@ -21,7 +21,7 @@
 
 ## Install
 
-> [!IMPORTANT]
+> [!TIP]
 > **Linux only** — install build dependencies before proceeding (needed by `.[all]`):
 > ```bash
 > sudo apt update && sudo apt install build-essential python3-dev -y
