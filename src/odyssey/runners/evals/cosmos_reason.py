@@ -51,8 +51,21 @@ def build_reasoning_prompt(instruction: str) -> str:
 
 
 def clean_reasoning(text: str, *, max_chars: int = 400) -> str:
-    """Collapse whitespace + truncate the raw generation into a one-line trace."""
-    return " ".join((text or "").split()).strip()[:max_chars]
+    """Collapse whitespace and cap the raw generation into a one-line trace.
+
+    ``max_chars`` is a **hard display ceiling, not the expected length**: at the
+    default 70 ``max_new_tokens`` a trace rarely approaches 400 chars, so the
+    truncation path is a safety net against a runaway generation rather than the
+    common case. When it does fire, cut at the last word boundary (not mid-word /
+    mid-grapheme) and append an ellipsis so the trace still reads cleanly.
+    """
+    collapsed = " ".join((text or "").split()).strip()
+    if len(collapsed) <= max_chars:
+        return collapsed
+    # Truncate on the last whitespace within the budget to avoid a dangling
+    # partial word; fall back to a hard cut if there's no space (single long token).
+    cut = collapsed[:max_chars].rsplit(" ", 1)[0] or collapsed[:max_chars]
+    return cut + "…"
 
 
 def _to_pil(frame: Any) -> Any:
@@ -117,6 +130,11 @@ class ReasoningSidecar:
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
         # Gated Cosmos-Reason2 backbone -> load from the local cache offline.
+        # NOTE: this intentionally mutates *process-wide* env. ``setdefault`` only
+        # sets the flag when unset, so it won't override a caller that explicitly
+        # went online, and any other HF load in the same process wants the same
+        # offline behavior for a gated model. (The GR00T action server runs in a
+        # separate process, so there's no cross-talk with it.)
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
         log.info("cosmos-reason: loading %s on %s", self.model_id, self.device)

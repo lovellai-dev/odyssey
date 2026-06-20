@@ -19,6 +19,9 @@ from odyssey.engine import TaskStatus
 from odyssey.engine.records import MissionRun
 from odyssey.runners.base import TaskContext
 from odyssey.runners.evals.isaac_lab import (
+    _EPISODE_PREFIX,
+    _REASONING_PREFIX,
+    _RESULT_PREFIX,
     EvalProtocolCollector,
     IsaacLabRunner,
     build_isaac_lab_argv,
@@ -177,6 +180,18 @@ def test_collector_distinguishes_result_from_reasoning() -> None:
     assert collector.result == {"success_rate": 0.5}
     assert len(collector.reasoning) == 1
     assert collector.reasoning[0]["episode"] == 1
+
+
+def test_prefixes_are_mutually_exclusive() -> None:
+    # Lock in the structural invariant the RESULT-before-REASONING parse order
+    # relies on: no ODYSSEY_* prefix may be a prefix of another (else a line
+    # could match the wrong bucket depending on check order). Guards a future
+    # rename/reorder from silently breaking disambiguation.
+    prefixes = [_EPISODE_PREFIX, _RESULT_PREFIX, _REASONING_PREFIX]
+    for a in prefixes:
+        for b in prefixes:
+            if a is not b:
+                assert not a.startswith(b), f"{a!r} starts with {b!r}"
 
 
 # ---------------------------------------------------------------------------

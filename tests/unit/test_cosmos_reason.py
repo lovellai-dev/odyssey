@@ -70,9 +70,18 @@ def test_clean_reasoning_collapses_whitespace() -> None:
     assert C.clean_reasoning("  hello\n\n  world\t! ") == "hello world !"
 
 
-def test_clean_reasoning_truncates_to_max_chars() -> None:
-    out = C.clean_reasoning("x " * 500, max_chars=50)
-    assert len(out) <= 50
+def test_clean_reasoning_truncates_on_word_boundary_with_ellipsis() -> None:
+    out = C.clean_reasoning("word " * 100, max_chars=50)
+    assert out.endswith("…")
+    assert len(out) <= 51  # max_chars budget + the single-char ellipsis
+    # No dangling partial word: every token before the ellipsis is intact.
+    assert all(tok == "word" for tok in out[:-1].split())
+
+
+def test_clean_reasoning_under_limit_is_unchanged() -> None:
+    # max_chars is a hard ceiling, not the expected length — short traces pass
+    # through verbatim with no ellipsis.
+    assert C.clean_reasoning("locate, grasp, place", max_chars=400) == "locate, grasp, place"
 
 
 def test_clean_reasoning_handles_empty_and_none() -> None:

@@ -58,6 +58,13 @@ from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 logger = logging.getLogger(__name__)
 
 
+# ODYSSEY_RESULT and ODYSSEY_REASONING share the leading "ODYSSEY_RE", so parse
+# order would matter IF one were a prefix of the other. It isn't: they diverge at
+# the next char ("S" vs "A"), and the trailing space on every prefix keeps
+# "ODYSSEY_RESULT " from swallowing a hypothetical longer token. So the
+# RESULT-before-REASONING check order in ``parse`` is safe. The invariant
+# (no ODYSSEY_* prefix is a prefix of another) is locked in by
+# test_prefixes_are_mutually_exclusive in tests/unit/test_isaac_lab.py.
 _EPISODE_PREFIX = "ODYSSEY_EPISODE "
 _RESULT_PREFIX = "ODYSSEY_RESULT "
 # Optional per-episode intent trace from the Cosmos-Reason sidecar. Purely
