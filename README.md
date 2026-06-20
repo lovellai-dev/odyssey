@@ -15,6 +15,10 @@
   <img src="docs/Odyssey-intro.gif" alt="Odyssey intro" width="800">
 </p>
 
+<p align="center">
+  <a href="https://odyssey.dev/">odyssey.dev ↗</a>
+</p>
+
 ## Install
 
 > [!IMPORTANT]
