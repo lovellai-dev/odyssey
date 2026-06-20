@@ -101,6 +101,9 @@ export HF_TOKEN=hf_xxx          # a read token on an account that accepted the l
 
 ## Multi-agent evaluation (PILOT + SPECIALIST)
 
+<details>
+<summary><b>PILOT + out-of-process Gemma 4 SPECIALIST</b> — plan-then-execute eval</summary>
+
 A mission with a **SPECIALIST** agent (a task planner) in addition to the
 **PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
 the instruction into sub-steps once per episode, and the PILOT executes each.
@@ -179,6 +182,8 @@ python tests/manual/smoke_remote_planner.py
 > (`constraints/specialist-known-good.txt`). They no longer need to be mutually
 > compatible.
 
+</details>
+
 ## CLI reference
 
 | Command | What it does |
@@ -213,7 +218,8 @@ Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T, the newer path)
 and **OpenVLA** (the original). Both run through `odyssey run <mission.yaml>` —
 pick the quickstart that matches your model.
 
-### GR00T (Isaac-GR00T + Isaac Lab)
+<details open>
+<summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab) — the newer path</summary>
 
 Fine-tunes `nvidia/GR00T-N1.7-3B` on the LeRobot-format demo set that ships
 inside the Isaac-GR00T repo (no separate download), evaluated in the Isaac Lab
@@ -245,7 +251,10 @@ The mission routes its training task to the GR00T runner with
 `config: { runner: gr00t }` — OpenVLA and GR00T both serve wildcard training
 tasks, so the family is selected explicitly.
 
-### OpenVLA (Bridge V2 + Robosuite)
+</details>
+
+<details>
+<summary><b>OpenVLA</b> (Bridge V2 + Robosuite) — the original</summary>
 
 **Prerequisites:**
 
@@ -358,6 +367,8 @@ orientation, not promises:
 
 If a stage seems stuck, it's almost always a download in progress or a
 dataset-path / W&B issue rather than a training bug — check those first.
+
+</details>
 
 ## Status snapshot (v0.0.x)
 
