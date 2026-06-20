@@ -355,7 +355,7 @@ python tests/manual/smoke_remote_planner.py
 All commands respect `--db` and `--working-dir` to override the
 `~/.odyssey/` defaults.
 
-## Status snapshot (v0.0.x)
+## Status snapshot (v0.1.0-alpha)
 
 | Area | Done | Deferred |
 |---|---|---|
@@ -365,7 +365,7 @@ All commands respect `--db` and `--working-dir` to override the
 | Provider ABCs + Local + HF | ✓ | OXE, Lovell-mode |
 | CPU mock runner | ✓ | — |
 | OpenVLA training runner | ✓ (validated on L4) | — |
-| GR00T training runner | ✓ skeleton + tests, task-level `runner: gr00t` routing | end-to-end smoke with real Isaac-GR00T |
+| GR00T training runner | ✓ (validated on H100); task-level `runner: gr00t` routing | — |
 | Robosuite eval runner | ✓ (auto-wired OpenVLA adapter) | full GPU end-to-end validation |
 | Isaac Lab eval runner | ✓ skeleton + tests, subprocess launch + `ODYSSEY_*` stdout protocol | blessed eval script (GR00T/VLA recipe), real-Isaac smoke |
 | Multi-agent eval (PILOT + SPECIALIST) | ✓ (out-of-process Gemma 4 planner) | full GPU end-to-end validation |
