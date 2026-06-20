@@ -90,7 +90,7 @@ and **OpenVLA** (the original). Both run through `odyssey run <mission.yaml>` �
 pick the quickstart that matches your model.
 
 <details open>
-<summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab) — the newer path</summary>
+<summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab)</summary>
 
 Fine-tunes `nvidia/GR00T-N1.7-3B` on the LeRobot-format demo set that ships
 inside the Isaac-GR00T repo (no separate download), evaluated in the Isaac Lab
@@ -241,7 +241,7 @@ dataset-path / W&B issue rather than a training bug — check those first.
 
 </details>
 
-## Multi-agent evaluation (PILOT + SPECIALIST)
+## Multi-agent (PILOT + SPECIALIST)
 
 <details>
 <summary><b>Show setup &amp; how it works</b></summary>
