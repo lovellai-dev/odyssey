@@ -83,6 +83,11 @@ evaluation task → persist results. Local-mode by default; the hosted Lovell
 services (leaderboard, learning graph, hosted runners) are optional layers
 that land in later releases.
 
+## Multi-agent evaluation (PILOT + SPECIALIST)
+
+<details>
+<summary><b>Show setup &amp; how it works</b></summary>
+
 ### HuggingFace login (gated models)
 
 The models pulled from the Hub are **gated** — you must accept each model's
@@ -98,11 +103,6 @@ huggingface-cli login          # paste a token from https://huggingface.co/setti
 # or, non-interactive (CI / headless VM):
 export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
 ```
-
-## Multi-agent evaluation (PILOT + SPECIALIST)
-
-<details>
-<summary><b>PILOT + out-of-process Gemma 4 SPECIALIST</b> — plan-then-execute eval</summary>
 
 A mission with a **SPECIALIST** agent (a task planner) in addition to the
 **PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
