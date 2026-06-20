@@ -85,9 +85,9 @@ that land in later releases.
 
 ## Launching a training mission
 
-Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T, the newer path)
-and **OpenVLA** (the original). Both run through `odyssey run <mission.yaml>` —
-pick the quickstart that matches your model.
+Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T) and **OpenVLA**.
+Both run through `odyssey run <mission.yaml>` — pick the quickstart that matches
+your model.
 
 <details open>
 <summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab)</summary>
