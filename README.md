@@ -83,135 +83,6 @@ evaluation task → persist results. Local-mode by default; the hosted Lovell
 services (leaderboard, learning graph, hosted runners) are optional layers
 that land in later releases.
 
-## Multi-agent evaluation (PILOT + SPECIALIST)
-
-<details>
-<summary><b>Show setup &amp; how it works</b></summary>
-
-### HuggingFace login (gated models)
-
-The models pulled from the Hub are **gated** — you must accept each model's
-license on its HuggingFace page, then authenticate on the machine before the
-first run, or the download fails with `401/403`:
-
-- [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
-- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the
-  SPECIALIST in the multi-agent example (Apache-2.0, no gating)
-
-```bash
-huggingface-cli login          # paste a token from https://huggingface.co/settings/tokens
-# or, non-interactive (CI / headless VM):
-export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
-```
-
-A mission with a **SPECIALIST** agent (a task planner) in addition to the
-**PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
-the instruction into sub-steps once per episode, and the PILOT executes each.
-Only the PILOT produces actions and only the PILOT is trained — the SPECIALIST
-is **inference-only** (it runs its base checkpoint to plan and has no training
-task).
-
-```yaml
-robot:
-  agents:
-    - id: pilot
-      role: PILOT
-      model: { source: huggingface, base: openvla/openvla-7b }
-    - id: task-planner
-      role: SPECIALIST
-      model:
-        source: huggingface
-        base: google/gemma-4-E2B-it
-        quantization: int4
-        modality: multimodal
-```
-
-The SPECIALIST is a **vision-grounded multimodal Gemma 4** planner: it sees the
-first camera frame of each episode and grounds its plan in the scene. Gemma 4
-needs a modern `transformers` + `torchvision`, which conflicts with OpenVLA's
-pinned `transformers==4.40.1`, so the SPECIALIST **must run out of process** in a
-separate venv. The PILOT stays in the main venv; the two talk over a JSON-lines
-subprocess protocol (the planner runs once per episode, off the per-step hot loop).
-
-### Setting up the out-of-process SPECIALIST
-
-1. Create the specialist venv (modern transformers + torchvision + Gemma deps):
-
-   ```bash
-   python -m venv ~/specialist-venv
-   ~/specialist-venv/bin/pip install -e ".[specialist]" \
-     -c constraints/specialist-known-good.txt
-   ```
-
-2. Point Odyssey at that venv's python. It is read per-process from the
-   environment, so export it in every shell that runs a mission — or add it to
-   your shell profile / VM startup script so it persists:
-
-   ```bash
-   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
-   ```
-
-> **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**
-> The planner is launched in that venv (`RemotePlanner` →
-> `python -m odyssey.runners.agents.planner_server`). If it is unset, multi-agent
-> eval fails fast with a clear `RuntimeError`: the multimodal Gemma 4 planner
-> cannot load in the main venv, which pins `transformers==4.40.1` for OpenVLA.
-
-Quick check without a simulator (launches the planner in the specialist venv and
-prints a decomposition — no OpenVLA or simulator needed):
-
-```bash
-python tests/manual/smoke_remote_planner.py
-```
-
-> **Why Gemma 4, not Gemma 3, for multimodal.** Gemma 3 4B emits **NaN logits
-> under int4 bitsandbytes** on this stack (verified across eager/sdpa attention,
-> text-only and with-image), so it can't run quantized here. Gemma 4 (Apache-2.0,
-> ungated) loads cleanly in int4 and grounds plans in the scene image.
-
-> **VRAM note.** Both models still share the GPU — the venv split solves the
-> *dependency* conflict, not VRAM. The SPECIALIST is pinned to **GPU 0**
-> (`device_map={"": 0}`) so bitsandbytes never silently offloads layers to CPU.
-> Gemma 4 **E4B-it** int4 (~9.3 GB) alongside bf16 OpenVLA (~14 GB) peaks at
-> ~23 GB — tight on a 24 GB L4; drop to **E2B-it** for headroom (this is what the
-> multimodal example mission uses).
-
-> **Two known-good stacks.** The main venv pins OpenVLA's stack
-> (`constraints/openvla-known-good.txt`: torch 2.2.0, transformers 4.40.1); the
-> specialist venv pins a modern one with torchvision
-> (`constraints/specialist-known-good.txt`). They no longer need to be mutually
-> compatible.
-
-</details>
-
-## CLI reference
-
-| Command | What it does |
-|---|---|
-| `odyssey init [DIR]` | Scaffold a new mission directory. `--template openvla\|cpu_mock`. |
-| `odyssey validate <mission.yaml>` | Parse + validate a spec. Exits 0 if clean. |
-| `odyssey run <mission.yaml>` | Execute end-to-end. `--use-mock-runner` for no-GPU smoke. |
-| `odyssey list` | Recent missions from the local SQLite DB. `--status` to filter. |
-| `odyssey status <mission_id>` | One mission's detail. Accepts an id prefix. |
-
-All commands respect `--db` and `--working-dir` to override the
-`~/.odyssey/` defaults.
-
-## Project layout
-
-```
-src/odyssey/
-  spec/         Pydantic schemas for mission.yaml
-  engine/       MissionEngine + lifecycle + runtime records
-  runners/      Runner ABC, registry, CPU mock, subprocess infra,
-                OpenVLA + GR00T training, Robosuite evaluation
-  providers/    Provider ABCs + registry, local/ + huggingface/
-  persistence/  Persistence ABC + InMemory + SQLite
-  telemetry/    Event vocabulary + stdout publisher
-  cli/          Click-based `odyssey` command + subcommands
-  utils/        ~/.odyssey/ path management
-```
-
 ## Launching a training mission
 
 Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T, the newer path)
@@ -254,7 +125,7 @@ tasks, so the family is selected explicitly.
 </details>
 
 <details>
-<summary><b>OpenVLA</b> (Bridge V2 + Robosuite) — the original</summary>
+<summary><b>OpenVLA</b> (Bridge V2 + Robosuite)</summary>
 
 **Prerequisites:**
 
@@ -369,6 +240,120 @@ If a stage seems stuck, it's almost always a download in progress or a
 dataset-path / W&B issue rather than a training bug — check those first.
 
 </details>
+
+## Multi-agent evaluation (PILOT + SPECIALIST)
+
+<details>
+<summary><b>Show setup &amp; how it works</b></summary>
+
+### HuggingFace login (gated models)
+
+The models pulled from the Hub are **gated** — you must accept each model's
+license on its HuggingFace page, then authenticate on the machine before the
+first run, or the download fails with `401/403`:
+
+- [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
+- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the
+  SPECIALIST in the multi-agent example (Apache-2.0, no gating)
+
+```bash
+huggingface-cli login          # paste a token from https://huggingface.co/settings/tokens
+# or, non-interactive (CI / headless VM):
+export HF_TOKEN=hf_xxx          # a read token on an account that accepted the licenses
+```
+
+A mission with a **SPECIALIST** agent (a task planner) in addition to the
+**PILOT** runs a plan-then-execute loop during eval: the SPECIALIST decomposes
+the instruction into sub-steps once per episode, and the PILOT executes each.
+Only the PILOT produces actions and only the PILOT is trained — the SPECIALIST
+is **inference-only** (it runs its base checkpoint to plan and has no training
+task).
+
+```yaml
+robot:
+  agents:
+    - id: pilot
+      role: PILOT
+      model: { source: huggingface, base: openvla/openvla-7b }
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal
+```
+
+The SPECIALIST is a **vision-grounded multimodal Gemma 4** planner: it sees the
+first camera frame of each episode and grounds its plan in the scene. Gemma 4
+needs a modern `transformers` + `torchvision`, which conflicts with OpenVLA's
+pinned `transformers==4.40.1`, so the SPECIALIST **must run out of process** in a
+separate venv. The PILOT stays in the main venv; the two talk over a JSON-lines
+subprocess protocol (the planner runs once per episode, off the per-step hot loop).
+
+### Setting up the out-of-process SPECIALIST
+
+1. Create the specialist venv (modern transformers + torchvision + Gemma deps):
+
+   ```bash
+   python -m venv ~/specialist-venv
+   ~/specialist-venv/bin/pip install -e ".[specialist]" \
+     -c constraints/specialist-known-good.txt
+   ```
+
+2. Point Odyssey at that venv's python. It is read per-process from the
+   environment, so export it in every shell that runs a mission — or add it to
+   your shell profile / VM startup script so it persists:
+
+   ```bash
+   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+   ```
+
+> **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**
+> The planner is launched in that venv (`RemotePlanner` →
+> `python -m odyssey.runners.agents.planner_server`). If it is unset, multi-agent
+> eval fails fast with a clear `RuntimeError`: the multimodal Gemma 4 planner
+> cannot load in the main venv, which pins `transformers==4.40.1` for OpenVLA.
+
+Quick check without a simulator (launches the planner in the specialist venv and
+prints a decomposition — no OpenVLA or simulator needed):
+
+```bash
+python tests/manual/smoke_remote_planner.py
+```
+
+> **Why Gemma 4, not Gemma 3, for multimodal.** Gemma 3 4B emits **NaN logits
+> under int4 bitsandbytes** on this stack (verified across eager/sdpa attention,
+> text-only and with-image), so it can't run quantized here. Gemma 4 (Apache-2.0,
+> ungated) loads cleanly in int4 and grounds plans in the scene image.
+
+> **VRAM note.** Both models still share the GPU — the venv split solves the
+> *dependency* conflict, not VRAM. The SPECIALIST is pinned to **GPU 0**
+> (`device_map={"": 0}`) so bitsandbytes never silently offloads layers to CPU.
+> Gemma 4 **E4B-it** int4 (~9.3 GB) alongside bf16 OpenVLA (~14 GB) peaks at
+> ~23 GB — tight on a 24 GB L4; drop to **E2B-it** for headroom (this is what the
+> multimodal example mission uses).
+
+> **Two known-good stacks.** The main venv pins OpenVLA's stack
+> (`constraints/openvla-known-good.txt`: torch 2.2.0, transformers 4.40.1); the
+> specialist venv pins a modern one with torchvision
+> (`constraints/specialist-known-good.txt`). They no longer need to be mutually
+> compatible.
+
+</details>
+
+## CLI reference
+
+| Command | What it does |
+|---|---|
+| `odyssey init [DIR]` | Scaffold a new mission directory. `--template openvla\|cpu_mock`. |
+| `odyssey validate <mission.yaml>` | Parse + validate a spec. Exits 0 if clean. |
+| `odyssey run <mission.yaml>` | Execute end-to-end. `--use-mock-runner` for no-GPU smoke. |
+| `odyssey list` | Recent missions from the local SQLite DB. `--status` to filter. |
+| `odyssey status <mission_id>` | One mission's detail. Accepts an id prefix. |
+
+All commands respect `--db` and `--working-dir` to override the
+`~/.odyssey/` defaults.
 
 ## Status snapshot (v0.0.x)
 
