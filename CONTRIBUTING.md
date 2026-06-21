@@ -4,9 +4,9 @@ Odyssey is an open-source project from Lovell AI. We welcome contributions —
 bug reports, feature ideas, documentation fixes, and patches. This file
 explains what you need to know before sending one.
 
-## Pre-alpha disclaimer
+## Alpha disclaimer
 
-This project is in pre-alpha (`v0.0.x`). The schema, CLI, ABCs, and wire
+This project is in alpha (`v0.1.0-alpha.1`). The schema, CLI, ABCs, and wire
 protocols are all in flux. If you are thinking about a non-trivial
 contribution, please open a GitHub issue first to check that it fits the
 direction we are heading. Small fixes (typos, docstrings, obvious bugs) can
