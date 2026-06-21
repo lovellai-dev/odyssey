@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Lovell AI", email = "odyssey@lovell.ai" }]
 keywords = ["robotics", "machine-learning", "vla", "benchmark", "orchestration"]
 classifiers = [
-    "Development Status :: 2 - Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
