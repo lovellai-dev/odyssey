@@ -18,6 +18,15 @@
   <a href="https://odyssey.dev/">odyssey.dev ↗</a>
 </p>
 
+## What it is
+
+You train an agent by describing a mission in YAML — a robot, a model, a dataset to train on, an
+evaluation benchmark to score against — and `odyssey run` walks it through the
+full lifecycle: load → validate → execute training tasks → execute the
+evaluation task → persist results. Local-mode by default; the hosted Lovell
+services (leaderboard, learning graph, hosted runners) are optional layers
+that land in later releases.
+
 ## Install
 
 > [!TIP]
@@ -63,15 +72,6 @@ COMPLETED  c1756bad855e45cc9a95b5b0566c948b
 laptop without a GPU. Inspect runs afterward with `odyssey list` and
 `odyssey status <id>`. State is persisted to `~/.odyssey/missions.db`;
 artifacts under `~/.odyssey/runs/<mission-id>/<task-id>/`.
-
-## What it is
-
-You train an agent by describing a mission in YAML — a robot, a model, a dataset to train on, an
-evaluation benchmark to score against — and `odyssey run` walks it through the
-full lifecycle: load → validate → execute training tasks → execute the
-evaluation task → persist results. Local-mode by default; the hosted Lovell
-services (leaderboard, learning graph, hosted runners) are optional layers
-that land in later releases.
 
 ## Launching a training mission
 
