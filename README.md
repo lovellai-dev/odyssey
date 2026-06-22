@@ -20,11 +20,11 @@
 
 ## What it is
 
-You train a robot by describing a mission in YAML — an embodiment to operate, 
-agents with models for execution, tasks with a dataset to train on, an
-evaluation benchmark to score against — and `odyssey run` walks it through the
-full lifecycle: load → validate → execute training tasks → execute the
-evaluation task → persist results. Local-mode by default; the hosted Lovell
+You train a robot with a multi-agent brain by describing a mission in YAML — an 
+embodiment to operate, agents with models for execution, tasks with a dataset to 
+train on, an evaluation benchmark to score against — and `odyssey run` walks it 
+through the full lifecycle: load → validate → execute training tasks → execute 
+the evaluation task → persist results. Local-mode by default; the hosted Lovell
 AI services (leaderboard, learning graph, hosted runners) are optional layers
 that land in later releases.
 
