@@ -20,11 +20,12 @@
 
 ## What it is
 
-You train an agent by describing a mission in YAML — a robot, a model, a dataset to train on, an
+You train a robot by describing a mission in YAML — an embodiment to operate, 
+agents with models for execution, tasks with a dataset to train on, an
 evaluation benchmark to score against — and `odyssey run` walks it through the
 full lifecycle: load → validate → execute training tasks → execute the
 evaluation task → persist results. Local-mode by default; the hosted Lovell
-services (leaderboard, learning graph, hosted runners) are optional layers
+AI services (leaderboard, learning graph, hosted runners) are optional layers
 that land in later releases.
 
 ## Install
@@ -77,7 +78,7 @@ artifacts under `~/.odyssey/runs/<mission-id>/<task-id>/`.
 
 Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T) and **OpenVLA**.
 Both run through `odyssey run <mission.yaml>` — pick the quickstart that matches
-your model.
+the agent's model.
 
 <details open>
 <summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab)</summary>
