@@ -68,6 +68,41 @@ _TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 }
 
 
+# Human-readable, state-derived descriptions. These are the single source
+# of truth for the lifecycle prose carried in event payloads' ``message``
+# field — a readable rendering of the typed status, not a substitute for it.
+# The structured ``status`` value stays in the payload for machines; the
+# message is for humans. Keep them generic (they describe the *state*, not a
+# specific mission) so they stay consistent across every run.
+_MISSION_MESSAGES: dict[MissionStatus, str] = {
+    MissionStatus.DRAFT: "Mission created and awaiting submission.",
+    MissionStatus.QUEUED: "Mission queued — waiting for resources to start.",
+    MissionStatus.ACTIVE: "Mission running — executing tasks in order.",
+    MissionStatus.COMPLETED: "Mission completed successfully.",
+    MissionStatus.FAILED: "Mission failed — see task errors for details.",
+    MissionStatus.CANCELLED: "Mission cancelled before completion.",
+}
+
+_TASK_MESSAGES: dict[TaskStatus, str] = {
+    TaskStatus.PENDING: "Task pending — not yet scheduled.",
+    TaskStatus.QUEUED: "Task queued — waiting to start.",
+    TaskStatus.IN_PROGRESS: "Task running.",
+    TaskStatus.COMPLETED: "Task completed successfully.",
+    TaskStatus.FAILED: "Task failed.",
+    TaskStatus.CANCELLED: "Task cancelled before completion.",
+}
+
+
+def mission_message(status: MissionStatus) -> str:
+    """Return the human-readable description for a mission status."""
+    return _MISSION_MESSAGES[status]
+
+
+def task_message(status: TaskStatus) -> str:
+    """Return the human-readable description for a task status."""
+    return _TASK_MESSAGES[status]
+
+
 def is_terminal_mission(status: MissionStatus) -> bool:
     return status in _TERMINAL_MISSION
 
