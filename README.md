@@ -4,11 +4,10 @@
   <a href="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml"><img src="https://github.com/lovellai-dev/odyssey/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
-  <img src="https://img.shields.io/badge/status-pre--alpha-orange.svg" alt="Status: Pre-Alpha">
+  <img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Status: Alpha">
 </p>
 
-> **Status: pre-alpha (v0.0.x).** Not yet on PyPI. The first public alpha is
-> targeted at `v0.1.0-alpha`. The API, CLI, schemas, and wire protocols are
+> **Status: alpha (v0.1.0-alpha.1).** The API, CLI, schemas, and wire protocols are
 > still subject to change without notice. See `docs/` for the design refs.
 
 <p align="center">
@@ -18,6 +17,16 @@
 <p align="center">
   <a href="https://odyssey.dev/">odyssey.dev ↗</a>
 </p>
+
+## What it is
+
+You train a robot with a multi-agent brain by describing a mission in YAML — an 
+embodiment to operate, agents with models for execution, tasks with a dataset to 
+train on, an evaluation benchmark to score against — and `odyssey run` walks it 
+through the full lifecycle: load → validate → execute training tasks → execute 
+the evaluation task → persist results. Local-mode by default; the hosted Lovell
+AI services (leaderboard, learning graph, hosted runners) are optional layers
+that land in later releases.
 
 ## Install
 
@@ -65,20 +74,11 @@ laptop without a GPU. Inspect runs afterward with `odyssey list` and
 `odyssey status <id>`. State is persisted to `~/.odyssey/missions.db`;
 artifacts under `~/.odyssey/runs/<mission-id>/<task-id>/`.
 
-## What it is
-
-You train an agent by describing a mission in YAML — a robot, a model, a dataset to train on, an
-evaluation benchmark to score against — and `odyssey run` walks it through the
-full lifecycle: load → validate → execute training tasks → execute the
-evaluation task → persist results. Local-mode by default; the hosted Lovell
-services (leaderboard, learning graph, hosted runners) are optional layers
-that land in later releases.
-
 ## Launching a training mission
 
 Two training paths ship today: **GR00T** (NVIDIA Isaac GR00T) and **OpenVLA**.
 Both run through `odyssey run <mission.yaml>` — pick the quickstart that matches
-your model.
+the agent's model.
 
 <details open>
 <summary><b>GR00T</b> (Isaac-GR00T + Isaac Lab)</summary>
@@ -346,7 +346,7 @@ python tests/manual/smoke_remote_planner.py
 All commands respect `--db` and `--working-dir` to override the
 `~/.odyssey/` defaults.
 
-## Status snapshot (v0.1.0-alpha)
+## Status snapshot (v0.1.0-alpha.1)
 
 | Area | Done | Deferred |
 |---|---|---|
@@ -361,7 +361,7 @@ All commands respect `--db` and `--working-dir` to override the
 | Isaac Lab eval runner | ✓ skeleton + tests, subprocess launch + `ODYSSEY_*` stdout protocol | blessed eval script (GR00T/VLA recipe), real-Isaac smoke |
 | Multi-agent eval (PILOT + SPECIALIST) | ✓ (out-of-process Gemma 4 planner) | full GPU end-to-end validation |
 | `odyssey init / run / list / status / validate` | ✓ | `logs`, `publish` |
-| Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha |
+| Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha.1 |
 
 ## License
 
@@ -371,4 +371,4 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). DCO sign-off required on every
 commit. Open an issue before non-trivial PRs — the API surface is moving
-weekly until v0.1.0-alpha freezes.
+weekly until v0.1.0-alpha.1 freezes.
