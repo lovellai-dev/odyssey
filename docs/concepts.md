@@ -3,8 +3,8 @@
 ## Missions
 
 A **mission** is the unit of work in Odyssey: a single, reproducible recipe
-that fine-tunes a model on a dataset and benchmarks the result. You describe
-one in a `mission.yaml`; the framework loads it, drives it through a
+that trains a multi-agent robot brain by fine-tuning its underlying models on a dataset
+and benchmarking the result. You describe one in a `mission.yaml`; the framework loads it, drives it through a
 lifecycle (`DRAFT → QUEUED → ACTIVE → COMPLETED | FAILED | CANCELLED`),
 persists every status transition to `~/.odyssey/missions.db`, and emits one
 JSON event per state change to stdout.

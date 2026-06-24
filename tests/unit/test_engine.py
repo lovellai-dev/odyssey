@@ -188,6 +188,31 @@ async def test_start_mission_drives_to_completed() -> None:
     assert "task.progress" in pub.event_types
 
 
+async def test_lifecycle_events_carry_human_message() -> None:
+    """Every mission/task lifecycle payload carries a state-derived ``message``
+    alongside the typed ``status`` — humans read the prose, machines key off
+    the status."""
+    from odyssey.engine.lifecycle import mission_message, task_message
+
+    engine, pub = await _make_engine()
+    run = await engine.create_mission(_spec())
+    await engine.start_mission(run.id)
+
+    for event_type, payload in pub.events:
+        if event_type == "task.progress":
+            continue  # progress events use ProgressEvent, not the status envelope
+        assert "message" in payload, f"{event_type} missing message"
+        status = MissionStatus(payload["status"]) if event_type.startswith(
+            "mission."
+        ) else TaskStatus(payload["status"])
+        expected = (
+            mission_message(status)
+            if event_type.startswith("mission.")
+            else task_message(status)
+        )
+        assert payload["message"] == expected
+
+
 async def test_overall_grade_averages_eval_scores() -> None:
     engine, _ = await _make_engine()
     run = await engine.create_mission(_spec())

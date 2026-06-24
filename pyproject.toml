@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "Lovell AI", email = "odyssey@lovell.ai" }]
 keywords = ["robotics", "machine-learning", "vla", "benchmark", "orchestration"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
@@ -133,6 +133,12 @@ warn_unused_configs = true
 module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing"]
 ignore_missing_imports = true
 follow_imports = "skip"
+# Also skip these libs' bundled .pyi stubs. By default mypy follows imports into
+# stub files even when follow_imports="skip", so it parses numpy's installed
+# stubs — and numpy 2.5's stubs use PEP 695 `type` statements that fail under
+# our python_version=3.10 target (CI 3.12 job). Skipping stubs treats these as
+# Any (already the intent) and stops the parse error.
+follow_imports_for_stubs = true
 
 # The GR00T Isaac Lab eval recipe and its transforms are standalone scripts
 # launched under Isaac Sim's bundled Python (untyped numpy + the gr00t server

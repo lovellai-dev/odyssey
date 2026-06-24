@@ -39,6 +39,8 @@ from odyssey.engine.lifecycle import (
     can_transition_task,
     is_terminal_mission,
     is_terminal_task,
+    mission_message,
+    task_message,
 )
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.persistence.base import Persistence
@@ -63,6 +65,9 @@ def _mission_payload(run: MissionRun) -> dict[str, Any]:
         "mission_id": run.id,
         "name": run.spec.metadata.name,
         "status": run.status.value,
+        # Human-readable rendering of ``status``; the typed value above is
+        # what machines key off. See lifecycle._MISSION_MESSAGES.
+        "message": mission_message(run.status),
     }
     if run.overall_grade is not None:
         payload["overall_grade"] = run.overall_grade
@@ -78,6 +83,8 @@ def _task_payload(mission: MissionRun, task: TaskRun) -> dict[str, Any]:
         "task_name": task.spec.name,
         "task_kind": task.spec.kind,
         "status": task.status.value,
+        # Human-readable rendering of ``status``. See lifecycle._TASK_MESSAGES.
+        "message": task_message(task.status),
     }
 
 
