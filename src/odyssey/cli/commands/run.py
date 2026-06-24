@@ -21,6 +21,7 @@ from pathlib import Path
 import click
 
 from odyssey.engine import MissionEngine, MissionStatus
+from odyssey.engine.lifecycle import mission_message
 from odyssey.engine.records import MissionRun
 from odyssey.persistence import SqlitePersistence
 from odyssey.providers import ProviderRegistry
@@ -122,11 +123,13 @@ def run(
     click.echo("")
     if final.status == MissionStatus.COMPLETED:
         click.echo(click.style("COMPLETED", fg="green", bold=True) + f"  {final.id}")
+        click.echo(f"  {mission_message(final.status)}")
         if final.overall_grade is not None:
             click.echo(f"  overall_grade : {final.overall_grade:.3f}")
         sys.exit(0)
     elif final.status == MissionStatus.FAILED:
         click.echo(click.style("FAILED", fg="red", bold=True) + f"  {final.id}")
+        click.echo(f"  {mission_message(final.status)}")
         for task in final.tasks:
             if task.error_message:
                 click.echo(f"  {task.spec.name}: {task.error_message}")
@@ -136,6 +139,7 @@ def run(
             click.style(final.status.value, fg="yellow", bold=True)
             + f"  {final.id}"
         )
+        click.echo(f"  {mission_message(final.status)}")
         sys.exit(1)
 
 
