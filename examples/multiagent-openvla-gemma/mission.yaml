@@ -96,6 +96,10 @@ tasks:
     num_episodes: 10
     config:
       unnorm_key: bridge_orig
+      # Record an MP4 per episode of the rollout. Near-free — the eval env
+      # already renders the frame each step for the pilot. Clips land in the
+      # task's output dir under videos/ (see result_summary.artifacts.videos).
+      capture_video: true
 
 leaderboard:
   publish: false
