@@ -26,15 +26,32 @@ end-to-end validation runs in issues
 5. [Set the GCP-critical environment variables](#5-the-gcp-critical-environment-variables)
 6. [Run the mission](#6-run-the-mission)
 7. [Troubleshoot](#7-troubleshooting--debugging-playbook) when it silently dies
+8. [Get your results and stop the VM](#8-wrap-up-get-your-results-and-stop-the-vm)
 
-Budget ~1–2 hours the first time, most of it the dataset download.
+Plan for **most of a morning**: the steps themselves are quick, but the 124 GB
+dataset download dominates and scales with your bandwidth (anywhere from ~30 min
+to several hours).
+
+> 💸 **Validate for free first.** A GPU VM costs real money the whole time it's
+> running. Before you provision anything, confirm the mission spec and the whole
+> orchestration flow on your laptop with the CPU mock — no GPU, no cost:
+> ```bash
+> odyssey run examples/quickstart-openvla/mission.yaml --use-mock-runner
+> ```
+> Only spin up the VM once that runs clean. And see [§8](#8-wrap-up-get-your-results-and-stop-the-vm)
+> — **stop the VM when you're done** so it stops billing.
 
 ---
 
 ## 0. Prerequisites
 
-- A **GCP project** with GPU quota and the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated.
-- A **HuggingFace account** with the gated model licenses accepted (see [§5](#hugging-face-authentication-gated-models)).
+- A **GCP project** with billing enabled and the [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated.
+- **GPU quota for L4.** New projects start with **zero** GPU quota — you must
+  request an increase for `NVIDIA_L4_GPUS` (and/or `GPUS_ALL_REGIONS`) in your
+  target region via *IAM & Admin → Quotas*. Approval can take minutes to a day, so
+  **request it before you need it**. Hitting `Quota 'NVIDIA_L4_GPUS' exceeded`
+  at VM-creation time means this step was skipped.
+- A **HuggingFace account** with the gated model licenses accepted (see [§5](#huggingface-authentication-gated-models)).
 - Basic familiarity with SSH and the Linux shell.
 
 ---
@@ -52,6 +69,17 @@ Budget ~1–2 hours the first time, most of it the dataset download.
 > enough — the Bridge V2 dataset alone is 124 GB. **Disk-full is the single most
 > common cause of silent failures** in this pipeline (see
 > [§7](#silent-exit1--the-decoder)). Provision **300 GB** from the start.
+>
+> Disk-light alternative: instead of a 300 GB disk you can **stream the dataset
+> from a GCS bucket via [`gcsfuse`](https://cloud.google.com/storage/docs/gcsfuse-quickstart-mount-bucket)**
+> (mount the bucket and point `data_root_dir` at the mount). Slower per-step I/O,
+> but no large local disk.
+
+> 💸 **Cost & quota.** A `g2-standard-8` + L4 runs on the order of **~$0.70–1/hour**
+> (varies by region; check the [pricing page](https://cloud.google.com/compute/gpus-pricing)),
+> plus a few $/month for the 300 GB disk. **You pay while the VM is running, GPU
+> idle or not** — so stop it between sessions ([§8](#8-wrap-up-get-your-results-and-stop-the-vm)).
+> A stopped VM still bills for its disk.
 
 > ⚠️ **L4 stockouts are frequent** in `us-central1-a`. If VM creation fails with a
 > stockout, try another zone (`us-central1-b`, `us-west1-a`, …) — though those
@@ -64,7 +92,7 @@ Budget ~1–2 hours the first time, most of it the dataset download.
 ## 2. Connect & system dependencies
 
 ```bash
-gcloud compute ssh odyssey-training --zone=<ZONE>
+gcloud compute ssh <VM_NAME> --zone=<ZONE>
 ```
 
 Confirm the GPU is visible:
@@ -247,26 +275,49 @@ export PYOPENGL_PLATFORM=egl
 
 ## 6. Run the mission
 
+Start with the **single-agent** quickstart — it's the spine of this tutorial:
+OpenVLA LoRA fine-tune → Robosuite Lift eval, one venv, no extra moving parts.
+
 ```bash
 # Sanity-check the spec first (instant, no GPU)
 odyssey validate examples/quickstart-openvla/mission.yaml
 
-# Single-agent: OpenVLA LoRA fine-tune → Robosuite Lift eval
+# OpenVLA LoRA fine-tune → Robosuite Lift eval
 odyssey run examples/quickstart-openvla/mission.yaml
-
-# Multi-agent: OpenVLA pilot + Gemma planner (also needs the specialist venv —
-# see the README "Multi-agent" section for ODYSSEY_SPECIALIST_PYTHON)
-odyssey run examples/multiagent-openvla-gemma/mission.yaml
 ```
 
-A successful run chains `training → evaluation` and ends with mission status
-**COMPLETED**, the eval loading the checkpoint the training task just produced.
+### What success looks like
+
+The run chains `training → evaluation` and ends with mission status **COMPLETED**.
+The tail of the output looks roughly like:
+
+```
+finetune-openvla      -> training, OpenVLA LoRA finetune, checkpoint saved
+eval-on-robosuite-lift -> COMPLETED, used the freshly-trained checkpoint
+{"event": "mission.completed", "overall_grade": 0.0}
+COMPLETED  <mission-id>
+```
+
+The eval's `checkpoint_path` referencing the model the training task just produced
+is the proof that **train → eval chained correctly through the engine**.
 
 > A low score / `grade F` on a short fine-tune is **expected** — a few hundred LoRA
 > steps don't solve Lift, and there's a real domain gap (Bridge V2 real-robot data
 > → Robosuite sim). The goal of this tutorial is a clean **end-to-end run**, not a
 > high score. To *see* what the policy actually does, enable `capture_video: true`
-> in the eval task's `config` (see the README).
+> in the eval task's `config` (see the README) — it saves an MP4 per episode.
+
+### Optional: the multi-agent mission
+
+`examples/multiagent-openvla-gemma/mission.yaml` adds a **Gemma vision-language
+planner** alongside the OpenVLA pilot. It needs **a second Python environment**
+(the planner can't share OpenVLA's pinned `transformers==4.40.1`), reached via
+`ODYSSEY_SPECIALIST_PYTHON`. Set that up first per the README's **"Multi-agent"**
+section, then:
+
+```bash
+odyssey run examples/multiagent-openvla-gemma/mission.yaml
+```
 
 ---
 
@@ -329,6 +380,29 @@ Before each run after an SSH reconnect:
 - [ ] correct stack pinned (`torch==2.2.0`, `transformers==4.40.1`)
 
 ---
+
+## 8. Wrap up: get your results and stop the VM
+
+Runs land under `~/.odyssey/runs/<mission-id>/<task-id>/` on the VM (checkpoints,
+and the rollout MP4s if you enabled `capture_video`). Pull what you want to keep
+back to your machine with `scp`:
+
+```bash
+# from your laptop — copy a task's output dir (checkpoint + videos) locally
+gcloud compute scp --recurse \
+  <VM_NAME>:~/.odyssey/runs/<mission-id> ./odyssey-results --zone=<ZONE>
+```
+
+Then **stop the VM** so it stops billing the GPU/compute:
+
+```bash
+gcloud compute instances stop <VM_NAME> --zone=<ZONE>
+```
+
+> 💸 A **stopped** VM no longer bills for compute, but **still bills for its disk**
+> (the 300 GB). If you're done for good, either delete the instance *and* its disk,
+> or snapshot the disk first and delete it — a snapshot is far cheaper to park than
+> a live 300 GB disk. Don't just close the SSH session: that leaves the VM running.
 
 ## Appendix: environment variable reference
 
