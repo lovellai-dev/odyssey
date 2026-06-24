@@ -31,6 +31,7 @@ end-to-end. Pair it with a custom policy and you get real numbers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -38,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
+from odyssey.runners.evals.video import save_rollout_video, to_uint8_frame
 from odyssey.spec.mission import RobotSpec
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
@@ -192,6 +194,20 @@ class RobosuiteRunner(Runner):
 
         cfg = spec.config or {}
         image_key = cfg.get("image_key", "agentview_image")
+        # Opt-in rollout video. The camera-enabled eval env already renders the
+        # frame each step (the policy uses it), so capture is near-free: a list
+        # append per step plus one mp4 encode per episode, offloaded to a thread.
+        capture_video = bool(cfg.get("capture_video", False))
+        video_fps = int(cfg.get("video_fps", 24))
+        video_format = str(cfg.get("video_format", "mp4")).lstrip(".")
+        video_dir: Path | None = None
+        if capture_video and context.output_dir is None:
+            logger.warning(
+                "capture_video set but TaskContext.output_dir is None — disabling video"
+            )
+            capture_video = False
+        elif capture_video:
+            video_dir = context.output_dir / "videos"  # type: ignore[operator]
         use_planned = (
             self._policy_factory is _default_policy_factory
             and _has_specialist(context)
@@ -238,6 +254,17 @@ class RobosuiteRunner(Runner):
         successes = 0
         episode_returns: list[float] = []
 
+        # Video encoding runs in a thread so it overlaps the next episode's
+        # rollout instead of blocking it; we await all encodes after the loop.
+        # FUTURE (deferred — see feat/rollout-video-capture notes): the episodes
+        # themselves are independent and could be parallelized, but on a single
+        # 24GB GPU one OpenVLA-7B already saturates VRAM, so true episode
+        # parallelism needs vectorized envs + batched policy inference (verify
+        # OpenVLA's action head batches) or multi-GPU. Not worth it here.
+        loop = asyncio.get_running_loop()
+        encode_tasks: list[asyncio.Future[Any]] = []
+        video_paths: list[str] = []
+
         # Resolve the task instruction for PlannedEvalRuntime
         task_instruction = _resolve_task_instruction(spec) if runtime else ""
 
@@ -254,6 +281,7 @@ class RobosuiteRunner(Runner):
             obs = env.reset()
             episode_return = 0.0
             success = False
+            frames: list[Any] = []  # rebound fresh each episode; in-flight encodes keep their own list
 
             if runtime:
                 # Plan from the first frame so a multimodal SPECIALIST can
@@ -278,9 +306,13 @@ class RobosuiteRunner(Runner):
 
                 if runtime:
                     image = _extract_image(obs, image_key)
+                    if capture_video:
+                        _capture_frame(frames, image)
                     action = runtime.get_action(image)
                 else:
                     assert policy is not None
+                    if capture_video:
+                        _capture_frame(frames, _extract_image(obs, image_key))
                     action = policy(obs if isinstance(obs, dict) else {"observation": obs})
 
                 step_result = env.step(action)
@@ -306,11 +338,30 @@ class RobosuiteRunner(Runner):
                 step_label=f"episode {ep}: {'PASS' if success else 'FAIL'} return={episode_return:.3f}",
             )
 
+            if capture_video and frames and video_dir is not None:
+                tag = "PASS" if success else "FAIL"
+                out_path = video_dir / f"episode_{ep:02d}_{tag}.{video_format}"
+                encode_tasks.append(
+                    loop.run_in_executor(None, save_rollout_video, frames, out_path, video_fps)
+                )
+
         # Tear down the planner once rollouts finish — closes the
         # out-of-process RemotePlanner subprocess (no-op for in-process /
         # the single-agent policy path). atexit covers the exception path.
         if runtime is not None:
             runtime.close()
+
+        # Drain the in-flight video encodes (no-op when capture is off). Failed
+        # encodes return None — they're dropped, never fatal to the eval.
+        if encode_tasks:
+            video_paths = [str(p) for p in await asyncio.gather(*encode_tasks) if p is not None]
+            if video_paths:
+                await context.emit_progress(
+                    "executing",
+                    step="videos_saved",
+                    step_label=f"{len(video_paths)} rollout video(s)",
+                    metadata={"videos": video_paths},
+                )
 
         attempted = len(episode_returns)
         success_rate = (successes / attempted) if attempted else 0.0
@@ -331,6 +382,7 @@ class RobosuiteRunner(Runner):
                 "benchmark": spec.benchmark_name,
                 "checkpoint_path": str(checkpoint),
             },
+            "artifacts": {"videos": video_paths},
         }
 
 
@@ -432,6 +484,18 @@ def _extract_image(obs: Any, image_key: str) -> Any:
     """
     obs_dict = obs if isinstance(obs, dict) else {"observation": obs}
     return obs_dict.get(image_key, next(iter(obs_dict.values())))
+
+
+def _capture_frame(frames: list[Any], image: Any) -> None:
+    """Append one rollout frame to ``frames`` for the demo video.
+
+    Robosuite's offscreen renderer stores frames bottom-to-top, so we flip
+    vertically to get an upright clip. Non-image observations (the
+    ``_extract_image`` fallback) are silently skipped.
+    """
+    frame = to_uint8_frame(image)
+    if frame is not None:
+        frames.append(frame[::-1])
 
 
 def _resolve_task_instruction(spec: EvaluationTask) -> str:

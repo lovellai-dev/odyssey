@@ -46,6 +46,9 @@ dev = [
     # pillow: the remote-planner image tests encode/decode a scene image as a
     # base64 PNG (PIL). Same reason as numpy — CI installs only the dev extra.
     "pillow>=9.0",
+    # imageio: rollout-video helper tests encode synthetic frames to a GIF
+    # (pillow plugin, no ffmpeg). CI installs only the dev extra.
+    "imageio>=2.31",
 ]
 # Optional providers / runners — kept out of base install so the wheel
 # stays light. Users opt in per-feature.
@@ -56,6 +59,9 @@ huggingface = [
 robosuite = [
     "robosuite>=1.4",
     "mujoco>=3.0",
+    # imageio[ffmpeg]: encodes rollout videos to mp4 (the ffmpeg plugin ships
+    # the encoder). Frames are already rendered by the camera-enabled eval env.
+    "imageio[ffmpeg]>=2.31",
 ]
 openvla = [
     # NOTE: the known-good runtime stack (torch 2.2.0, transformers 4.40.1,
@@ -130,7 +136,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2"]
 ignore_missing_imports = true
 follow_imports = "skip"
 # Also skip these libs' bundled .pyi stubs. By default mypy follows imports into
