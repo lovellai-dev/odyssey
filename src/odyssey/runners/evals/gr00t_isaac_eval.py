@@ -223,7 +223,10 @@ def serve_checkpoint(args: argparse.Namespace):
     """Start a GR00T policy server on ``args.checkpoint``, wait until ready,
     yield, then tear it down. The body runs the eval against ``args.host:port``.
     """
+    import ctypes
+    import signal
     import subprocess
+    import tempfile
 
     argv = build_server_command(
         checkpoint=(args.served_model_path or args.checkpoint),
@@ -238,12 +241,33 @@ def serve_checkpoint(args: argparse.Namespace):
     env.setdefault("HF_HUB_OFFLINE", "1")       # gated Cosmos backbone -> offline cache
     env.setdefault("TRANSFORMERS_OFFLINE", "1")
     log.info("auto-serve: launching GR00T server: %s", " ".join(argv))
-    proc = subprocess.Popen(argv, env=env)
+
+    # DEADLOCK FIX: the server MUST NOT inherit this recipe's stdout/stderr — those are the
+    # pipe the Odyssey runner (and Command Center) read. run_eval()'s finally calls
+    # simulation_app.close(), which HARD-EXITS this recipe (so the teardown `finally` below
+    # never runs and the server is orphaned). If the orphan still held the stdout pipe's write
+    # end, the runner's read would never see EOF and the eval would wedge until CC's timeout
+    # (observed live: server idle at 0% GPU, ~40-min hang, ODYSSEY_RESULT never consumed).
+    # (1) redirect the server's output to a log file so it never holds the orchestrator pipe;
+    # (2) PR_SET_PDEATHSIG so the kernel SIGKILLs the server if we hard-exit (no GPU leak).
+    server_log_path = os.path.join(tempfile.gettempdir(), f"gr00t_server_{args.port}.log")
+    server_log = open(server_log_path, "wb")  # noqa: SIM115  handle outlives this scope (Popen + finally)
+
+    def _die_with_parent():  # Linux: reap this server when the recipe process dies
+        with contextlib.suppress(Exception):
+            ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)
+
+    proc = subprocess.Popen(
+        argv, env=env,
+        stdout=server_log, stderr=subprocess.STDOUT,
+        preexec_fn=_die_with_parent,
+    )
+    log.info("auto-serve: GR00T server pid=%s (log: %s)", proc.pid, server_log_path)
     try:
         if not _wait_for_server(args.host, args.port, args.server_ready_timeout, proc):
             raise RuntimeError(
                 f"GR00T server failed to become ready on {args.host}:{args.port} "
-                f"within {args.server_ready_timeout}s (server rc={proc.poll()})"
+                f"within {args.server_ready_timeout}s (server rc={proc.poll()}; see {server_log_path})"
             )
         log.info("auto-serve: GR00T server ready on %s:%d", args.host, args.port)
         yield
@@ -254,6 +278,8 @@ def serve_checkpoint(args: argparse.Namespace):
             proc.wait(timeout=20)
         except Exception:
             proc.kill()
+        with contextlib.suppress(Exception):
+            server_log.close()
 
 
 # ---------------------------------------------------------------------------
