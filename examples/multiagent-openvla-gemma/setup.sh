@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# Setup for the multi-agent mission (OpenVLA pilot + Gemma planner).
+#
+# This is the FRAGILE part of multi-agent: it needs TWO Python environments with
+# mutually incompatible `transformers` versions —
+#   * MAIN venv      → OpenVLA's pinned transformers==4.40.1 (the pilot + eval)
+#   * SPECIALIST venv → a modern transformers + torchvision (the Gemma planner)
+# Mixing them is where setups break. This script builds both, idempotently.
+#
+# It ONLY sets things up — it does NOT run a mission. After it finishes:
+#   source examples/multiagent-openvla-gemma/.env   # load the env vars
+#   odyssey run examples/multiagent-openvla-gemma/mission.yaml
+#
+# Linux + an NVIDIA GPU (24 GB, e.g. L4) assumed — the install pulls torch,
+# robosuite/mujoco, and bitsandbytes. Re-runnable: existing venvs/clones are
+# reused, not clobbered.
+#
+# Usage:
+#   examples/multiagent-openvla-gemma/setup.sh [options]
+# Options:
+#   --specialist-venv PATH   specialist venv location   (default: ~/specialist-venv)
+#   --openvla-repo PATH      where to clone OpenVLA      (default: ~/openvla)
+#   --skip-main              skip the main venv + OpenVLA (already set up)
+#   --smoke                  run the planner smoke check at the end (downloads Gemma)
+#   -h, --help               show this help
+
+set -euo pipefail
+
+# --- locate the repo root (this script lives in examples/multiagent-openvla-gemma/) ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# --- defaults (overridable via flags) ---
+SPECIALIST_VENV="${SPECIALIST_VENV:-$HOME/specialist-venv}"
+OPENVLA_REPO="${OPENVLA_REPO_PATH:-$HOME/openvla}"
+SKIP_MAIN=0
+RUN_SMOKE=0
+
+log()  { printf '\033[1;34m[setup]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[setup] WARNING:\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31m[setup] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --specialist-venv) SPECIALIST_VENV="$2"; shift 2 ;;
+    --openvla-repo)    OPENVLA_REPO="$2"; shift 2 ;;
+    --skip-main)       SKIP_MAIN=1; shift ;;
+    --smoke)           RUN_SMOKE=1; shift ;;
+    -h|--help)         sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *)                 die "unknown option: $1 (try --help)" ;;
+  esac
+done
+
+PYTHON="${PYTHON:-python3}"
+command -v "$PYTHON" >/dev/null || die "'$PYTHON' not found — install Python 3.10."
+
+cd "$REPO_ROOT"
+log "repo root: $REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# 1. MAIN venv: odyssey + OpenVLA stack (the pilot + the robosuite eval)
+# ---------------------------------------------------------------------------
+MAIN_VENV="$REPO_ROOT/.venv"
+if [[ "$SKIP_MAIN" -eq 1 ]]; then
+  log "--skip-main: assuming the main venv at $MAIN_VENV is already set up"
+  [[ -x "$MAIN_VENV/bin/odyssey" ]] || warn "no 'odyssey' binary at $MAIN_VENV/bin — is the main venv really set up?"
+else
+  if [[ ! -d "$MAIN_VENV" ]]; then
+    log "creating main venv at $MAIN_VENV"
+    "$PYTHON" -m venv "$MAIN_VENV"
+  else
+    log "main venv already exists at $MAIN_VENV — reusing"
+  fi
+
+  log "installing odyssey + extras (pinned to the known-good OpenVLA stack)"
+  "$MAIN_VENV/bin/pip" install --upgrade pip >/dev/null
+  "$MAIN_VENV/bin/pip" install -e ".[all]" -c constraints/openvla-known-good.txt
+
+  # Upstream OpenVLA repo (carries draccus + finetune.py)
+  if [[ ! -d "$OPENVLA_REPO/.git" ]]; then
+    log "cloning OpenVLA into $OPENVLA_REPO"
+    git clone https://github.com/openvla/openvla.git "$OPENVLA_REPO"
+  else
+    log "OpenVLA repo already at $OPENVLA_REPO — reusing"
+  fi
+  "$MAIN_VENV/bin/pip" install -e "$OPENVLA_REPO" -c constraints/openvla-known-good.txt
+fi
+
+# ---------------------------------------------------------------------------
+# 2. SPECIALIST venv: the multimodal Gemma planner (modern transformers)
+# ---------------------------------------------------------------------------
+if [[ ! -d "$SPECIALIST_VENV" ]]; then
+  log "creating specialist venv at $SPECIALIST_VENV"
+  "$PYTHON" -m venv "$SPECIALIST_VENV"
+else
+  log "specialist venv already exists at $SPECIALIST_VENV — reusing"
+fi
+
+log "installing the specialist (Gemma) deps — modern transformers + torchvision"
+"$SPECIALIST_VENV/bin/pip" install --upgrade pip >/dev/null
+"$SPECIALIST_VENV/bin/pip" install -e ".[specialist]" -c constraints/specialist-known-good.txt
+SPECIALIST_PYTHON="$SPECIALIST_VENV/bin/python"
+
+# ---------------------------------------------------------------------------
+# 3. HuggingFace auth — non-interactive, never blocks setup
+#    Gemma 4 (specialist) is ungated; only the OpenVLA-7b PILOT is gated, and it
+#    downloads at RUN time. So this is a soft check: warn, don't fail.
+# ---------------------------------------------------------------------------
+HF_CLI="$MAIN_VENV/bin/huggingface-cli"
+if [[ -x "$HF_CLI" ]]; then
+  if "$HF_CLI" whoami >/dev/null 2>&1; then
+    log "HuggingFace: already authenticated ($("$HF_CLI" whoami 2>/dev/null | head -1))"
+  elif [[ -n "${HF_TOKEN:-}" ]]; then
+    log "HuggingFace: logging in non-interactively from \$HF_TOKEN"
+    "$HF_CLI" login --token "$HF_TOKEN" --add-to-git-credential=false >/dev/null 2>&1 \
+      && log "HuggingFace: token accepted" \
+      || warn "HuggingFace login with \$HF_TOKEN failed — check the token."
+  else
+    warn "Not logged in to HuggingFace and \$HF_TOKEN is unset."
+    warn "The PILOT 'openvla/openvla-7b' is GATED — accept its license on HF and"
+    warn "  export HF_TOKEN=hf_xxx   (or run: $HF_CLI login)"
+    warn "before 'odyssey run'. Setup continues (the model downloads at run time)."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Write the env file to source before running (no secrets baked in)
+# ---------------------------------------------------------------------------
+ENV_FILE="$SCRIPT_DIR/.env"
+log "writing env file: $ENV_FILE"
+cat > "$ENV_FILE" <<EOF
+# Source this before running the multi-agent mission:
+#   source examples/multiagent-openvla-gemma/.env
+# (use 'source', NOT './' — exports must land in your current shell)
+source "$MAIN_VENV/bin/activate"
+
+# --- pilot / training (OpenVLA) ---
+export OPENVLA_REPO_PATH="$OPENVLA_REPO"
+export NCCL_NET=Socket          # GCP single-GPU: bypass the gIB NCCL plugin
+export WANDB_MODE=disabled      # OpenVLA calls wandb.init() unconditionally
+
+# --- planner / specialist (out-of-process Gemma venv) ---
+export ODYSSEY_SPECIALIST_PYTHON="$SPECIALIST_PYTHON"
+
+# --- evaluation (Robosuite / MuJoCo, headless) ---
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+
+# --- HuggingFace auth (gated PILOT openvla-7b) — set your own token, do NOT commit it ---
+# export HF_TOKEN=hf_xxxxxxxx
+EOF
+
+# ---------------------------------------------------------------------------
+# 5. Optional smoke check (downloads Gemma — opt-in)
+# ---------------------------------------------------------------------------
+if [[ "$RUN_SMOKE" -eq 1 ]]; then
+  log "running the out-of-process planner smoke check (this downloads Gemma)..."
+  ODYSSEY_SPECIALIST_PYTHON="$SPECIALIST_PYTHON" \
+    "$MAIN_VENV/bin/python" tests/manual/smoke_remote_planner.py \
+    || warn "smoke check failed — inspect the output above."
+fi
+
+# ---------------------------------------------------------------------------
+log "done."
+cat <<EOF
+
+Next steps:
+  1. source examples/multiagent-openvla-gemma/.env
+  2. export HF_TOKEN=hf_xxx            # if not already authenticated (gated pilot)
+  3. odyssey validate examples/multiagent-openvla-gemma/mission.yaml
+  4. odyssey run      examples/multiagent-openvla-gemma/mission.yaml
+
+Smoke-test the planner alone (no GPU-heavy run):
+  ODYSSEY_SPECIALIST_PYTHON="$SPECIALIST_PYTHON" \\
+    "$MAIN_VENV/bin/python" tests/manual/smoke_remote_planner.py
+EOF
