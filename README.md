@@ -284,11 +284,18 @@ subprocess protocol (the planner runs once per episode, off the per-step hot loo
 
 ### Setting up the out-of-process SPECIALIST
 
-1. Create the specialist venv (modern transformers + torchvision + Gemma deps):
+> 💡 **Shortcut:** `examples/multiagent-openvla-gemma/setup.sh` does all of the
+> below (both the pilot and specialist venvs) for you, idempotently. The manual
+> steps follow if you'd rather do it by hand.
+
+1. Create the specialist venv (modern transformers + torchvision + Gemma deps).
+   We name it **`env_specialist`** to pair with the **`env_pilot`** venv that
+   holds the OpenVLA pilot — the role-based names keep the two `transformers`
+   stacks straight:
 
    ```bash
-   python -m venv ~/specialist-venv
-   ~/specialist-venv/bin/pip install -e ".[specialist]" \
+   python -m venv env_specialist
+   env_specialist/bin/pip install -e ".[specialist]" \
      -c constraints/specialist-known-good.txt
    ```
 
@@ -297,7 +304,7 @@ subprocess protocol (the planner runs once per episode, off the per-step hot loo
    your shell profile / VM startup script so it persists:
 
    ```bash
-   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+   export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
    ```
 
 > **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**

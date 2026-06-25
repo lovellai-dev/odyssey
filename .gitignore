@@ -20,6 +20,8 @@ wheels/
 .venv/
 venv/
 env/
+env_pilot/        # multi-agent setup.sh: OpenVLA pilot venv
+env_specialist/   # multi-agent setup.sh: Gemma specialist venv
 ENV/
 
 # Test / lint caches

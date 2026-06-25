@@ -7,10 +7,12 @@
 # only agent that is trained; the SPECIALIST is inference-only — it runs its
 # base checkpoint to plan and is never fine-tuned (it has no training task).
 #
-# REQUIRES the out-of-process setup (see README "Multi-agent evaluation"):
-#   python -m venv ~/specialist-venv
-#   ~/specialist-venv/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
-#   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+# REQUIRES the out-of-process setup — easiest via the setup script in this dir:
+#   examples/multiagent-openvla-gemma/setup.sh   (builds env_pilot + env_specialist)
+# or by hand (see README "Multi-agent"):
+#   python -m venv env_specialist
+#   env_specialist/bin/pip install -e ".[specialist]" -c constraints/specialist-known-good.txt
+#   export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
 # Multimodal Gemma 4 needs a modern transformers + torchvision, incompatible
 # with OpenVLA's pinned transformers==4.40.1 in the main venv, so the SPECIALIST
 # can ONLY run out-of-process. Without ODYSSEY_SPECIALIST_PYTHON this mission

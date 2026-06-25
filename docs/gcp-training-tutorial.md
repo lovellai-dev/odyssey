@@ -117,12 +117,16 @@ OpenVLA's fine-tune runs through the **upstream OpenVLA repo**, which carries it
 own dependency set. Most onboarding friction comes from version drift there, not
 from Odyssey — so we pin a known-good stack.
 
+We name the venv **`env_pilot`** — it hosts the OpenVLA *pilot* model. (The
+multi-agent mission adds a second `env_specialist` venv for the Gemma planner;
+the role-based names keep the two straight. See [§6](#optional-the-multi-agent-mission).)
+
 ```bash
 # Odyssey
 git clone https://github.com/lovellai-dev/odyssey.git ~/odyssey
 cd ~/odyssey
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv env_pilot
+source env_pilot/bin/activate
 pip install -e ".[all,dev]"
 
 # Upstream OpenVLA (provides draccus + the finetune.py entry point)
@@ -199,7 +203,7 @@ These are per-shell — **you must re-export them after every SSH reconnect.** S
 the [reusable `env.sh`](#tip-put-them-in-an-envsh) tip below.
 
 ```bash
-cd ~/odyssey && source .venv/bin/activate
+cd ~/odyssey && source env_pilot/bin/activate
 
 # --- Training (OpenVLA) ---
 export OPENVLA_REPO_PATH=~/openvla
@@ -258,7 +262,7 @@ a file you `source` each session:
 
 ```bash
 # ~/odyssey/env.sh  — run with:  source env.sh   (NOT ./env.sh)
-source ~/odyssey/.venv/bin/activate
+source ~/odyssey/env_pilot/bin/activate
 export OPENVLA_REPO_PATH=~/openvla
 export NCCL_NET=Socket
 export WANDB_MODE=disabled
@@ -311,13 +315,21 @@ is the proof that **train → eval chained correctly through the engine**.
 
 `examples/multiagent-openvla-gemma/mission.yaml` adds a **Gemma vision-language
 planner** alongside the OpenVLA pilot. It needs **a second Python environment**
-(the planner can't share OpenVLA's pinned `transformers==4.40.1`), reached via
-`ODYSSEY_SPECIALIST_PYTHON`. Set that up first per the README's **"Multi-agent"**
-section, then:
+(`env_specialist`) because the planner can't share OpenVLA's pinned
+`transformers==4.40.1` — that's why the pilot venv above is named `env_pilot`.
+
+A setup script builds both venvs (`env_pilot` + `env_specialist`) for you,
+idempotently — pass `--skip-pilot` if you already created `env_pilot` above:
 
 ```bash
+# builds env_pilot + env_specialist, writes a sourceable .env (no run)
+examples/multiagent-openvla-gemma/setup.sh --skip-pilot
+
+source examples/multiagent-openvla-gemma/.env   # sets ODYSSEY_SPECIALIST_PYTHON etc.
 odyssey run examples/multiagent-openvla-gemma/mission.yaml
 ```
+
+See the README's **"Multi-agent"** section for the details.
 
 ---
 
