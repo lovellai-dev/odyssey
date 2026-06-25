@@ -78,6 +78,14 @@ else
 
   log "installing odyssey + extras into env_pilot (pinned to the known-good OpenVLA stack)"
   "$PILOT_VENV/bin/pip" install --upgrade pip >/dev/null
+  # torch/vision/audio are CUDA builds (+cu121) that live on the PyTorch index,
+  # NOT on PyPI — install them first from there, then the rest from PyPI under
+  # the same constraints (matches constraints/openvla-known-good.txt's header).
+  log "  [1/2] torch stack from the PyTorch cu121 index"
+  "$PILOT_VENV/bin/pip" install -c constraints/openvla-known-good.txt \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu121
+  log "  [2/2] odyssey + extras from PyPI (torch already satisfied)"
   "$PILOT_VENV/bin/pip" install -e ".[all]" -c constraints/openvla-known-good.txt
 
   # Upstream OpenVLA repo (carries draccus + finetune.py)
