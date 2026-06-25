@@ -114,9 +114,10 @@ log "installing the specialist (Gemma) deps into env_specialist — modern trans
 SPECIALIST_PYTHON="$SPECIALIST_VENV/bin/python"
 
 # ---------------------------------------------------------------------------
-# 3. HuggingFace auth — non-interactive, never blocks setup
-#    Gemma 4 (specialist) is ungated; only the OpenVLA-7b PILOT is gated, and it
-#    downloads at RUN time. So this is a soft check: warn, don't fail.
+# 3. HuggingFace auth — OPTIONAL, non-interactive, never blocks setup.
+#    Both default models are UNGATED (openvla/openvla-7b and the Gemma 4
+#    specialist both report gated:false on the Hub), so no token is required. A
+#    token only raises the anonymous download rate limit — nice to have, not needed.
 # ---------------------------------------------------------------------------
 HF_CLI="$PILOT_VENV/bin/huggingface-cli"
 if [[ -x "$HF_CLI" ]]; then
@@ -128,10 +129,8 @@ if [[ -x "$HF_CLI" ]]; then
       && log "HuggingFace: token accepted" \
       || warn "HuggingFace login with \$HF_TOKEN failed — check the token."
   else
-    warn "Not logged in to HuggingFace and \$HF_TOKEN is unset."
-    warn "The PILOT 'openvla/openvla-7b' is GATED — accept its license on HF and"
-    warn "  export HF_TOKEN=hf_xxx   (or run: $HF_CLI login)"
-    warn "before 'odyssey run'. Setup continues (the model downloads at run time)."
+    log "HuggingFace: not logged in — fine, the default models are ungated."
+    log "  (optional: export HF_TOKEN=hf_xxx to avoid anonymous download rate limits.)"
   fi
 fi
 
@@ -158,7 +157,8 @@ export ODYSSEY_SPECIALIST_PYTHON="$SPECIALIST_PYTHON"
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 
-# --- HuggingFace auth (gated PILOT openvla-7b) — set your own token, do NOT commit it ---
+# --- HuggingFace (OPTIONAL — the default models are ungated; a token only avoids
+#     anonymous download rate limits). Set your own; do NOT commit it. ---
 # export HF_TOKEN=hf_xxxxxxxx
 EOF
 
@@ -178,7 +178,7 @@ cat <<EOF
 
 Next steps:
   1. source examples/multiagent-openvla-gemma/.env
-  2. export HF_TOKEN=hf_xxx            # if not already authenticated (gated pilot)
+  2. (optional) export HF_TOKEN=hf_xxx   # only to avoid anonymous HF rate limits
   3. odyssey validate examples/multiagent-openvla-gemma/mission.yaml
   4. odyssey run      examples/multiagent-openvla-gemma/mission.yaml
 

@@ -51,7 +51,8 @@ to several hours).
   target region via *IAM & Admin → Quotas*. Approval can take minutes to a day, so
   **request it before you need it**. Hitting `Quota 'NVIDIA_L4_GPUS' exceeded`
   at VM-creation time means this step was skipped.
-- A **HuggingFace account** with the gated model licenses accepted (see [§5](#huggingface-authentication-gated-models)).
+- *(Optional)* a **HuggingFace token** — the default models are ungated, so it's
+  only needed to avoid anonymous download rate limits or to use a gated model (see [§5](#huggingface-access-optional)).
 - Basic familiarity with SSH and the Linux shell.
 
 ---
@@ -210,8 +211,8 @@ export OPENVLA_REPO_PATH=~/openvla
 export NCCL_NET=Socket          # GCP single-GPU: bypass the gIB NCCL plugin (see below)
 export WANDB_MODE=disabled      # OpenVLA calls wandb.init() unconditionally
 
-# --- HuggingFace auth (gated models) ---
-export HF_TOKEN=hf_xxxxxxxx
+# --- HuggingFace (optional: default models are ungated; a token only avoids rate limits) ---
+# export HF_TOKEN=hf_xxxxxxxx
 
 # --- Evaluation (Robosuite / MuJoCo, headless) ---
 export MUJOCO_GL=egl
@@ -240,14 +241,15 @@ surfacing as `Default process group has not been initialized` and a non-obvious
 
 > On **AWS/Azure** you likely won't see the `gIB` error — if so, skip this step.
 
-### HuggingFace authentication (gated models)
+### HuggingFace access (optional)
 
-`openvla/openvla-7b` (the PILOT) is **gated** — accept its license on the model
-page, then authenticate. The multi-agent planner uses `google/gemma-4-E2B-it`,
-which is **ungated** (Apache-2.0), so it needs no token.
+Both default models are **ungated** (`openvla/openvla-7b` and the Gemma 4 planner
+both report `gated:false` on the Hub), so **no token is required**. A token only
+raises the anonymous download rate limit — set one if you hit limits, or if you
+swap in a gated model (e.g. a `gemma-2` / `gemma-3` variant):
 
 ```bash
-export HF_TOKEN=hf_xxxxxxxx      # most robust
+export HF_TOKEN=hf_xxxxxxxx      # optional
 # or: hf auth login
 ```
 
@@ -266,7 +268,7 @@ source ~/odyssey/env_pilot/bin/activate
 export OPENVLA_REPO_PATH=~/openvla
 export NCCL_NET=Socket
 export WANDB_MODE=disabled
-export HF_TOKEN=hf_xxxxxxxx
+# export HF_TOKEN=hf_xxxxxxxx     # optional — models are ungated; only for rate limits
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 ```
@@ -423,7 +425,7 @@ gcloud compute instances stop <VM_NAME> --zone=<ZONE>
 | `OPENVLA_REPO_PATH` | train | Path to the cloned OpenVLA repo (locates `finetune.py`) |
 | `NCCL_NET=Socket` | train | **GCP:** bypass the `gIB` NCCL plugin on single-GPU VMs |
 | `WANDB_MODE=disabled` | train | OpenVLA calls `wandb.init()` unconditionally |
-| `HF_TOKEN` | train | Auth for gated models (`openvla/openvla-7b`) |
+| `HF_TOKEN` | train (optional) | Only to avoid anonymous HF rate limits — default models are ungated |
 | `MUJOCO_GL=egl` | eval | Headless GL backend for MuJoCo |
 | `PYOPENGL_PLATFORM=egl` | eval | Headless PyOpenGL platform |
 | `ODYSSEY_SPECIALIST_PYTHON` | eval (multi-agent) | Path to the specialist venv's python (Gemma planner) |
