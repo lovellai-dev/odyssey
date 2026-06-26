@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
-from odyssey.runners.evals.video import save_rollout_video, to_uint8_frame
+from odyssey.runners.video import save_rollout_video, to_uint8_frame
 from odyssey.spec.mission import RobotSpec
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
