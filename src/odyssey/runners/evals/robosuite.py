@@ -352,9 +352,6 @@ def _resolve_robosuite_robot(robot: RobotSpec) -> str | None:
     return name
 
 
-
-
-
 def _has_specialist(context: TaskContext) -> bool:
     """Check whether the loadout includes a SPECIALIST agent."""
     from odyssey.spec.agents import AgentRole
