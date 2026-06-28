@@ -38,6 +38,10 @@ from pathlib import Path
 from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
+from odyssey.runners.evals._common import (
+    build_eval_summary,
+    resolve_eval_checkpoint,
+)
 from odyssey.spec.mission import RobotSpec
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
@@ -183,7 +187,7 @@ class RobosuiteRunner(Runner):
                 f"RobosuiteRunner expects EvaluationTask, got {type(spec).__name__}"
             )
 
-        checkpoint = _resolve_eval_checkpoint(context)
+        checkpoint = resolve_eval_checkpoint(context)
         await context.emit_progress(
             "model_loading",
             step="load_policy",
@@ -313,37 +317,13 @@ class RobosuiteRunner(Runner):
             runtime.close()
 
         attempted = len(episode_returns)
-        success_rate = (successes / attempted) if attempted else 0.0
-        performance_score = (
-            sum(episode_returns) / max(attempted, 1)
-            if episode_returns
-            else 0.0
+        return build_eval_summary(
+            num_episodes=attempted,
+            successes=successes,
+            episode_returns=episode_returns,
+            benchmark_name=spec.benchmark_name,
+            checkpoint_path=checkpoint,
         )
-        return {
-            "num_episodes": attempted,
-            "success_rate": round(success_rate, 4),
-            "performance_score": round(performance_score, 4),
-            "letter_grade": _grade(success_rate),
-            "passed": success_rate >= 0.5,
-            "metrics": {
-                "successes": successes,
-                "episode_returns": [round(r, 4) for r in episode_returns],
-                "benchmark": spec.benchmark_name,
-                "checkpoint_path": str(checkpoint),
-            },
-        }
-
-
-def _grade(success_rate: float) -> str:
-    if success_rate >= 0.9:
-        return "A"
-    if success_rate >= 0.8:
-        return "B"
-    if success_rate >= 0.7:
-        return "C"
-    if success_rate >= 0.6:
-        return "D"
-    return "F"
 
 
 def _resolve_robosuite_robot(robot: RobotSpec) -> str | None:
@@ -370,31 +350,6 @@ def _resolve_robosuite_robot(robot: RobotSpec) -> str | None:
             "or supply ``urdf:`` and a custom env_factory."
         )
     return name
-
-
-def _resolve_eval_checkpoint(context: TaskContext) -> Path:
-    """Find the PILOT checkpoint the eval should run.
-
-    Uses ``context.agent_checkpoints`` (populated by the engine) to find
-    the first PILOT agent with a trained checkpoint. Multi-agent loadouts
-    (PILOT + SPECIALIST) are supported — the SPECIALIST doesn't need a
-    checkpoint (it uses its base model for inference only).
-    """
-    from odyssey.spec.agents import AgentRole
-
-    for agent in context.agents or context.mission.spec.robot.agents:
-        if agent.role != AgentRole.PILOT:
-            continue
-        checkpoint = (context.agent_checkpoints or {}).get(agent.id)
-        if not checkpoint:
-            checkpoint = context.mission.latest_checkpoint_for(agent.id)
-        if checkpoint:
-            return Path(checkpoint)
-
-    raise ValueError(
-        "No completed training task produced a checkpoint for any PILOT "
-        "agent on this mission — cannot evaluate."
-    )
 
 
 def _has_specialist(context: TaskContext) -> bool:

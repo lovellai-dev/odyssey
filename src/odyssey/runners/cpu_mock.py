@@ -90,12 +90,13 @@ class CPUMockRunner(Runner):
             await self._sleep(context)
 
         success_rate = successes / episodes if episodes else 1.0
+        from odyssey.runners.evals._common import grade
         return {
             "_mock": True,
             "num_episodes": episodes,
             "success_rate": success_rate,
             "performance_score": success_rate,
-            "letter_grade": "A" if success_rate >= 0.9 else "B",
+            "letter_grade": grade(success_rate),
             "passed": success_rate >= 0.5,
             "benchmark_name": spec.benchmark_name,
         }
