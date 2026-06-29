@@ -363,6 +363,44 @@ All commands respect `--db` and `--working-dir` to override the
 | `odyssey init / run / list / status / validate` | ✓ | `logs`, `publish` |
 | Leaderboard publish, Learning Graph, Anonymizer, Auth | — | post-v0.1.0-alpha.1 |
 
+## Recording rollout videos
+
+Add `capture_video: true` to any Robosuite eval task's `config` to save an MP4 of
+each rollout (the example missions already enable it):
+
+```yaml
+  - name: eval-on-robosuite-lift
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: Lift
+    num_episodes: 10
+    config:
+      unnorm_key: bridge_orig
+      capture_video: true        # one MP4 per episode
+```
+
+Clips land in the task's output dir, one per episode:
+
+```
+~/.odyssey/runs/<mission_id>/<task_id>/videos/episode_01_PASS.mp4
+```
+
+(`~/.odyssey/runs` is the default; override with `odyssey run --working-dir`.)
+The paths are also surfaced in the eval's `result_summary.artifacts.videos` and
+in a `videos_saved` progress event.
+
+It's near-free: the camera-enabled eval env already renders the frame each step
+for the policy, so capture only adds a list append per step plus one encode per
+episode (offloaded to a thread). Optional knobs: `video_fps` (default 24),
+`video_format` (default `mp4`).
+
+> **Dependency.** MP4 encoding needs `imageio[ffmpeg]`, which ships with the
+> `[robosuite]` (and `[all]`) extra — no extra install step if you already run
+> eval. It's best-effort: if the encoder is missing it logs a warning and the
+> eval still completes, just without a video. On a headless VM the same
+> `MUJOCO_GL=egl` / `PYOPENGL_PLATFORM=egl` the eval needs also drives the
+> offscreen render used for capture.
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
