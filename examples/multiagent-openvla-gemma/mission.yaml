@@ -84,10 +84,10 @@ tasks:
       lora_alpha: 16
       batch_size: 2
       learning_rate: 5.0e-5
-      max_steps: 10
-      save_steps: 5
+      max_steps: 500            # ~6 min on an L4; lower (e.g. 10) for a quick smoke test
+      save_steps: 250
       epochs: 1   # ignored when max_steps is set — OpenVLA's HF Trainer lets max_steps win
-      data_root_dir: /home/gema   # parent dir of the RLDS dataset folder; edit to your path
+      data_root_dir: /path/to/dataset   # EDIT: parent dir of the RLDS folder (e.g. /home/<user> if it lives at /home/<user>/bridge_orig/)
       # Keep the RLDS shuffle buffer small — the upstream default (256k) eats
       # all 32 GB RAM on g2-standard-8 and freezes the VM.
       shuffle_buffer_size: 10000
@@ -96,7 +96,7 @@ tasks:
     kind: evaluation
     evaluation_type: robosuite
     benchmark_name: Lift
-    num_episodes: 2
+    num_episodes: 10
     config:
       unnorm_key: bridge_orig
 
