@@ -538,6 +538,65 @@ nvidia-smi                 # confirm 0 MiB used before re-running
 | Planner imports fail in its venv | `env_specialist` built against the wrong stack | rebuild: `setup.sh --skip-pilot` (re-pins `constraints/specialist-known-good.txt`) |
 | Planner emits NaN / garbage plans | Gemma 3 4B under int4 emits NaN logits on this stack | use **Gemma 4 E2B-it** (the default) — Gemma 3 can't run quantized here |
 
+### Headless rendering: `Cannot initialize a EGL device display` (no NVIDIA EGL)
+
+The eval needs an offscreen GL context. On a VM whose NVIDIA driver was installed
+**compute-only** (CUDA + `nvidia-smi` work, training runs — but no OpenGL/EGL
+userspace), Robosuite/MuJoCo can't create an EGL context and the eval dies with:
+
+```text
+libEGL warning: failed to open /dev/dri/renderD128: Permission denied
+ImportError: Cannot initialize a EGL device display ... PLATFORM_DEVICE extension ... required for headless
+```
+
+Diagnose — there is **no NVIDIA EGL**, only Mesa (and Mesa needs `/dev/dri`, which
+is `render`-group-only):
+
+```bash
+ls /usr/share/glvnd/egl_vendor.d/   # only 50_mesa.json (no 10_nvidia.json) → no NVIDIA EGL
+ldconfig -p | grep -i libEGL        # only libEGL_mesa, no libEGL_nvidia
+```
+
+Fix — fall back to **OSMesa** (CPU software rendering: no EGL, no GPU, no
+`/dev/dri`). Slower than GPU EGL but reliable, and fine for eval rollouts:
+
+```bash
+sudo apt-get install -y libosmesa6-dev
+export MUJOCO_GL=osmesa
+export PYOPENGL_PLATFORM=osmesa     # overrides the egl values the .env exports
+```
+
+(GPU EGL is faster but requires installing the NVIDIA OpenGL/EGL userspace that
+matches the driver — fiddly; OSMesa just works.)
+
+### Disk fills up across runs — clean `~/.odyssey/runs/`
+
+Every `odyssey run` stages a full copy of the base model (~15 GB) into
+`~/.odyssey/runs/<mission>/<task>/model` and OpenVLA saves the full **merged** 7B
+checkpoint (~14 GB) — so a few failed attempts silently eat 50-100 GB and you hit
+`No space left on device` at `save_pretrained` (or a silent `exit(1)`). Clean
+between attempts:
+
+```bash
+du -sh ~/.odyssey/runs/* | sort -rh   # see what's accumulated
+rm -rf ~/.odyssey/runs/*              # all failed/old runs
+df -h /
+```
+
+### `finetune.py` dies at import (protobuf / tensorflow-metadata / wandb)
+
+`ImportError: cannot import name 'runtime_version' from google.protobuf` (tfds) or
+`cannot import name 'Imports' from wandb_telemetry_pb2` (wandb) means the env was
+built **without** the pinned constraints, so pip pulled protobuf-5-era packages
+that the TF 2.15 stack can't load. `setup.sh` installs with
+`-c constraints/openvla-known-good.txt` to prevent this; if you hand-built the
+venv, reinstall through that constraints file (it pins
+`protobuf==3.20.3`, `tensorflow-metadata==1.15.0`, `wandb==0.16.6`).
+
+> 💡 **Re-using a snapshot/custom image?** System deps don't travel in `setup.sh`.
+> Re-run the §3 `apt-get` (EGL/GL libs) and the OSMesa install above on any VM
+> restored from a snapshot — the driver may also be compute-only there.
+
 ### Per-session checklist
 
 Before each run after an SSH reconnect:

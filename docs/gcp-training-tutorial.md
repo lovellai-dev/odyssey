@@ -436,6 +436,34 @@ pkill -9 -f torchrun
 nvidia-smi                 # confirm 0 MiB used before re-running
 ```
 
+### Disk fills up across runs — clean `~/.odyssey/runs/`
+
+Every `odyssey run` stages a ~15 GB copy of the base model into
+`~/.odyssey/runs/<mission>/<task>/model` and saves the full merged 7B checkpoint
+(~14 GB), so a few attempts eat 50-100 GB and you hit `No space left on device`
+at `save_pretrained`. Clean between attempts: `rm -rf ~/.odyssey/runs/*`
+(check first with `du -sh ~/.odyssey/runs/* | sort -rh`).
+
+### `finetune.py` dies at import (protobuf / tensorflow-metadata / wandb)
+
+`ImportError: cannot import name 'runtime_version' from google.protobuf` or
+`cannot import name 'Imports' from wandb_telemetry_pb2` means the venv was built
+**without** the pinned constraints, so pip pulled protobuf-5-era packages the
+TF 2.15 stack can't load. Reinstall through
+`-c constraints/openvla-known-good.txt` (pins `protobuf==3.20.3`,
+`tensorflow-metadata==1.15.0`, `wandb==0.16.6`).
+
+### Eval can't render headless — `Cannot initialize a EGL device display`
+
+If the VM's NVIDIA driver is compute-only (no `libEGL_nvidia`, only Mesa — check
+`ls /usr/share/glvnd/egl_vendor.d/`), the Robosuite eval can't make a GL context.
+Fall back to CPU software rendering: `sudo apt-get install -y libosmesa6-dev` then
+`export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa`.
+
+> 💡 **Re-using a snapshot/custom image?** System deps don't travel in the install —
+> re-run the §2 `apt-get` (EGL/GL libs) and, if the driver is compute-only, the
+> OSMesa install above.
+
 ### Per-session checklist
 
 Before each run after an SSH reconnect:
