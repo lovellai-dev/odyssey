@@ -11,7 +11,9 @@ end-to-end validation runs in issues
 [#5](https://github.com/lovellai-dev/odyssey/issues/5) and
 [#22](https://github.com/lovellai-dev/odyssey/issues/22).
 
-> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu · `us-central1-a`.
+> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu · `us-central1-a`
+> and `us-west1-a` (use whichever zone has L4 capacity — `us-central1-a` is prone to
+> stockouts; the steps are zone-independent).
 > Other clouds (AWS/Azure) or GPUs may not need the NCCL workaround — see
 > [the NCCL section](#5-the-gcp-critical-environment-variables).
 
@@ -175,6 +177,32 @@ wget -r -nH --cut-dirs=4 --reject="index.html*" \
 
 # OpenVLA's OXE registry key for this is `bridge_orig`
 mv bridge_dataset bridge_orig
+```
+
+**Run the download under `nohup` so it survives an SSH drop.** At 124 GB the
+transfer can take well over 30 minutes — long enough that a flaky connection
+would otherwise kill it. Launch it detached and log to a file:
+
+```bash
+cd ~
+nohup wget -r -nH --cut-dirs=4 --reject="index.html*" \
+  https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/ \
+  > ~/bridge_download.log 2>&1 &
+```
+
+The `&` backgrounds it and `nohup` + the log redirect keep it running after you
+disconnect. Monitor it (works even after reconnecting over SSH):
+
+```bash
+tail -f ~/bridge_download.log   # live progress — Ctrl+C stops the tail, not the download
+ps aux | grep '[w]get'          # confirm the download is still running
+du -sh ~/bridge_dataset         # how much has landed so far (heading toward ~124 GB)
+```
+
+When the log shows `finished` and `ps` no longer finds the `wget`, do the rename:
+
+```bash
+mv ~/bridge_dataset ~/bridge_orig
 ```
 
 > ⚠️ **`data_root_dir` is the *parent* of the dataset folder, not the folder
