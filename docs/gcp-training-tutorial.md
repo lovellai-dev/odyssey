@@ -179,6 +179,14 @@ wget -r -nH --cut-dirs=4 --reject="index.html*" \
 mv bridge_dataset bridge_orig
 ```
 
+**Why the rename?** Berkeley's server hands the dataset out under the folder name
+`bridge_dataset`, but OpenVLA's **OXE registry** (the dataset catalog its
+`finetune.py` looks up) knows this dataset by the key **`bridge_orig`**. The `mv`
+doesn't touch the data — it just renames the on-disk folder so it matches the
+registry key OpenVLA resolves at `<data_root_dir>/bridge_orig/<version>/`. Skip it
+and training fails at dataset creation with a "dataset not found" error, because
+the key (`bridge_orig`) and the folder on disk (`bridge_dataset`) don't line up.
+
 **Run the download under `nohup` so it survives an SSH drop.** At 124 GB the
 transfer can take well over 30 minutes — long enough that a flaky connection
 would otherwise kill it. Launch it detached and log to a file:
