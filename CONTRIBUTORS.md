@@ -1,4 +1,4 @@
-# Contributors
+# Odyssey contributors
 
 Odyssey is built by its community. This file recognizes the people who have helped
 shape the project — code, docs, examples, reviews, bug reports, and ideas. Thank you. 🙌
@@ -6,10 +6,13 @@ shape the project — code, docs, examples, reviews, bug reports, and ideas. Tha
 Want to be here? Open a pull request (see [CONTRIBUTING.md](CONTRIBUTING.md)) — you're
 welcome to add yourself in the same PR that lands your contribution.
 
+## Owner
+
+- **femtechie** ([@femtechie](https://github.com/femtechie)) — creator & owner
+
 ## Maintainers
 
-- **Gema Parreño** ([@SoyGema](https://github.com/SoyGema)) — creator & maintainer
-- **femtechie** ([@femtechie](https://github.com/femtechie)) — maintainer
+- **SoyGema** ([@SoyGema](https://github.com/SoyGema)) — maintainer
 
 ## Contributors
 
