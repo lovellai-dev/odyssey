@@ -9,12 +9,12 @@ welcome to add yourself in the same PR that lands your contribution.
 ## Maintainers
 
 - **Gema Parreño** ([@SoyGema](https://github.com/SoyGema)) — creator & maintainer
+- **femtechie** ([@femtechie](https://github.com/femtechie)) — maintainer
 
 ## Contributors
 
 In order of first contribution:
 
-- **femtechie** ([@femtechie](https://github.com/femtechie))
 - **Daniel Eneh** ([@Danny024](https://github.com/Danny024))
 - **Pratik Mishra** ([@pratik1258m](https://github.com/pratik1258m)) — shared evaluation-helpers refactor ([#41](https://github.com/lovellai-dev/odyssey/pull/41))
 
