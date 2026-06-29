@@ -12,7 +12,9 @@ lose a day to them. The hard-won details come from the end-to-end validation run
 in issues [#5](https://github.com/lovellai-dev/odyssey/issues/5) and
 [#22](https://github.com/lovellai-dev/odyssey/issues/22).
 
-> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu · `us-central1-a`.
+> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu · `us-central1-a`
+> and `us-west1-a` (use whichever zone has L4 capacity — `us-central1-a` is prone to
+> stockouts; the steps are zone-independent).
 > Other clouds (AWS/Azure) or GPUs may not need the NCCL workaround — see
 > [§6](#6-the-gcp-critical-environment-variables).
 
@@ -245,6 +247,42 @@ wget -r -nH --cut-dirs=4 --reject="index.html*" \
 
 # OpenVLA's OXE registry key for this is `bridge_orig`
 mv bridge_dataset bridge_orig
+```
+
+**Why the rename?** Berkeley's server hands the dataset out under the folder name
+`bridge_dataset`, but OpenVLA's **OXE registry** (the dataset catalog its
+`finetune.py` looks up) knows this dataset by the key **`bridge_orig`**. The `mv`
+doesn't touch the data — it just renames the on-disk folder so it matches the
+registry key OpenVLA resolves at `<data_root_dir>/bridge_orig/<version>/`. Skip it
+and training fails at dataset creation with a "dataset not found" error, because
+the key (`bridge_orig`) and the folder on disk (`bridge_dataset`) don't line up.
+
+**Run the download under `nohup` so it survives an SSH drop.** At 124 GB the
+transfer can take well over 30 minutes — long enough that a flaky connection
+would otherwise kill it. Launch it detached and log to a file:
+
+```bash
+cd ~
+nohup wget -r -nH --cut-dirs=4 --reject="index.html*" \
+  https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/ \
+  > ~/bridge_download.log 2>&1 &
+```
+
+The `&` backgrounds it and `nohup` + the log redirect keep it running after you
+disconnect. Monitor it (works even after reconnecting over SSH):
+
+```bash
+tail -f ~/bridge_download.log   # live progress — Ctrl+C stops the tail, not the download
+ps aux | grep '[w]get'          # confirm the download is still running
+du -sh ~/bridge_dataset         # how much has landed so far (heading toward ~124 GB)
+```
+
+The per-line percentages in the log are **per-file**, not overall — track total
+progress with `du -sh`. The download is done only when `ps` no longer finds the
+`wget` **and** the log ends in `FINISHED --...--`. Only then do the rename:
+
+```bash
+mv ~/bridge_dataset ~/bridge_orig
 ```
 
 > ⚠️ **`data_root_dir` is the *parent* of the dataset folder, not the folder
