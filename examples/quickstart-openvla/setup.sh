@@ -14,7 +14,7 @@
 #   * the Bridge V2 RLDS dataset on disk at <DATA_ROOT>/bridge_orig/
 #
 # Usage:
-#   examples/quickstart-openvla/run_video_test.sh [DATA_ROOT]
+#   examples/quickstart-openvla/setup.sh [DATA_ROOT]
 #     DATA_ROOT  parent dir of the RLDS dataset folder (default: $HOME).
 #                e.g. dataset at /home/me/bridge_orig/  ->  DATA_ROOT=/home/me
 #
@@ -45,7 +45,7 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-osmesa}"
 # --- the mp4 encoder. The robosuite extra ships imageio[ffmpeg]; make sure the
 #     ffmpeg plugin is importable, else the encode silently no-ops (no video). ---
 if ! python -c "import imageio_ffmpeg" >/dev/null 2>&1; then
-  echo "[run_video_test] installing imageio[ffmpeg] (mp4 encoder)…"
+  echo "[setup] installing imageio[ffmpeg] (mp4 encoder)…"
   pip install "imageio[ffmpeg]"
 fi
 
@@ -56,10 +56,10 @@ sed -e "s|data_root_dir: /path/to/dataset|data_root_dir: ${DATA_ROOT}|" \
     -e "s|^      epochs: 1|      epochs: 1\n      max_steps: 10\n      save_steps: 5|" \
     "$SRC" > "$WORK"
 
-echo "[run_video_test] mission     : $WORK"
-echo "[run_video_test] data_root   : $DATA_ROOT  (expects ${DATA_ROOT}/bridge_orig/)"
-echo "[run_video_test] training    : max_steps=10, save_steps=5 (fast smoke)"
-echo "[run_video_test] render      : MUJOCO_GL=$MUJOCO_GL"
+echo "[setup] mission     : $WORK"
+echo "[setup] data_root   : $DATA_ROOT  (expects ${DATA_ROOT}/bridge_orig/)"
+echo "[setup] training    : max_steps=10, save_steps=5 (fast smoke)"
+echo "[setup] render      : MUJOCO_GL=$MUJOCO_GL"
 echo
 
 # --- disk note: each run stages ~15 GB + a merged checkpoint into ~/.odyssey/runs/.
@@ -70,7 +70,7 @@ odyssey run "$WORK"
 
 # --- locate the videos the eval just wrote ---
 echo
-echo "[run_video_test] rollout videos written to <run>/<eval-task>/videos/ :"
+echo "[setup] rollout videos written to <run>/<eval-task>/videos/ :"
 find "$HOME/.odyssey/runs" -path "*/videos/*.mp4" -printf '%T@ %p\n' 2>/dev/null \
   | sort -rn | head -20 | cut -d' ' -f2- | while read -r f; do ls -lh "$f"; done
 
