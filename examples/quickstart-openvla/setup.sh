@@ -5,9 +5,10 @@
 # It ONLY sets things up — it does NOT run a mission (matches the multi-agent
 # setup.sh). It installs the imageio[ffmpeg] mp4 encoder and generates a
 # machine-local mission file tuned for a fast end-to-end smoke: a tiny LoRA
-# (max_steps=10) + eval on Robosuite Lift with `capture_video: true` (one MP4 per
-# episode). The point is to exercise the video feature fast — NOT to get a good
-# policy (expect grade F).
+# (max_steps=10) + a short eval on Robosuite Lift (num_episodes=2) with
+# `capture_video: true` (one MP4 per episode). The point is to exercise the video
+# feature fast — NOT to get a good policy (expect grade F). Keep episodes low: the
+# OSMesa fallback renders on CPU, so each episode is slow.
 #
 # The committed examples/quickstart-openvla/mission.yaml is left untouched: the
 # machine-local bits (dataset path + small max_steps/save_steps) go into a patched
@@ -48,11 +49,13 @@ SRC="$SCRIPT_DIR/mission.yaml"
 WORK="${TMPDIR:-/tmp}/odyssey-quickstart-video-test.yaml"
 sed -e "s|data_root_dir: /path/to/dataset|data_root_dir: ${DATA_ROOT}|" \
     -e "s|^      epochs: 1|      epochs: 1\n      max_steps: 10\n      save_steps: 5|" \
+    -e "s|^    num_episodes: 10|    num_episodes: 2|" \
     "$SRC" > "$WORK"
 
 echo "[setup] mission     : $WORK"
 echo "[setup] data_root   : $DATA_ROOT  (expects ${DATA_ROOT}/bridge_orig/)"
 echo "[setup] training    : max_steps=10, save_steps=5 (fast smoke)"
+echo "[setup] eval        : num_episodes=2 (fast smoke; OSMesa render is CPU-bound)"
 
 cat <<EOF
 
