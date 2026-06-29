@@ -15,6 +15,16 @@
 #   * accelerate 1.x -> Gemma int4 fails to load (transformers calls .to() on a
 #                       4-bit model, which bitsandbytes forbids)
 #   * numpy 2.x   -> breaks tensorflow 2.15 (RLDS pipeline) and torch 2.2 import
+#   * tensorflow-metadata >=1.16 -> its *_pb2 require protobuf >=5.26
+#                       (`ImportError: cannot import name 'runtime_version' from
+#                       google.protobuf`); 1.15.0 is the last that speaks protobuf 3/4.
+#   * protobuf: pinned to 3.20.3 — tensorflow-metadata 1.15 caps it <4.21 and
+#                       tensorflow 2.15 accepts it, so this is the only value that
+#                       satisfies the whole RLDS stack.
+#   * wandb >=0.17 -> its pb2 are built for protobuf >4.21 and fail to import under
+#                       3.20.3 (`cannot import name 'Imports' from wandb_telemetry_pb2`).
+#                       0.16.x accepts protobuf 3.19-4 and imports cleanly. OpenVLA's
+#                       finetune.py imports wandb unconditionally even with WANDB_MODE=disabled.
 # Also requires env: NCCL_NET=Socket (GCP single-GPU), MUJOCO_GL=egl +
 # PYOPENGL_PLATFORM=egl (headless Robosuite eval).
 
@@ -26,14 +36,17 @@ mujoco==3.8.1
 numpy==1.26.4
 peft==0.11.1
 pillow==12.2.0
+protobuf==3.20.3
 robosuite==1.5.2
 safetensors==0.7.0
 sentencepiece==0.1.99
 tensorflow==2.15.0
 tensorflow-datasets==4.9.3
+tensorflow-metadata==1.15.0
 timm==0.9.10
 tokenizers==0.19.1
 torch==2.2.0+cu121
 torchaudio==2.2.0+cu121
 torchvision==0.17.0+cu121
 transformers==4.40.1
+wandb==0.16.6
