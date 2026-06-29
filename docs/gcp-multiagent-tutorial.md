@@ -278,10 +278,27 @@ du -sh ~/bridge_dataset         # how much has landed so far (heading toward ~12
 ```
 
 The per-line percentages in the log are **per-file**, not overall — track total
-progress with `du -sh`. The download is done only when `ps` no longer finds the
-`wget` **and** the log ends in `FINISHED --...--`. Only then do the rename:
+progress with `du -sh`.
+
+**`wget -r` keeps going *past* the dataset — stop it once the shards are in.** The
+recursive crawl follows every link under the URL, so after the RLDS shards it
+starts pulling unrelated sibling files (we've seen it grab a **~100 GB
+`demos_*.zip`**) — that's the "it's been stuck at the end forever" phase, and it can
+fill the disk and trip the silent `exit(1)` (see
+[§8](#8-troubleshooting--debugging-playbook)). **Don't wait for `finished`.** The
+dataset is complete once you have all the train shards plus the metadata:
 
 ```bash
+find ~/bridge_dataset -name "*.tfrecord-*" | wc -l   # 1024 train shards (1152 incl. the 128 val shards)
+ls ~/bridge_dataset/1.0.0/ | grep -E "dataset_info|features"   # dataset_info.json + features.json
+```
+
+When those are present you can safely stop the crawl and rename — matching by
+pattern, not a stale PID (the PID changes between runs):
+
+```bash
+pkill -f 'wget.*bridge_dataset'   # stop the recursive download
+ps aux | grep '[w]get'            # confirm it's gone
 mv ~/bridge_dataset ~/bridge_orig
 ```
 
