@@ -13,12 +13,12 @@ welcome to add yourself in the same PR that lands your contribution.
 ## Maintainers
 
 - **SoyGema** ([@SoyGema](https://github.com/SoyGema)) — maintainer
+- **Daniel Eneh** ([@Danny024](https://github.com/Danny024)) — maintainer
 
 ## Contributors
 
 In order of first contribution:
 
-- **Daniel Eneh** ([@Danny024](https://github.com/Danny024))
 - **Pratik Mishra** ([@pratik1258m](https://github.com/pratik1258m)) — shared evaluation-helpers refactor ([#41](https://github.com/lovellai-dev/odyssey/pull/41))
 
 ---
