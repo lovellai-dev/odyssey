@@ -108,7 +108,7 @@ async def run_training_subprocess(
             f"--nproc_per_node={spec.torchrun_nproc}",
         ]
     else:
-        launcher = ["python"]
+        launcher = [sys.executable]
 
     if spec.entry_module is not None:
         cmd = [*launcher, "-m", spec.entry_module, *spec.argv_extra]
