@@ -7,7 +7,7 @@
 # transport so the GR00T PolicyClient can talk to the server during a rollout.
 #
 # Applied (additively, never replacing Isaac's own deps) by
-# scripts/setup-eval-stack.sh, equivalent to:
+# examples/quickstart-gr00t/setup.sh, equivalent to:
 #   "$ISAAC_PYTHON" -m uv pip install --python "$ISAAC_PYTHON" \
 #       -c constraints/isaac-eval-known-good.txt pyzmq msgpack msgpack-numpy aiosqlite nest_asyncio
 #   "$ISAAC_PYTHON" -m pip install --no-deps -e "$ODYSSEY_DIR"   # odyssey CLI, no-deps

@@ -3,9 +3,9 @@
 # This is a SEPARATE environment from odyssey core and from Isaac Lab — it hosts
 # the GR00T model (torch 2.7.1 + flash-attn) and is reached over ZMQ via
 # GR00T_VENV_PYTHON. NEVER co-install these into the odyssey core env or the
-# Isaac env (torch/transformers/numpy ABIs all clash). See docs/eval-stack-setup.md.
+# Isaac env (torch/transformers/numpy ABIs all clash). See examples/quickstart-gr00t/README.md.
 #
-# Built (py3.10, CUDA 12.8, x86_64) by scripts/setup-eval-stack.sh, equivalent to:
+# Built (py3.10, CUDA 12.8, x86_64) by examples/quickstart-gr00t/setup.sh, equivalent to:
 #   cd "$ISAAC_GR00T_DIR"
 #   uv venv --python 3.10 .venv
 #   uv pip install --python .venv/bin/python \
