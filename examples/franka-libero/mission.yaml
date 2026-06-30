@@ -1,0 +1,51 @@
+# LIBERO eval (single-agent, EVAL-ONLY): score a published OpenVLA-LIBERO checkpoint.
+#
+# Evaluates the public `openvla/openvla-7b-finetuned-libero-object` checkpoint on the
+# LIBERO **object** suite — a Franka Panda doing language-conditioned pick-and-place
+# in simulation ("put the X ..."). LIBERO is the standard sim benchmark open VLAs are
+# fine-tuned for, so this is the fastest way to see a VLA pilot actually SUCCEED in
+# sim (published checkpoints score ~70-90%).
+#
+# EVAL-ONLY: there is NO training task. The checkpoint is pulled straight from HF via
+# `config.checkpoint` (the eval-only wiring in resolve_eval_checkpoint). No dataset on
+# disk is needed — the 10.2 GB `openvla/modified_libero_rlds` is only for fine-tuning.
+#
+# Prereqs: the `libero` package + OpenVLA env (see examples/franka-libero/setup.sh).
+# ⚠️ First run also validates that `libero` co-installs with the OpenVLA stack.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-object
+  description: Eval-only — score the published OpenVLA LIBERO-object checkpoint on the LIBERO object suite (Franka, sim).
+  tags: [openvla, libero, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate the published OpenVLA-7B LIBERO-object checkpoint on the LIBERO object
+  suite and confirm a real (non-zero) success rate in simulation.
+
+acceptance_criteria: |
+  Non-trivial success_rate across the evaluation episodes (the published checkpoint
+  scores well on its own suite).
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b-finetuned-libero-object
+
+tasks:
+  - name: eval-libero-object
+    kind: evaluation
+    evaluation_type: libero
+    benchmark_name: libero_object        # LIBERO task suite (spatial/object/goal/libero_10)
+    num_episodes: 10
+    config:
+      checkpoint: openvla/openvla-7b-finetuned-libero-object   # HF repo id (eval-only)
+      unnorm_key: libero_object          # MUST match the checkpoint/suite
+      task_id: 0                         # which task within the suite (0..9)
+      capture_video: true                # one MP4 per episode

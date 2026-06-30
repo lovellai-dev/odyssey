@@ -64,12 +64,29 @@ def build_eval_summary(
 def resolve_eval_checkpoint(context: TaskContext) -> Path:
     """Find the PILOT checkpoint the evaluation should run.
 
-    Uses ``context.agent_checkpoints`` (populated by the engine) to find
-    the first PILOT agent with a trained checkpoint. Multi-agent loadouts
-    (PILOT + SPECIALIST) are supported — the SPECIALIST doesn't need a
-    checkpoint (it uses its base model for inference only).
+    Resolution order:
+      1. ``config.checkpoint`` on the evaluation task — an explicit local path
+         OR a HuggingFace repo id (e.g. ``openvla/openvla-7b-finetuned-libero-object``).
+         This enables **eval-only** missions that score a published checkpoint
+         with no training task in the mission.
+      2. ``context.agent_checkpoints`` (populated by the engine from a training
+         task in this mission).
+      3. ``mission.latest_checkpoint_for(agent.id)``.
+
+    Multi-agent loadouts (PILOT + SPECIALIST) are supported — the SPECIALIST
+    doesn't need a checkpoint (it uses its base model for inference only).
+
+    The returned ``Path`` may be a HF repo id rather than an on-disk path;
+    ``make_openvla_policy`` / ``VLARuntime`` resolve both via ``from_pretrained``.
     """
     from odyssey.spec.agents import AgentRole
+    from odyssey.spec.tasks import EvaluationTask
+
+    spec = context.task.spec
+    if isinstance(spec, EvaluationTask):
+        explicit = (spec.config or {}).get("checkpoint")
+        if explicit:
+            return Path(str(explicit))
 
     for agent in context.agents or context.mission.spec.robot.agents:
         if agent.role != AgentRole.PILOT:
@@ -81,6 +98,7 @@ def resolve_eval_checkpoint(context: TaskContext) -> Path:
             return Path(checkpoint)
 
     raise ValueError(
-        "No completed training task produced a checkpoint for any PILOT "
-        "agent on this mission — cannot evaluate."
+        "No completed training task produced a checkpoint for any PILOT agent. "
+        "For an eval-only mission, set config.checkpoint (a local path or HF repo "
+        "id); otherwise include a training task that produces one."
     )
