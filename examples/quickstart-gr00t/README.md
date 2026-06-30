@@ -1,4 +1,14 @@
-# GR00T + Odyssey + Isaac Lab eval stack (managed with uv)
+# Quickstart — GR00T PILOT + Isaac Lab eval stack (managed with uv)
+
+This example runs a **closed-loop GR00T policy eval in Isaac Lab**. The missions
+that live alongside this README drive it:
+
+```bash
+odyssey run examples/quickstart-gr00t/mission.yaml              # single eval
+odyssey run examples/quickstart-gr00t/closed_loop_mission.yaml  # closed-loop rollout
+```
+
+First-time setup builds the three environments below — see [Setup](#setup).
 
 Running a closed-loop GR00T policy eval in Isaac Lab spans **three Python
 environments that cannot share an interpreter** — their `torch` / CUDA / Python
@@ -25,7 +35,7 @@ never imports the GR00T model in-process.
 
 Isaac Sim is a large NVIDIA Omniverse binary with its own bundled Python — it is
 installed by NVIDIA's tooling, **not** by uv/pip resolution, and
-`setup-eval-stack.sh` treats it as a precondition (env #3 is SKIPped with a note
+`setup.sh` treats it as a precondition (env #3 is SKIPped with a note
 if `ISAAC_PYTHON` is missing). Provision it once into a dedicated py3.11 conda env:
 
 ```bash
@@ -45,7 +55,7 @@ python -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('isaaclab'
   && echo "isaaclab OK"
 ```
 
-Then point the stack at it (these are the defaults in `setup-eval-stack.sh`):
+Then point the stack at it (these are the defaults in `setup.sh`):
 
 ```bash
 export ISAAC_PYTHON="$HOME/miniconda3/envs/isaaclab/bin/python"
@@ -68,8 +78,8 @@ Requirements & gotchas:
 ## Setup
 
 ```bash
-bash scripts/setup-eval-stack.sh        # idempotent; builds all 3 envs with uv
-. ./odyssey-eval-env.sh                 # the interpreter map it writes
+bash examples/quickstart-gr00t/setup.sh   # idempotent; builds all 3 envs with uv
+. ./odyssey-eval-env.sh                    # the interpreter map it writes
 ```
 
 Overridable: `ODYSSEY_DIR`, `ISAAC_GR00T_DIR`, `ISAACLAB_PATH`, `ISAAC_PYTHON`, `HF_HOME`.

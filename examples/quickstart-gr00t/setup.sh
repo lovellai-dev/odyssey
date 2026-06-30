@@ -11,11 +11,12 @@
 # Pins live in constraints/{gr00t-server,isaac-eval}-known-good.txt (same
 # pattern as constraints/{openvla,specialist}-known-good.txt). Idempotent.
 #
-# Usage:  bash scripts/setup-eval-stack.sh
+# Usage:  bash examples/quickstart-gr00t/setup.sh
 # Overridable: ODYSSEY_DIR, ISAAC_GR00T_DIR, ISAACLAB_PATH, ISAAC_PYTHON, HF_HOME
 set -euo pipefail
 
-ODYSSEY_DIR="${ODYSSEY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# This script lives at examples/quickstart-gr00t/setup.sh -> repo root is two up.
+ODYSSEY_DIR="${ODYSSEY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 ISAAC_GR00T_DIR="${ISAAC_GR00T_DIR:-$HOME/Isaac-GR00T}"
 ISAACLAB_PATH="${ISAACLAB_PATH:-$HOME/IsaacLab}"
 ISAAC_PYTHON="${ISAAC_PYTHON:-$HOME/miniconda3/envs/isaaclab/bin/python}"
@@ -67,4 +68,4 @@ export GR00T_VENV_PYTHON="$GR00T_VENV_PYTHON"
 export ISAAC_PYTHON="$ISAAC_PYTHON"
 export HF_HOME="$HF_HOME"
 EOF
-echo "==> done. Source: . $ODYSSEY_DIR/odyssey-eval-env.sh ; see docs/eval-stack-setup.md"
+echo "==> done. Source: . $ODYSSEY_DIR/odyssey-eval-env.sh ; see examples/quickstart-gr00t/README.md"
