@@ -1,30 +1,40 @@
-# Franka pick-and-place mission: put the can in the bin.
+# Franka pick-and-place mission (multi-agent): put the can in the bin.
 #
-# Trains an OpenVLA 7B pilot (LoRA) on Bridge V2, then evaluates it on the
-# Robosuite **PickPlaceCan** benchmark — a Franka Panda must pick a can and drop
-# it into the correct bin (i.e. "put an object in a box"). PickPlaceCan is the
-# single-object variant of PickPlace, so it's the most attainable place-in-bin task.
+# An OpenVLA 7B PILOT (the only trained agent, the only one that acts) guided by a
+# multimodal Gemma 4 SPECIALIST task planner running OUT-OF-PROCESS. Train the pilot
+# (LoRA) on Bridge V2, then evaluate on Robosuite **PickPlaceCan** — a Franka Panda
+# picks a can and drops it in the bin ("put an object in a box"). The planner sees
+# the first frame of each episode and decomposes the goal into phases (reach -> grasp
+# -> transport -> place) fed to the pilot; PickPlaceCan's long-horizon, multi-stage
+# nature is where that decomposition helps. (Single-object variant of PickPlace.)
 #
-# ⚠️ Domain/embodiment gap (read before expecting success): Bridge V2 is REAL-robot
-# data collected on a **WidowX** arm, while this eval runs a **Franka Panda in
-# simulation**. The pilot is trained in one setting and tested in another, so a
-# fresh LoRA will rarely succeed zero-/few-shot. The mission is a coherent,
-# attractive *pipeline* demo — getting real successes needs serious training
-# (hours, not the 10-step smoke) and still fights the sim-to-real gap. Bridge does
-# contain many "put X in a container" demos, so this task is *more* aligned with
-# the training distribution than e.g. Lift.
+# REQUIRES the out-of-process specialist setup (reuse the multi-agent setup script):
+#   examples/multiagent-openvla-gemma/setup.sh        # builds env_pilot + env_specialist
+#   source examples/multiagent-openvla-gemma/.env     # exports ODYSSEY_SPECIALIST_PYTHON
+# Gemma 4 needs a modern transformers/torchvision (incompatible with OpenVLA's pinned
+# 4.40.1), so the SPECIALIST can ONLY run out-of-process. Without
+# ODYSSEY_SPECIALIST_PYTHON the eval fails fast with a clear error.
+#
+# Hardware: 24 GB GPU (L4) — int4 E2B-it planner (~5 GB) + ~14 GB bf16 pilot ≈ 19 GB peak.
+#
+# ⚠️ Domain gap: Bridge V2 is REAL-robot data (WidowX); this eval is a Franka Panda in
+# SIM. A fresh LoRA rarely succeeds zero-/few-shot, and the planner sequences
+# sub-instructions but does NOT close that gap — real successes need hours of training
+# (not the 10-step smoke). Bridge has many "put X in a container" demos, so the task
+# is at least well aligned with the training data.
 
 odysseyVersion: "0.1"
 kind: Mission
 
 metadata:
   name: franka-pickplace-can
-  description: OpenVLA LoRA fine-tune on Bridge V2, eval on Robosuite PickPlaceCan (Franka puts a can in the bin).
-  tags: [openvla, robosuite, pickplace, franka]
+  description: Multi-agent — OpenVLA pilot (Bridge V2) + Gemma 4 planner, eval on Robosuite PickPlaceCan (Franka puts a can in the bin).
+  tags: [openvla, gemma, multiagent, robosuite, pickplace, franka]
 
 objective: |
-  Demonstrate that an OpenVLA 7B pilot fine-tuned on Bridge V2 can pick up a can
-  and place it in the bin with a Franka Panda in the Robosuite PickPlaceCan task.
+  Demonstrate that an OpenVLA 7B pilot, guided by an out-of-process multimodal
+  Gemma 4 task planner, can pick up a can and place it in the bin with a Franka
+  Panda in the Robosuite PickPlaceCan task.
 
 acceptance_criteria: |
   At least one successful can-in-bin placement across the evaluation episodes.
@@ -37,6 +47,18 @@ robot:
       model:
         source: huggingface
         base: openvla/openvla-7b
+
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        # Vision-language planner, runs in env_specialist (out-of-process). Gemma 4
+        # E2B-it is multimodal and ungated (downloads without a token); it sees the
+        # first episode frame so the plan is grounded in the scene. E2B (not E4B) so
+        # it fits alongside the ~14 GB pilot.
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal
 
 tasks:
   - name: finetune-pilot
@@ -56,10 +78,8 @@ tasks:
       max_steps: 5000             # ~1 h on an L4 for a real attempt; lower (e.g. 10) for a quick pipeline smoke
       save_steps: 1000
       epochs: 1                   # ignored when max_steps is set
-      data_root_dir: /path/to/dataset   # EDIT: parent dir of the RLDS folder (e.g. /home/<user> if it lives at /home/<user>/bridge_orig/)
-      # Keep the RLDS shuffle buffer small — the upstream default (256k) eats all
-      # 32 GB RAM on g2-standard-8 and freezes the VM.
-      shuffle_buffer_size: 10000
+      data_root_dir: /path/to/dataset   # EDIT: parent dir of the RLDS folder (e.g. /home/<user>)
+      shuffle_buffer_size: 10000  # small buffer — the 256k default eats 32 GB RAM and freezes g2-standard-8
 
   - name: eval-franka-pickplace-can
     kind: evaluation
@@ -68,7 +88,5 @@ tasks:
     num_episodes: 10
     config:
       unnorm_key: bridge_orig
-      # PickPlaceCan isn't in the built-in default-instruction table (only the
-      # generic "PickPlace" is), so spell out the instruction the pilot sees.
-      task_instruction: "put the can in the bin"
+      task_instruction: "put the can in the bin"   # high-level goal the planner decomposes
       capture_video: true        # one MP4 per episode (see README -> "Recording rollout videos")
