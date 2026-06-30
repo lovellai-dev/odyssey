@@ -51,10 +51,9 @@ script**, which builds both idempotently and pins each to its known-good stack.
 3. [Build both venvs with the setup script](#3-build-both-venvs-with-the-setup-script)
 4. [Download the Bridge V2 dataset](#4-the-dataset-bridge-v2-in-rlds-format) (RLDS, ~124 GB)
 5. [Load the environment + smoke-test the planner](#5-load-the-environment--smoke-test-the-planner)
-6. [Set the GCP-critical environment variables](#6-the-gcp-critical-environment-variables)
-7. [Run the multi-agent mission](#7-run-the-multi-agent-mission)
-8. [Troubleshoot](#8-troubleshooting--debugging-playbook) when it silently dies
-9. [Get your results and stop the VM](#9-wrap-up-get-your-results-and-stop-the-vm)
+6. [Run the multi-agent mission](#6-run-the-multi-agent-mission)
+7. [Troubleshoot](#7-troubleshooting--debugging-playbook) when it silently dies
+8. [Get your results and stop the VM](#8-wrap-up-get-your-results-and-stop-the-vm)
 
 Plan for **about an hour**: the steps themselves are quick; the 124 GB dataset
 download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidth).
@@ -65,7 +64,7 @@ download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidt
 > ```bash
 > odyssey run examples/multiagent-openvla-gemma/mission.yaml --use-mock-runner
 > ```
-> Only spin up the VM once that runs clean. And see [§9](#9-wrap-up-get-your-results-and-stop-the-vm)
+> Only spin up the VM once that runs clean. And see [§8](#8-wrap-up-get-your-results-and-stop-the-vm)
 > — **stop the VM when you're done** so it stops billing.
 
 ---
@@ -78,9 +77,10 @@ download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidt
   via *IAM & Admin → Quotas*. Approval can take minutes to a day, so **request it
   before you need it**. Hitting `Quota 'NVIDIA_L4_GPUS' exceeded` at VM-creation
   time means this step was skipped.
-- *(Optional)* a **HuggingFace token** — both default models are ungated, so it's
-  only needed to avoid anonymous download rate limits or to use a gated model
-  (see [§6](#huggingface-access-optional)).
+- *(Optional)* a **HuggingFace token.** Both default models (`openvla/openvla-7b`
+  and `google/gemma-4-E2B-it`) are **ungated**, so **no token is needed**. Set
+  `HF_TOKEN` (or `hf auth login`) only to avoid anonymous download rate limits, or
+  to swap in a gated model (e.g. the larger Gemma 4 E4B, or gemma-2/3).
 - Basic familiarity with SSH and the Linux shell.
 
 ---
@@ -97,7 +97,7 @@ download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidt
 > ⚠️ **Size the disk up front.** The default boot disk (≈ 51 GB) is nowhere near
 > enough — the Bridge V2 dataset alone is 124 GB. **Disk-full is the single most
 > common cause of silent failures** in this pipeline (see
-> [§8](#silent-exit1--the-decoder)). Provision **300 GB** from the start.
+> [§7](#silent-exit1--the-decoder)). Provision **300 GB** from the start.
 >
 > Disk-light alternative: instead of a 300 GB disk you can **stream the dataset
 > from a GCS bucket via [`gcsfuse`](https://cloud.google.com/storage/docs/gcsfuse-quickstart-mount-bucket)**
@@ -107,7 +107,7 @@ download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidt
 > 💸 **Cost & quota.** A `g2-standard-8` + L4 runs on the order of **~$0.70–1/hour**
 > (varies by region; check the [pricing page](https://cloud.google.com/compute/gpus-pricing)),
 > plus a few $/month for the 300 GB disk. **You pay while the VM is running, GPU
-> idle or not** — so stop it between sessions ([§9](#9-wrap-up-get-your-results-and-stop-the-vm)).
+> idle or not** — so stop it between sessions ([§8](#8-wrap-up-get-your-results-and-stop-the-vm)).
 > A stopped VM still bills for its disk.
 
 > ⚠️ **Use an on-demand L4 in `us-west1-a`.** `us-central1-a` is chronically stocked
@@ -178,21 +178,8 @@ What the script does, in order:
 2. **`env_specialist`** — creates the venv and installs the Gemma planner deps
    (`-e ".[specialist]"`) pinned to `constraints/specialist-known-good.txt` (modern
    transformers + torchvision).
-3. **HuggingFace auth** — optional and non-blocking. Both default models are ungated,
-   so no token is needed; if `HF_TOKEN` is set it logs in non-interactively.
-4. **Writes `examples/multiagent-openvla-gemma/.env`** — the file you `source`
+3. **Writes `examples/multiagent-openvla-gemma/.env`** — the file you `source`
    before every run (details in [§5](#5-load-the-environment--smoke-test-the-planner)).
-
-Useful flags:
-
-| Flag | Effect |
-|---|---|
-| `--skip-pilot` | skip `env_pilot` + OpenVLA (you already built it, e.g. for single-agent) |
-| `--pilot-venv PATH` | relocate the pilot venv (default `<repo>/env_pilot`) |
-| `--specialist-venv PATH` | relocate the specialist venv (default `<repo>/env_specialist`) |
-| `--openvla-repo PATH` | where to clone OpenVLA (default `~/openvla`) |
-| `--smoke` | run the planner smoke check at the end (downloads Gemma) |
-| `-h`, `--help` | show all options |
 
 ### Building it by hand instead
 
@@ -221,6 +208,17 @@ export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
 > 🔥 **Do not run the pilot on torch 2.6.** It caused a **silent `exit(1)`** during
 > training (an inductor compile-worker fork-after-CUDA race). OpenVLA's pinned
 > **`torch==2.2.0`** fixes it — the constraints file pins it for you.
+
+### `setup.sh` flags
+
+| Flag | Effect |
+|---|---|
+| `--skip-pilot` | skip `env_pilot` + OpenVLA (you already built it, e.g. for single-agent) |
+| `--pilot-venv PATH` | relocate the pilot venv (default `<repo>/env_pilot`) |
+| `--specialist-venv PATH` | relocate the specialist venv (default `<repo>/env_specialist`) |
+| `--openvla-repo PATH` | where to clone OpenVLA (default `~/openvla`) |
+| `--smoke` | run the planner smoke check at the end (downloads Gemma) |
+| `-h`, `--help` | show all options |
 
 ---
 
@@ -308,7 +306,7 @@ source "<repo>/env_pilot/bin/activate"        # the OpenVLA pilot + eval venv
 
 # --- pilot / training (OpenVLA) ---
 export OPENVLA_REPO_PATH="<repo>/openvla"
-export NCCL_NET=Socket          # GCP single-GPU: bypass the gIB NCCL plugin (see §6)
+export NCCL_NET=Socket          # GCP single-GPU: bypass the gIB NCCL plugin (see §7 Troubleshooting)
 export WANDB_MODE=disabled      # OpenVLA calls wandb.init() unconditionally
 
 # --- planner / specialist (out-of-process Gemma venv) ---
@@ -317,9 +315,6 @@ export ODYSSEY_SPECIALIST_PYTHON="<repo>/env_specialist/bin/python"
 # --- evaluation (Robosuite / MuJoCo, headless) ---
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
-
-# --- HuggingFace (OPTIONAL — default models are ungated) ---
-# export HF_TOKEN=hf_xxxxxxxx
 ```
 
 > **Why `source`, not `./`:** variables `export`ed inside a script run with `./`
@@ -350,53 +345,7 @@ and `ODYSSEY_SPECIALIST_PYTHON` are all wired correctly. If this fails, fix it
 
 ---
 
-## 6. The GCP-critical environment variables
-
-The `.env` from [§5](#5-load-the-environment--smoke-test-the-planner) already
-exports these. This section explains the two that bite on GCP.
-
-### `NCCL_NET=Socket` — the GCP gotcha
-
-The pilot trains via PyTorch DDP, which uses the NCCL backend. **GCP GPU VMs ship a
-custom NCCL plugin** at `/usr/local/gib/lib64/libnccl-net.so` that registers a
-virtual network called **`gIB`** (Google InfiniBand) for GPUDirect RDMA between
-multi-node GPU clusters. On a **single-GPU VM** the RDMA hardware is absent, so the
-plugin fails:
-
-```
-Error: network gIB not found
-```
-
-surfacing as `Default process group has not been initialized` and a non-obvious
-`exit code 1`.
-
-- `NCCL_IB_DISABLE=1` does **not** fix it — that only disables NCCL's *built-in*
-  IB transport, not the external plugin.
-- **`export NCCL_NET=Socket`** forces NCCL onto TCP sockets, bypassing the plugin.
-  **Zero performance impact on a single-GPU VM.**
-
-> On **AWS/Azure** you likely won't see the `gIB` error — if so, this var is harmless.
-
-### HuggingFace access (optional)
-
-Both default models are **ungated** — they download without a token:
-
-- [`openvla/openvla-7b`](https://huggingface.co/openvla/openvla-7b) — the PILOT
-- [`google/gemma-4-E2B-it`](https://huggingface.co/google/gemma-4-E2B-it) — the SPECIALIST (Apache-2.0)
-
-So **no login is required** for the shipped mission. A token only raises the
-anonymous download rate limit, and becomes **required** only if you swap in a gated
-model — e.g. the larger Gemma 4 **E4B**, or `gemma-2` / `gemma-3`, which 401/403
-until you accept Google's terms:
-
-```bash
-export HF_TOKEN=hf_xxxxxxxx      # optional
-# or: hf auth login
-```
-
----
-
-## 7. Run the multi-agent mission
+## 6. Run the multi-agent mission
 
 ```bash
 # Sanity-check the spec first (instant, no GPU)
@@ -437,17 +386,28 @@ model the training task just produced is the proof that **train → eval chained
 correctly through the engine**, and the planner grounding a plan in the scene image
 is the proof that the **PILOT + SPECIALIST loop** works.
 
-> **A low score / 0 lifts is expected.** The pilot is OpenVLA fine-tuned on
-> `bridge_orig` (real-robot Bridge data), so there's a real sim-to-real domain gap
-> into Robosuite Lift — 0 successful lifts are common even at higher step counts,
-> while the Gemma planner still produces correct per-episode plans. Treat the lift
-> as aspirational; the point of this tutorial is a clean end-to-end multi-agent run.
-> To *see* the rollout, enable `capture_video: true` in the eval task's `config` —
-> it saves an MP4 per episode.
+> **Expect a low score (often 0 successful lifts) — and that's fine.** The pilot is
+> trained on **real-robot Bridge data** (a WidowX arm) but evaluated **in simulation
+> on a Franka** (Robosuite Lift). That train→eval **domain + embodiment gap** means
+> the policy rarely completes the lift, even at higher step counts — while the Gemma
+> planner still emits correct per-episode plans. The goal here is a clean end-to-end
+> multi-agent run; treat the lift itself as aspirational.
+
+### See the rollout (video)
+
+Set `capture_video: true` in the eval task's `config` to save **one MP4 per episode**
+under the run's `videos/` dir (also surfaced in `result_summary.artifacts.videos`).
+The VM is headless, so copy a clip to your laptop to watch it:
+
+```bash
+# on your laptop — adjust the run/task ids from the run output
+gcloud compute scp --recurse --zone=<ZONE> \
+  <VM_NAME>:~/.odyssey/runs/<mission-id>/<eval-task-id>/videos ./rollout-videos
+```
 
 ---
 
-## 8. Troubleshooting / debugging playbook
+## 7. Troubleshooting / debugging playbook
 
 The recurring theme on GCP: **the pilot's training dies with `exit code 1` and no
 Python traceback.** That's almost always the environment, not the code.
@@ -495,6 +455,19 @@ pkill -9 -f finetune.py
 pkill -9 -f torchrun
 nvidia-smi                 # confirm 0 MiB used before re-running
 ```
+
+### `network gIB not found` — the GCP NCCL gotcha
+
+The pilot trains via PyTorch DDP (NCCL backend). **GCP GPU VMs ship a custom NCCL
+plugin** (`/usr/local/gib/lib64/libnccl-net.so`) that registers a virtual `gIB`
+(Google InfiniBand) network for multi-node RDMA. On a **single-GPU VM** the RDMA
+hardware is absent, so the plugin fails with `network gIB not found`, surfacing as
+`Default process group has not been initialized` and a non-obvious `exit code 1`.
+
+**`export NCCL_NET=Socket`** forces NCCL onto TCP sockets and fixes it (zero perf
+impact on a single GPU) — the `.env` already sets this. `NCCL_IB_DISABLE=1` does
+**not** help (it only disables NCCL's built-in IB transport, not the external
+plugin). On AWS/Azure you likely won't hit this.
 
 ### Multi-agent-specific failures
 
@@ -575,7 +548,7 @@ Before each run after an SSH reconnect:
 
 ---
 
-## 9. Wrap up: get your results and stop the VM
+## 8. Wrap up: get your results and stop the VM
 
 Runs land under `~/.odyssey/runs/<mission-id>/<task-id>/` on the VM (checkpoints,
 and the rollout MP4s if you enabled `capture_video`). Pull what you want to keep
