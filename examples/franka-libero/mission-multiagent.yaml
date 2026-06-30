@@ -1,0 +1,62 @@
+# LIBERO eval (MULTI-AGENT, EVAL-ONLY): OpenVLA-LIBERO pilot + Gemma 4 planner.
+#
+# Same as mission.yaml, but adds an out-of-process multimodal Gemma 4 SPECIALIST that
+# decomposes the LIBERO task instruction into phases fed to the OpenVLA pilot
+# (PlannedEvalRuntime). LIBERO's longer-horizon tasks are where that decomposition is
+# meant to help. Still EVAL-ONLY — no training; the pilot checkpoint comes from HF.
+#
+# Prereqs (two venvs): build both with the multi-agent setup script, then load its
+# env file so ODYSSEY_SPECIALIST_PYTHON is set:
+#   examples/multiagent-openvla-gemma/setup.sh
+#   source examples/multiagent-openvla-gemma/.env
+# Plus the `libero` package in env_pilot (examples/franka-libero/setup.sh).
+# Hardware: 24 GB GPU — int4 E2B-it planner (~5 GB) + ~14 GB bf16 pilot ≈ 19 GB peak.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-object-multiagent
+  description: Eval-only multi-agent — OpenVLA LIBERO-object pilot + Gemma 4 planner on the LIBERO object suite.
+  tags: [openvla, gemma, multiagent, libero, franka, eval-only]
+
+objective: |
+  Evaluate the published OpenVLA-7B LIBERO-object checkpoint, guided by an
+  out-of-process multimodal Gemma 4 task planner, on the LIBERO object suite.
+
+acceptance_criteria: |
+  Non-trivial success_rate across the evaluation episodes, with the planner emitting
+  a per-episode phase plan.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b-finetuned-libero-object
+
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        # Vision-language planner, runs out-of-process in env_specialist. Gemma 4
+        # E2B-it is multimodal and ungated; it sees the first episode frame so the
+        # plan is grounded in the scene.
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal
+
+tasks:
+  - name: eval-libero-object
+    kind: evaluation
+    evaluation_type: libero
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      checkpoint: openvla/openvla-7b-finetuned-libero-object   # HF repo id (eval-only)
+      unnorm_key: libero_object
+      task_id: 0
+      steps_per_phase: 50          # PlannedEvalRuntime: advance phase every N steps
+      capture_video: true

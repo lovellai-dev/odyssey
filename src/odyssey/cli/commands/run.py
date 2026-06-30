@@ -34,6 +34,7 @@ from odyssey.runners import (
     RunnerRegistry,
 )
 from odyssey.runners.evals.isaac_lab import IsaacLabRunner
+from odyssey.runners.evals.libero import LiberoRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
 from odyssey.spec.loader import LoadError, load_mission
 from odyssey.spec.mission import Mission
@@ -53,6 +54,7 @@ def _build_runners() -> RunnerRegistry:
     registry.register(GR00TRunner())
     registry.register(RobosuiteRunner())
     registry.register(IsaacLabRunner())
+    registry.register(LiberoRunner())
     registry.register(CPUMockRunner())
     return registry
 
