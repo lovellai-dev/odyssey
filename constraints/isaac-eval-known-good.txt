@@ -1,0 +1,27 @@
+# Known-good pins for the Isaac Lab EVAL env (the GR00T client side).
+#
+# This env is Isaac Sim's bundled / isaaclab-conda Python (py3.11), reached via
+# ISAAC_PYTHON. Isaac Sim + Isaac Lab themselves are a large binary install and
+# are NOT pip-resolvable from here — do NOT try to install/pin `isaacsim` or
+# `isaaclab` with this file. What we add into that env is only the small client
+# transport so the GR00T PolicyClient can talk to the server during a rollout.
+#
+# Applied (additively, never replacing Isaac's own deps) by
+# scripts/setup-eval-stack.sh, equivalent to:
+#   "$ISAAC_PYTHON" -m uv pip install --python "$ISAAC_PYTHON" \
+#       -c constraints/isaac-eval-known-good.txt pyzmq msgpack msgpack-numpy aiosqlite nest_asyncio
+#   "$ISAAC_PYTHON" -m pip install --no-deps -e "$ODYSSEY_DIR"   # odyssey CLI, no-deps
+# and the recipe self-inserts $ISAAC_GR00T_DIR onto sys.path for the gr00t SDK.
+#
+# Verified live on the team H100 VM (miniconda3/envs/isaaclab).
+
+pyzmq==27.0.1
+msgpack==1.1.0
+msgpack-numpy==0.4.8
+nest_asyncio>=1.6
+aiosqlite>=0.19
+
+# Reference only — these come from the Isaac Sim install, NOT this file:
+#   isaacsim==5.1.0.0  (+ isaacsim-* extscache packages)
+#   isaaclab           (editable, from the IsaacLab checkout)
+#   gymnasium==1.2.1

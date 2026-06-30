@@ -1,0 +1,37 @@
+# Known-good pins for the GR00T policy SERVER venv.
+#
+# This is a SEPARATE environment from odyssey core and from Isaac Lab — it hosts
+# the GR00T model (torch 2.7.1 + flash-attn) and is reached over ZMQ via
+# GR00T_VENV_PYTHON. NEVER co-install these into the odyssey core env or the
+# Isaac env (torch/transformers/numpy ABIs all clash). See docs/eval-stack-setup.md.
+#
+# Built (py3.10, CUDA 12.8, x86_64) by scripts/setup-eval-stack.sh, equivalent to:
+#   cd "$ISAAC_GR00T_DIR"
+#   uv venv --python 3.10 .venv
+#   uv pip install --python .venv/bin/python \
+#       --extra-index-url https://download.pytorch.org/whl/cu128 \
+#       -c constraints/gr00t-server-known-good.txt -e .
+#
+# Verified live on the team H100 VM (Isaac-GR00T/.venv).
+
+torch==2.7.1+cu128
+torchvision==0.22.1+cu128
+torchcodec==0.4.0
+transformers==4.57.3
+accelerate==1.13.0
+diffusers==0.35.1
+peft==0.17.1
+numpy==1.26.4
+albumentations==1.4.18
+opencv-python-headless==4.11.0.86
+pillow==12.2.0
+einops==0.8.1
+safetensors==0.7.0
+pyzmq==27.0.1
+msgpack==1.1.0
+msgpack-numpy==0.4.8
+
+# flash-attn: CUDA-only compiled wheel, GPU/arch-specific. Install per
+# Isaac-GR00T's pyproject (cu128 x86_64; Blackwell needs the cu13 path) AFTER
+# torch is present — do not pin a wheel URL here cross-platform.
+# gr00t itself is installed editable from the checkout: `uv pip install -e $ISAAC_GR00T_DIR`.

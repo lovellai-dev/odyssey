@@ -91,6 +91,18 @@ specialist = [
     # torchvision.transforms.v2. Must match the installed torch ABI.
     "torchvision",
 ]
+gr00t = [
+    # GR00T policy-server CLIENT transport (PolicyClient over ZMQ). The GR00T
+    # MODEL stack (torch 2.7.1+cu128, flash-attn, transformers 4.57) runs in a
+    # SEPARATE venv (the Isaac-GR00T checkout) reached via GR00T_VENV_PYTHON and
+    # is NEVER co-installed here; the Isaac Lab eval env (ISAAC_PYTHON) gets
+    # these client deps. See constraints/gr00t-server-known-good.txt and
+    # docs/eval-stack-setup.md.
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
+    "msgpack-numpy>=0.4.8",
+    "numpy>=1.24",
+]
 all = [
     "lovell-odyssey[huggingface,openvla,robosuite]",
 ]
