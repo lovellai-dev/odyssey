@@ -1,0 +1,74 @@
+# Franka pick-and-place mission: put the can in the bin.
+#
+# Trains an OpenVLA 7B pilot (LoRA) on Bridge V2, then evaluates it on the
+# Robosuite **PickPlaceCan** benchmark — a Franka Panda must pick a can and drop
+# it into the correct bin (i.e. "put an object in a box"). PickPlaceCan is the
+# single-object variant of PickPlace, so it's the most attainable place-in-bin task.
+#
+# ⚠️ Domain/embodiment gap (read before expecting success): Bridge V2 is REAL-robot
+# data collected on a **WidowX** arm, while this eval runs a **Franka Panda in
+# simulation**. The pilot is trained in one setting and tested in another, so a
+# fresh LoRA will rarely succeed zero-/few-shot. The mission is a coherent,
+# attractive *pipeline* demo — getting real successes needs serious training
+# (hours, not the 10-step smoke) and still fights the sim-to-real gap. Bridge does
+# contain many "put X in a container" demos, so this task is *more* aligned with
+# the training distribution than e.g. Lift.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-pickplace-can
+  description: OpenVLA LoRA fine-tune on Bridge V2, eval on Robosuite PickPlaceCan (Franka puts a can in the bin).
+  tags: [openvla, robosuite, pickplace, franka]
+
+objective: |
+  Demonstrate that an OpenVLA 7B pilot fine-tuned on Bridge V2 can pick up a can
+  and place it in the bin with a Franka Panda in the Robosuite PickPlaceCan task.
+
+acceptance_criteria: |
+  At least one successful can-in-bin placement across the evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b
+
+tasks:
+  - name: finetune-pilot
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: oxe
+      ref: bridge_orig            # OXE registry key OpenVLA's finetune.py looks up
+      format: rlds
+    config:
+      method: peft_lora
+      lora_rank: 8
+      lora_alpha: 16
+      batch_size: 2
+      learning_rate: 5.0e-5
+      max_steps: 5000             # ~1 h on an L4 for a real attempt; lower (e.g. 10) for a quick pipeline smoke
+      save_steps: 1000
+      epochs: 1                   # ignored when max_steps is set
+      data_root_dir: /path/to/dataset   # EDIT: parent dir of the RLDS folder (e.g. /home/<user> if it lives at /home/<user>/bridge_orig/)
+      # Keep the RLDS shuffle buffer small — the upstream default (256k) eats all
+      # 32 GB RAM on g2-standard-8 and freezes the VM.
+      shuffle_buffer_size: 10000
+
+  - name: eval-franka-pickplace-can
+    kind: evaluation
+    evaluation_type: robosuite
+    benchmark_name: PickPlaceCan
+    num_episodes: 10
+    config:
+      unnorm_key: bridge_orig
+      # PickPlaceCan isn't in the built-in default-instruction table (only the
+      # generic "PickPlace" is), so spell out the instruction the pilot sees.
+      task_instruction: "put the can in the bin"
+      capture_video: true        # one MP4 per episode (see README -> "Recording rollout videos")
