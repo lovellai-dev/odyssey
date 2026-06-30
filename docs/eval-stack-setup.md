@@ -21,6 +21,50 @@ policy as a **client** of the server running under `GR00T_VENV_PYTHON`. The
 `make_gr00t_policy` factory is a thin ZMQ client for exactly this reason — it
 never imports the GR00T model in-process.
 
+## Provisioning Isaac Sim / Isaac Lab (the binary precondition)
+
+Isaac Sim is a large NVIDIA Omniverse binary with its own bundled Python — it is
+installed by NVIDIA's tooling, **not** by uv/pip resolution, and
+`setup-eval-stack.sh` treats it as a precondition (env #3 is SKIPped with a note
+if `ISAAC_PYTHON` is missing). Provision it once into a dedicated py3.11 conda env:
+
+```bash
+# 1) Dedicated py3.11 env for Isaac
+conda create -n isaaclab python=3.11 -y && conda activate isaaclab
+pip install --upgrade pip
+
+# 2) Isaac Sim 5.1.0 (the extscache extras pull the Omniverse kit runtime)
+pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
+
+# 3) Isaac Lab on top — its installer wires the conda env
+git clone https://github.com/isaac-sim/IsaacLab.git "$HOME/IsaacLab"
+cd "$HOME/IsaacLab" && git checkout v2.3.2 && ./isaaclab.sh --install
+
+# 4) Verify (find_spec checks the install without importing Omniverse / a GPU)
+python -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('isaaclab') else 1)" \
+  && echo "isaaclab OK"
+```
+
+Then point the stack at it (these are the defaults in `setup-eval-stack.sh`):
+
+```bash
+export ISAAC_PYTHON="$HOME/miniconda3/envs/isaaclab/bin/python"
+export ISAACLAB_PATH="$HOME/IsaacLab"
+export OMNI_KIT_ACCEPT_EULA=YES        # non-interactive EULA for headless / CI
+```
+
+Requirements & gotchas:
+
+- **GPU + driver:** the eval *renders*, so it needs an NVIDIA GPU with a
+  CUDA-12.x driver and a working Vulkan ICD (`find_spec` above only checks the
+  install). Verified on the H100 VM (Isaac Sim 5.1.0.0, driver 580.x).
+- **Headless hosts:** set `OMNI_KIT_ACCEPT_EULA=YES`; EGL rendering works with no
+  display.
+- **Blackwell (RTX PRO 6000):** needs the cu13 wheel path (see Isaac-GR00T's
+  `pyproject`); the GR00T server pins here are cu128 (pre-Blackwell, x86_64).
+- Keep the Isaac Lab checkout on the version matching Isaac Sim 5.1.0 (here
+  `v2.3.2`) so the APIs line up.
+
 ## Setup
 
 ```bash
