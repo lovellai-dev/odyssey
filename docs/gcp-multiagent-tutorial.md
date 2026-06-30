@@ -3,20 +3,17 @@
 This is the complete, self-contained procedure for running the **multi-agent
 mission** on a **Google Cloud GPU VM**: an OpenVLA **PILOT** fine-tuned on Bridge
 V2, guided at evaluation time by a vision-language **SPECIALIST** task planner
-(multimodal **Gemma 4 E2B-it**) that runs **out of process**, evaluated on
-Robosuite **Lift**.
+(multimodal **Gemma 4 E2B-it**), evaluated on Robosuite **Lift**.
 
 It is GCP-specific on purpose: a few things bite you only on GCP (the NCCL `gIB`
 plugin, L4 stockouts, disk sizing) and this guide front-loads them so you don't
-lose a day to them. The hard-won details come from the end-to-end validation runs
-in issues [#5](https://github.com/lovellai-dev/odyssey/issues/5) and
-[#22](https://github.com/lovellai-dev/odyssey/issues/22).
+lose a day to them.
 
-> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu · `us-central1-a`
-> and `us-west1-a` (use whichever zone has L4 capacity — `us-central1-a` is prone to
-> stockouts; the steps are zone-independent).
-> Other clouds (AWS/Azure) or GPUs may not need the NCCL workaround — see
-> [§6](#6-the-gcp-critical-environment-variables).
+> **Validated on:** `g2-standard-8` · NVIDIA **L4 (24 GB)** · Ubuntu. Use an
+> **on-demand** L4 in **`us-west1-a`** — it has proved the most reliable; avoid
+> `us-central1-a` preemptible, which is chronically stocked out of L4. The steps
+> themselves are zone-independent. Other clouds (AWS/Azure) or GPUs may not need the
+> NCCL workaround.
 
 > A simpler **single-agent** path (OpenVLA only, one venv) is documented in the
 > [single-agent GCP tutorial](./gcp-training-tutorial.md). This guide is the
@@ -39,16 +36,11 @@ The catch is dependencies. The multimodal Gemma 4 planner needs a **modern
 two talk over a JSON-lines subprocess protocol (the planner runs once per episode,
 off the per-step hot loop).
 
-Hence **two venvs, named by role** so a plain `ls` tells them apart:
-
-| venv | hosts | stack |
-|---|---|---|
-| **`env_pilot`** | OpenVLA pilot + the Robosuite eval | OpenVLA pinned (`torch 2.2.0`, `transformers 4.40.1`) |
-| **`env_specialist`** | the Gemma 4 planner | modern `transformers` + `torchvision` |
-
-Building both correctly is the **fragile part of multi-agent** — so this tutorial
-leans on the **`setup.sh` script**, which builds both idempotently and pins each
-to its known-good stack. It saves a lot of fiddling.
+Hence **two venvs, named by role**: **`env_pilot`** hosts the OpenVLA pilot and the
+Robosuite eval (pinned to OpenVLA's stack), and **`env_specialist`** hosts the
+Gemma 4 planner (modern `transformers` + `torchvision`). Building both correctly is
+the **fragile part of multi-agent**, so this tutorial leans on the **`setup.sh`
+script**, which builds both idempotently and pins each to its known-good stack.
 
 ---
 
@@ -64,8 +56,8 @@ to its known-good stack. It saves a lot of fiddling.
 8. [Troubleshoot](#8-troubleshooting--debugging-playbook) when it silently dies
 9. [Get your results and stop the VM](#9-wrap-up-get-your-results-and-stop-the-vm)
 
-Plan for **most of a morning**: the steps themselves are quick, but the 124 GB
-dataset download dominates and scales with your bandwidth (~30 min to several hours).
+Plan for **about an hour**: the steps themselves are quick; the 124 GB dataset
+download dominates (**~30 min** on a GCP VM, measured; longer on slower bandwidth).
 
 > 💸 **Validate for free first.** A GPU VM costs real money the whole time it's
 > running. Before you provision anything, confirm the mission spec and the whole
@@ -118,8 +110,10 @@ dataset download dominates and scales with your bandwidth (~30 min to several ho
 > idle or not** — so stop it between sessions ([§9](#9-wrap-up-get-your-results-and-stop-the-vm)).
 > A stopped VM still bills for its disk.
 
-> ⚠️ **L4 stockouts are frequent** in `us-central1-a`. If VM creation fails with a
-> stockout, try another zone (`us-central1-b`, `us-west1-a`, …). **Take a
+> ⚠️ **Use an on-demand L4 in `us-west1-a`.** `us-central1-a` is chronically stocked
+> out of L4, and a preemptible VM gets reclaimed mid-run — we lost days to both.
+> An **on-demand** L4 in **`us-west1-a`** has been reliable. If a zone is exhausted,
+> try `us-west1-b/c` or `us-east1`. **Take a
 > [disk snapshot](https://cloud.google.com/compute/docs/disks/create-snapshots)
 > before stopping or resizing a working VM**: we once lost a VM to a resize that
 > left it unbootable, then couldn't get a new L4 for hours.
@@ -200,11 +194,6 @@ Useful flags:
 | `--smoke` | run the planner smoke check at the end (downloads Gemma) |
 | `-h`, `--help` | show all options |
 
-> 💡 **Why a script and not copy-paste.** The two-venv split with mutually
-> incompatible `transformers` versions is exactly where manual setups break. The
-> script pins both stacks from `constraints/*.txt`, so you get the validated
-> combination every time and can re-run it safely after a botched attempt.
-
 ### Building it by hand instead
 
 If you'd rather not use the script, the equivalent manual steps are:
@@ -237,29 +226,13 @@ export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
 
 ## 4. The dataset: Bridge V2 in RLDS format
 
-The pilot's `finetune.py` expects datasets in **RLDS / TensorFlow-Datasets format**,
-**not** LeRobot/HuggingFace format. Download Bridge V2 and rename it:
+You'll download the ~124 GB Bridge V2 dataset and rename it to the key OpenVLA
+expects (`bridge_orig`). **Do this early and read the heads-up below** — it's where
+people lose time (a full disk, or a crawl that never "finishes") right at the end.
 
-```bash
-# ~124 GB — make sure the disk has room (see §1)
-wget -r -nH --cut-dirs=4 --reject="index.html*" \
-  https://rail.eecs.berkeley.edu/datasets/bridge_release/data/tfds/bridge_dataset/
-
-# OpenVLA's OXE registry key for this is `bridge_orig`
-mv bridge_dataset bridge_orig
-```
-
-**Why the rename?** Berkeley's server hands the dataset out under the folder name
-`bridge_dataset`, but OpenVLA's **OXE registry** (the dataset catalog its
-`finetune.py` looks up) knows this dataset by the key **`bridge_orig`**. The `mv`
-doesn't touch the data — it just renames the on-disk folder so it matches the
-registry key OpenVLA resolves at `<data_root_dir>/bridge_orig/<version>/`. Skip it
-and training fails at dataset creation with a "dataset not found" error, because
-the key (`bridge_orig`) and the folder on disk (`bridge_dataset`) don't line up.
-
-**Run the download under `nohup` so it survives an SSH drop.** At 124 GB the
-transfer can take well over 30 minutes — long enough that a flaky connection
-would otherwise kill it. Launch it detached and log to a file:
+The pilot's `finetune.py` expects **RLDS / TensorFlow-Datasets format** (not
+LeRobot/HuggingFace). Download it under `nohup` so it survives an SSH drop, logging
+to a file:
 
 ```bash
 cd ~
@@ -268,57 +241,51 @@ nohup wget -r -nH --cut-dirs=4 --reject="index.html*" \
   > ~/bridge_download.log 2>&1 &
 ```
 
-The `&` backgrounds it and `nohup` + the log redirect keep it running after you
-disconnect. Monitor it (works even after reconnecting over SSH):
+> ⚠️ **`wget -r` keeps crawling *past* the dataset — stop it once the shards are in.**
+> The recursive download follows every link, so after the RLDS shards it starts
+> pulling unrelated sibling files (we've seen a **~100 GB `demos_*.zip`**) — that's
+> the "stuck at the end forever" phase, and it can fill the disk and trip a silent
+> `exit(1)`. **Don't wait for `finished`** — stop it as soon as the shards +
+> metadata are present (next step).
+
+Monitor it (the per-line percentages are **per-file**, not overall — track total
+progress with `du -sh`):
 
 ```bash
-tail -f ~/bridge_download.log   # live progress — Ctrl+C stops the tail, not the download
-ps aux | grep '[w]get'          # confirm the download is still running
-du -sh ~/bridge_dataset         # how much has landed so far (heading toward ~124 GB)
+tail -f ~/bridge_download.log
+du -sh ~/bridge_dataset                                        # heading toward ~124 GB
+find ~/bridge_dataset -name "*.tfrecord-*" | wc -l             # 1024 train shards (1152 incl. 128 val)
+ls ~/bridge_dataset/1.0.0/ | grep -E "dataset_info|features"   # metadata present?
 ```
 
-The per-line percentages in the log are **per-file**, not overall — track total
-progress with `du -sh`.
-
-**`wget -r` keeps going *past* the dataset — stop it once the shards are in.** The
-recursive crawl follows every link under the URL, so after the RLDS shards it
-starts pulling unrelated sibling files (we've seen it grab a **~100 GB
-`demos_*.zip`**) — that's the "it's been stuck at the end forever" phase, and it can
-fill the disk and trip the silent `exit(1)` (see
-[§8](#8-troubleshooting--debugging-playbook)). **Don't wait for `finished`.** The
-dataset is complete once you have all the train shards plus the metadata:
-
-```bash
-find ~/bridge_dataset -name "*.tfrecord-*" | wc -l   # 1024 train shards (1152 incl. the 128 val shards)
-ls ~/bridge_dataset/1.0.0/ | grep -E "dataset_info|features"   # dataset_info.json + features.json
-```
-
-When those are present you can safely stop the crawl and rename — matching by
-pattern, not a stale PID (the PID changes between runs):
+Once all the shards + `dataset_info.json` + `features.json` are there, stop the
+crawl and rename to the OXE key (match by pattern — the PID changes between runs):
 
 ```bash
 pkill -f 'wget.*bridge_dataset'   # stop the recursive download
-ps aux | grep '[w]get'            # confirm it's gone
 mv ~/bridge_dataset ~/bridge_orig
 ```
 
-> ⚠️ **`data_root_dir` is the *parent* of the dataset folder, not the folder
-> itself.** OpenVLA resolves the data at `<data_root_dir>/<dataset_name>/<version>`
-> (e.g. `/home/<user>/bridge_orig/1.0.0/`). So if the dataset lives at
-> `/home/gema/bridge_orig/`, set `data_root_dir: /home/gema` — **not**
-> `/home/gema/bridge_orig`. A wrong path fails right after model load + LoRA wrap.
+**Why the rename?** Berkeley serves the dataset as `bridge_dataset`, but OpenVLA's
+OXE registry knows it by the key **`bridge_orig`**. The `mv` only renames the folder
+so it matches the key OpenVLA resolves at `<data_root_dir>/bridge_orig/<version>/`;
+skip it and training fails at dataset creation with "dataset not found".
 
-In the mission, the dataset maps through as a pass-through (Odyssey does **not**
-download it):
+> ⚠️ **`data_root_dir` is the *parent* of the dataset folder, not the folder itself.**
+> If the dataset lives at `/home/<user>/bridge_orig/`, set
+> `data_root_dir: /home/<user>` — **not** `/home/<user>/bridge_orig`. A wrong path
+> fails right after model load + LoRA wrap.
+
+In the mission this maps straight through (Odyssey does **not** download it):
 
 | `mission.yaml` | becomes the flag | meaning |
 |---|---|---|
-| `dataset.ref: bridge_orig` | `--dataset_name bridge_orig` | the OXE **registry key** OpenVLA looks up |
-| `config.data_root_dir: <path>` | `--data_root_dir <path>` | the **parent dir** of the RLDS folder |
+| `dataset.ref: bridge_orig` | `--dataset_name bridge_orig` | the OXE registry key |
+| `config.data_root_dir: <path>` | `--data_root_dir <path>` | the parent dir of the RLDS folder |
 
 > 💡 **Keep the shuffle buffer small.** The upstream RLDS default (256k) eats all
-> 32 GB of RAM on `g2-standard-8` and freezes the VM. The example mission already
-> sets `shuffle_buffer_size: 10000` in the training task's `config`.
+> 32 GB RAM on `g2-standard-8` and freezes the VM — the example mission already sets
+> `shuffle_buffer_size: 10000`.
 
 Edit `config.data_root_dir` in `examples/multiagent-openvla-gemma/mission.yaml` to
 your dataset's parent dir before running.
