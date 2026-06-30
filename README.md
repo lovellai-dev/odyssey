@@ -282,30 +282,46 @@ pinned `transformers==4.40.1`, so the SPECIALIST **must run out of process** in 
 separate venv. The PILOT stays in the main venv; the two talk over a JSON-lines
 subprocess protocol (the planner runs once per episode, off the per-step hot loop).
 
-### Setting up the out-of-process SPECIALIST
+### Setting up the two environments (`setup.sh`)
 
-> 💡 **Shortcut:** `examples/multiagent-openvla-gemma/setup.sh` does all of the
-> below (both the pilot and specialist venvs) for you, idempotently. The manual
-> steps follow if you'd rather do it by hand.
+Multi-agent needs **two venvs** — **`env_pilot`** (the OpenVLA pilot + Robosuite
+eval) and **`env_specialist`** (the Gemma 4 planner) — because their `transformers`
+versions are mutually incompatible. The **`setup.sh` script builds both**
+idempotently, each pinned to its known-good stack, clones the upstream OpenVLA repo,
+and writes a sourceable `.env`:
 
-1. Create the specialist venv (modern transformers + torchvision + Gemma deps).
-   We name it **`env_specialist`** to pair with the **`env_pilot`** venv that
-   holds the OpenVLA pilot — the role-based names keep the two `transformers`
-   stacks straight:
+```bash
+# from the repo root — builds env_pilot + env_specialist, clones OpenVLA, writes .env
+examples/multiagent-openvla-gemma/setup.sh
 
-   ```bash
-   python -m venv env_specialist
-   env_specialist/bin/pip install -e ".[specialist]" \
-     -c constraints/specialist-known-good.txt
-   ```
+# load the active venv + env vars (incl. ODYSSEY_SPECIALIST_PYTHON) before each run
+source examples/multiagent-openvla-gemma/.env
+```
 
-2. Point Odyssey at that venv's python. It is read per-process from the
-   environment, so export it in every shell that runs a mission — or add it to
-   your shell profile / VM startup script so it persists:
+> 📖 **Full GCP walkthrough** (provisioning, dataset download, troubleshooting):
+> the [multi-agent GCP tutorial](docs/gcp-multiagent-tutorial.md). For the simpler
+> single-agent (OpenVLA-only) path, see the
+> [training tutorial](docs/gcp-training-tutorial.md).
 
-   ```bash
-   export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
-   ```
+<details>
+<summary>Build the two venvs by hand instead</summary>
+
+The role-based names keep the two `transformers` stacks straight: `env_pilot`
+holds OpenVLA (pinned `transformers==4.40.1`), `env_specialist` the Gemma planner
+(modern transformers + torchvision).
+
+```bash
+# env_specialist — the Gemma planner (env_pilot is the OpenVLA install)
+python -m venv env_specialist
+env_specialist/bin/pip install -e ".[specialist]" \
+  -c constraints/specialist-known-good.txt
+
+# point Odyssey at that venv's python (read per-process; export it in every shell
+# that runs a mission, or persist it in your shell profile / VM startup script)
+export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
+```
+
+</details>
 
 > **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**
 > The planner is launched in that venv (`RemotePlanner` →
