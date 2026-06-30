@@ -89,6 +89,12 @@ cube-lift environment.
 
 **Prerequisites:**
 
+> **One-command setup** of the three eval environments (Odyssey core, GR00T
+> server, Isaac Lab) with uv: `bash scripts/setup-eval-stack.sh`. See
+> [`docs/eval-stack-setup.md`](docs/eval-stack-setup.md) for why they're separate
+> venvs by design + the Isaac Sim provisioning. The manual steps below are the
+> step-by-step equivalent.
+
 1. Install the upstream Isaac-GR00T package — it carries the training entry
    point (`gr00t.experiment.launch_finetune`) and the demo dataset. Accept
    NVIDIA's weight license:
