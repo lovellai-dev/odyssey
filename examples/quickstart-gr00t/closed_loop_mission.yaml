@@ -1,0 +1,90 @@
+# GR00T closed-loop mission: finetune -> deploy the trained checkpoint -> grade.
+#
+# One `odyssey run` drives the whole loop:
+#   1. training task  (runner: gr00t)      -> finetunes GR00T N1.7 on the demo
+#                                              set; produces a checkpoint.
+#   2. eval task      (evaluation: isaac_lab) -> the relocated GR00T eval recipe
+#        (src/odyssey/runners/evals/gr00t_isaac_eval.py) AUTO-SERVES that
+#        checkpoint (serve_checkpoint: true), waits for the server, runs the
+#        Franka visuomotor env in Isaac Lab against the *finetuned* policy, and
+#        reports success over the ODYSSEY_* protocol — then tears the server down.
+#
+# The runner auto-passes the training task's output checkpoint to the eval as
+# --checkpoint, so the deployed policy is exactly what was just trained (closed
+# loop) — no manually-started external server (cf. isaac_eval_mission.yaml).
+#
+# Embodiment MUST match: the eval's embodiment_tag == the training embodiment_tag
+# (the server can't infer it from the weights).
+#
+# Plumbing only (no Isaac / GR00T):
+#   uv run odyssey run examples/quickstart-gr00t/closed_loop_mission.yaml --use-mock-runner
+#
+# Real run (needs the GR00T venv + an Isaac Lab install with the Cosmos env):
+#   ISAACLAB_PATH=~/IsaacLab ISAAC_GR00T_REPO_PATH=~/Isaac-GR00T \
+#     uv run odyssey run examples/quickstart-gr00t/closed_loop_mission.yaml
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: gr00t-closed-loop
+  description: Finetune GR00T, deploy the trained checkpoint, evaluate it in Isaac Lab — one run.
+  tags: [gr00t, nvidia, isaac-lab, closed-loop]
+
+objective: |
+  Close the train -> deploy -> grade loop in a single Odyssey mission: fine-tune
+  GR00T N1.7, auto-serve the resulting checkpoint as a policy server, and score
+  it in the Franka cube-stack visuomotor env.
+
+acceptance_criteria: |
+  Mission completes; the eval auto-serves the finetuned checkpoint and reports a
+  success_rate + performance_score over GR00T-in-the-loop episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: finetune-gr00t
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      ref: demo_data/cube_to_bowl_5
+      format: lerobot
+    config:
+      runner: gr00t
+      embodiment_tag: new_embodiment
+      modality_config_path: examples/SO100/so100_config.py
+      global_batch_size: 8
+      max_steps: 30
+
+  - name: gr00t-isaac-eval-closed-loop
+    kind: evaluation
+    evaluation_type: isaac_lab
+    benchmark_name: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    num_episodes: 1   # one episode is slow on the visuomotor env; bump for a real sweep
+    config:
+      # the relocated, blessed GR00T eval recipe (runners/evals, not scripts/)
+      eval_script: src/odyssey/runners/evals/gr00t_isaac_eval.py
+      # closed-loop: serve the upstream training task's checkpoint here
+      serve_checkpoint: true
+      embodiment_tag: new_embodiment        # MUST match the training embodiment_tag
+      server_python: /home/ubuntu/Isaac-GR00T/.venv/bin/python
+      server_device: cuda:0
+      host: 127.0.0.1
+      port: 5555
+      instruction: "stack the red cube on the green cube"
+      pos_scale: 0.05   # raw GR00T eef deltas are large; scale into the IK-rel action
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false

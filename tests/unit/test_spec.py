@@ -121,7 +121,16 @@ def test_shipped_gr00t_example_loads() -> None:
     assert training[0].dataset.format is not None
     assert training[0].dataset.format.value == "lerobot"
     assert evaluation[0].evaluation_type.value == "isaac_lab"
-    assert evaluation[0].benchmark_name == "Isaac-Lift-Cube-Franka-v0"
+    # cosmos visuomotor benchmark — the GR00T eval recipe needs camera obs
+    assert (
+        evaluation[0].benchmark_name
+        == "Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0"
+    )
+    # the eval is wired to the blessed recipe (no longer a placeholder)
+    assert (
+        evaluation[0].config["eval_script"]
+        == "src/odyssey/runners/evals/gr00t_isaac_eval.py"
+    )
 
 
 # ---------------------------------------------------------------------------
