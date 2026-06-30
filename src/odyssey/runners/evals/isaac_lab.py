@@ -26,9 +26,14 @@ expected)::
 
     ODYSSEY_EPISODE {"index": 1, "total": 10, "success": true, "return": 1.5}
     ODYSSEY_RESULT {"success_rate": 0.4, "performance_score": 0.7, "metrics": {}}
+    ODYSSEY_REASONING {"episode": 1, "instruction": "...", "reasoning": "..."}
 
 ``ODYSSEY_RESULT`` is optional — when absent, the summary is computed
-from the episode lines.
+from the episode lines. ``ODYSSEY_REASONING`` is also optional — a
+per-episode intent trace from the Cosmos-Reason sidecar
+(``cosmos_reason.py``); when present, the traces are carried into
+``metrics["reasoning"]`` so Command Center / Episode Review can show
+reasoning beside the grade.
 """
 
 from __future__ import annotations
@@ -41,9 +46,11 @@ from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
 
-# Shared eval helpers; extract to a common module when a third
-# evaluation runner needs them.
-from odyssey.runners.evals.robosuite import _grade, _resolve_eval_checkpoint
+# Shared eval helpers
+from odyssey.runners.evals._common import (
+    build_eval_summary,
+    resolve_eval_checkpoint,
+)
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     run_training_subprocess,
@@ -53,8 +60,18 @@ from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 logger = logging.getLogger(__name__)
 
 
+# ODYSSEY_RESULT and ODYSSEY_REASONING share the leading "ODYSSEY_RE", so parse
+# order would matter IF one were a prefix of the other. It isn't: they diverge at
+# the next char ("S" vs "A"), and the trailing space on every prefix keeps
+# "ODYSSEY_RESULT " from swallowing a hypothetical longer token. So the
+# RESULT-before-REASONING check order in ``parse`` is safe. The invariant
+# (no ODYSSEY_* prefix is a prefix of another) is locked in by
+# test_prefixes_are_mutually_exclusive in tests/unit/test_isaac_lab.py.
 _EPISODE_PREFIX = "ODYSSEY_EPISODE "
 _RESULT_PREFIX = "ODYSSEY_RESULT "
+# Optional per-episode intent trace from the Cosmos-Reason sidecar. Purely
+# additive: an eval that never emits it behaves exactly as before.
+_REASONING_PREFIX = "ODYSSEY_REASONING "
 
 # Config keys consumed by the runner itself, never forwarded as flags.
 _HANDLED_CONFIG_KEYS = {"eval_script", "runner", "headless"}
@@ -72,6 +89,7 @@ class EvalProtocolCollector:
     def __init__(self) -> None:
         self.episodes: list[dict[str, Any]] = []
         self.result: dict[str, Any] | None = None
+        self.reasoning: list[dict[str, Any]] = []
 
     def parse(self, line: str) -> dict[str, Any] | None:
         stripped = line.strip()
@@ -99,6 +117,19 @@ class EvalProtocolCollector:
                 return None
             self.result = payload
             return {"stage": "executing", "step": "result_received"}
+        if stripped.startswith(_REASONING_PREFIX):
+            payload = self._load_json(stripped[len(_REASONING_PREFIX):])
+            if payload is None:
+                return None
+            self.reasoning.append(payload)
+            reasoning_event: dict[str, Any] = {
+                "stage": "executing", "step": "reasoning_received",
+                "step_label": "intent trace",
+            }
+            episode = payload.get("episode")
+            if isinstance(episode, int):
+                reasoning_event["step_index"] = episode
+            return reasoning_event
         return None
 
     @staticmethod
@@ -206,21 +237,22 @@ def summarize(
             "the protocol. See src/odyssey/runners/isaac_lab.py."
         )
 
-    metrics.setdefault("successes", successes)
-    metrics.setdefault(
-        "episode_returns", [round(r, 4) for r in episode_returns]
-    )
-    metrics.setdefault("benchmark", spec.benchmark_name)
-    metrics.setdefault("checkpoint_path", str(checkpoint))
     metrics.setdefault("eval_script", eval_script)
-    return {
-        "num_episodes": num_episodes,
-        "success_rate": round(success_rate, 4),
-        "performance_score": round(performance_score, 4),
-        "letter_grade": _grade(success_rate),
-        "passed": success_rate >= 0.5,
-        "metrics": metrics,
-    }
+    # Carry the per-episode intent traces (if the eval emitted any) into the
+    # summary so Command Center / Episode Review can show reasoning beside the
+    # grade. Absent when the eval doesn't speak ODYSSEY_REASONING.
+    if collector.reasoning:
+        metrics.setdefault("reasoning", collector.reasoning)
+    return build_eval_summary(
+        num_episodes=num_episodes,
+        successes=successes,
+        episode_returns=episode_returns,
+        benchmark_name=spec.benchmark_name,
+        checkpoint_path=checkpoint,
+        metrics=metrics,
+        success_rate=success_rate,
+        performance_score=performance_score,
+    )
 
 
 class IsaacLabRunner(Runner):
@@ -245,7 +277,7 @@ class IsaacLabRunner(Runner):
                 f"IsaacLabRunner expects EvaluationTask, got {type(spec).__name__}"
             )
 
-        checkpoint = _resolve_eval_checkpoint(context)
+        checkpoint = resolve_eval_checkpoint(context)
         eval_script = resolve_eval_script(spec.config or {})
         launcher = resolve_launcher()
 

@@ -58,6 +58,7 @@ tasks:
     num_episodes: 10
     config:
       unnorm_key: bridge_orig
+      capture_video: true   # one MP4 per episode (README: "Recording rollout videos")
 
 leaderboard:
   publish: false   # Backend not live yet in v0.1.0-alpha.
