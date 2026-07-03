@@ -102,8 +102,17 @@ async def run_training_subprocess(
     if spec.launcher is not None:
         launcher = spec.launcher
     elif spec.use_torchrun:
+        # Launch torchrun via THIS interpreter (sys.executable), not the bare
+        # "torchrun" on PATH. `torchrun` is exactly `python -m torch.distributed.run`,
+        # and resolving it by name can pick a different env's torchrun (e.g. a
+        # ~/.local/bin one backed by the system python), so the training workers
+        # run outside the active venv and miss its packages (prismatic, the pinned
+        # torch, ...). Going through sys.executable pins training to the same venv
+        # the engine runs in.
         launcher = [
-            "torchrun",
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
             "--standalone",
             f"--nproc_per_node={spec.torchrun_nproc}",
         ]
