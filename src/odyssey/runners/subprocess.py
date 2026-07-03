@@ -62,6 +62,11 @@ class TrainingProcessSpec:
     line_parser: LineParser | None = None
     cwd: str | None = None
     sigterm_grace_seconds: float = 30.0
+    # Hard wall-clock deadline for the subprocess. When set, the child is killed
+    # (SIGTERM then SIGKILL after the grace) and the run fails with
+    # SubprocessTimeoutError — bounds hangs in Isaac boot / a ZMQ handshake / a
+    # policy server that never replies. None = no deadline (legacy behavior).
+    timeout_seconds: float | None = None
     use_torchrun: bool = False
     torchrun_nproc: int = 1
     # Optional command prefix replacing the default ``python`` for
@@ -87,6 +92,81 @@ class TrainingProcessSpec:
                 "TrainingProcessSpec.launcher and use_torchrun are mutually "
                 "exclusive — both define the command prefix"
             )
+
+
+class SubprocessTimeoutError(RuntimeError):
+    """Raised when a training/eval subprocess exceeds its wall-clock deadline."""
+
+
+# How long to wait draining the child's stdout after it exits before giving up.
+# A grandchild that inherited the pipe (e.g. a co-launched server) can keep the
+# write-end open so EOF never arrives — don't block the runner forever.
+_STDOUT_DRAIN_TIMEOUT = 30.0
+
+
+def _child_preexec() -> None:
+    """preexec_fn for the training/eval child (Linux): put it in its own session
+    so cancellation can signal the whole tree, AND set PR_SET_PDEATHSIG so the
+    kernel SIGKILLs it if this runner process dies — no orphaned GPU subprocess.
+    """
+    os.setsid()
+    try:
+        import ctypes
+
+        _PR_SET_PDEATHSIG = 1
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(
+            _PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0
+        )
+    except Exception:
+        # Best-effort: setsid already gives cancellation reach; PDEATHSIG is a
+        # bonus reap-on-crash. Never fail the launch if libc/prctl is unavailable.
+        pass
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+    """Send `sig` to the child's whole process group (best-effort)."""
+    if proc.pid is None:
+        return
+    with suppress(ProcessLookupError):
+        os.killpg(os.getpgid(proc.pid), sig)
+
+
+async def _wait_with_deadline(
+    ctx: TaskContext, proc: asyncio.subprocess.Process, spec: TrainingProcessSpec
+) -> int:
+    """await proc.wait() bounded by ``spec.timeout_seconds``.
+
+    On deadline: SIGTERM the child's process group, wait ``sigterm_grace_seconds``,
+    escalate to SIGKILL, then raise ``SubprocessTimeoutError``. With no deadline,
+    waits normally.
+    """
+    if spec.timeout_seconds is None:
+        return await proc.wait()
+    try:
+        return await asyncio.wait_for(proc.wait(), timeout=spec.timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.error(
+            "Task %s exceeded its %.0fs deadline — SIGTERM pid=%s",
+            ctx.task.id,
+            spec.timeout_seconds,
+            proc.pid,
+        )
+        _kill_process_group(proc, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=spec.sigterm_grace_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Task %s did not exit within %.0fs of SIGTERM — SIGKILL",
+                ctx.task.id,
+                spec.sigterm_grace_seconds,
+            )
+            _kill_process_group(proc, signal.SIGKILL)
+            with suppress(Exception):
+                await proc.wait()
+        raise SubprocessTimeoutError(
+            f"task {ctx.task.id} exceeded its deadline of "
+            f"{spec.timeout_seconds:.0f}s"
+        )
 
 
 async def run_training_subprocess(
@@ -141,8 +221,9 @@ async def run_training_subprocess(
         stderr=asyncio.subprocess.STDOUT,  # merge to one stream
         env=env,
         cwd=spec.cwd,
-        # New process group so SIGTERM targets only this child tree.
-        preexec_fn=os.setsid if hasattr(os, "setsid") else None,
+        # New process group so SIGTERM targets only this child tree, plus
+        # PR_SET_PDEATHSIG so a runner crash can't orphan a GPU subprocess.
+        preexec_fn=_child_preexec if hasattr(os, "setsid") else None,
         # tqdm progress bars use \r without \n, which can accumulate
         # into a single "line" that exceeds asyncio's default 64 KB
         # buffer.  10 MB is enough for long training runs.
@@ -159,12 +240,25 @@ async def run_training_subprocess(
     )
 
     try:
-        rc = await proc.wait()
+        rc = await _wait_with_deadline(ctx, proc, spec)
     finally:
         cancel_task.cancel()
         with suppress(asyncio.CancelledError):
             await cancel_task
-        await stdout_task  # drain any remaining lines
+        # Bound the stdout drain: on Python 3.12 proc.wait() itself already
+        # returned above, but a grandchild that inherited the pipe can keep the
+        # write-end open so _stream_stdout never sees EOF. Don't wait forever.
+        try:
+            await asyncio.wait_for(stdout_task, timeout=_STDOUT_DRAIN_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stdout drain for task %s timed out after %.0fs — cancelling",
+                ctx.task.id,
+                _STDOUT_DRAIN_TIMEOUT,
+            )
+            stdout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stdout_task
 
     logger.info("Subprocess for task %s exited rc=%d", ctx.task.id, rc)
     return rc

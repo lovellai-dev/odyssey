@@ -266,6 +266,7 @@ class GR00TRunner(Runner):
             agent_model_base = context.agent.model.base
 
         process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
             entry_module=_ENTRY_MODULE,
             argv_extra=build_gr00t_argv(
                 task=spec.model_copy(update={"config": config}),
