@@ -21,7 +21,8 @@ import os
 import re
 import signal
 import sys
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,6 +99,44 @@ class SubprocessTimeoutError(RuntimeError):
     """Raised when a training/eval subprocess exceeds its wall-clock deadline."""
 
 
+class SubprocessResourceError(RuntimeError):
+    """Raised when a subprocess failure is classified as resource exhaustion
+    (GPU OOM / out of disk) — a clearer signal than a bare non-zero exit code."""
+
+
+# (signature, operator-facing reason). Scanned against the tail of the child's
+# output on a non-zero exit so a resource failure reads as such, not "rc=1".
+_RESOURCE_FAILURE_SIGNATURES: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            r"CUDA out of memory|CUBLAS_STATUS_ALLOC_FAILED"
+            r"|torch\.cuda\.OutOfMemoryError|CUDA error: out of memory",
+            re.IGNORECASE,
+        ),
+        "GPU out of memory (CUDA OOM) — reduce batch size / model size "
+        "or use a larger GPU",
+    ),
+    (
+        re.compile(
+            r"No space left on device|\bENOSPC\b|\[Errno 28\]"
+            r"|disk quota exceeded",
+            re.IGNORECASE,
+        ),
+        "ran out of disk space — free space on the output / HF-cache volume",
+    ),
+]
+
+
+def _classify_failure(tail: Iterable[str]) -> str | None:
+    """Return an operator-facing reason if the output tail matches a known
+    resource-exhaustion signature, else None."""
+    text = "\n".join(tail)
+    for pattern, reason in _RESOURCE_FAILURE_SIGNATURES:
+        if pattern.search(text):
+            return reason
+    return None
+
+
 # How long to wait draining the child's stdout after it exits before giving up.
 # A grandchild that inherited the pipe (e.g. a co-launched server) can keep the
 # write-end open so EOF never arrives — don't block the runner forever.
@@ -129,6 +168,43 @@ def _kill_process_group(proc: asyncio.subprocess.Process, sig: int) -> None:
         return
     with suppress(ProcessLookupError):
         os.killpg(os.getpgid(proc.pid), sig)
+
+
+async def _reap_if_alive(proc: asyncio.subprocess.Process, grace: float) -> None:
+    """If the child is still running, SIGTERM its process group and, failing to
+    exit within ``grace``, SIGKILL. Best-effort cleanup for *any* exit from
+    run_training_subprocess (a cancelled runner task, an unexpected error) so the
+    child is never orphaned. Normal completion and the deadline path have already
+    reaped, so this is a no-op then.
+    """
+    if proc.returncode is not None:
+        return
+    _kill_process_group(proc, signal.SIGTERM)
+    # suppress(Exception) does NOT swallow CancelledError (BaseException), so a
+    # re-cancel during unwinding still propagates — but the SIGTERM above already
+    # fired synchronously, so the child dies regardless.
+    with suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    if proc.returncode is None:
+        _kill_process_group(proc, signal.SIGKILL)
+        with suppress(Exception):
+            await proc.wait()
+
+
+def _build_child_env(spec: TrainingProcessSpec) -> dict[str, str]:
+    """Environment for the child: the parent env overlaid with ``spec.env``.
+
+    PYTHONPATH is dropped from the inherited env unless the spec sets it
+    explicitly. The child runs under its OWN interpreter — a training venv via
+    ``sys.executable``, or ``isaaclab.sh -p`` — and a leaked orchestrator
+    PYTHONPATH (ROS Jazzy, an editable checkout, …) can shadow the child's own
+    packages with a different torch / prismatic / isaacsim. Mirrors the
+    ``env -u PYTHONPATH`` hygiene used across the platform's venvs.
+    """
+    env = {**os.environ, **spec.env}
+    if "PYTHONPATH" not in spec.env:
+        env.pop("PYTHONPATH", None)
+    return env
 
 
 async def _wait_with_deadline(
@@ -205,7 +281,7 @@ async def run_training_subprocess(
         # script_path is guaranteed by __post_init__
         assert spec.script_path is not None
         cmd = [*launcher, spec.script_path, *spec.argv_extra]
-    env = {**os.environ, **spec.env}
+    env = _build_child_env(spec)
 
     logger.info(
         "Launching subprocess for task %s: %s",
@@ -230,8 +306,9 @@ async def run_training_subprocess(
         limit=10 * 1024 * 1024,
     )
 
+    output_tail: deque[str] = deque(maxlen=200)
     stdout_task = asyncio.create_task(
-        _stream_stdout(ctx, proc, spec.line_parser),
+        _stream_stdout(ctx, proc, spec.line_parser, output_tail),
         name=f"stdout-{ctx.task.id}",
     )
     cancel_task = asyncio.create_task(
@@ -245,6 +322,13 @@ async def run_training_subprocess(
         cancel_task.cancel()
         with suppress(asyncio.CancelledError):
             await cancel_task
+        # Reap-on-any-exit: if we're leaving while the child is still alive (the
+        # runner task was cancelled, or an unexpected error propagated), the
+        # cancel-watcher is already torn down — kill the group here so nothing is
+        # orphaned. A no-op on normal completion / the deadline path (already
+        # reaped). PDEATHSIG only covers a *whole-runner* crash, not a single
+        # cancelled task while the runner lives.
+        await _reap_if_alive(proc, spec.sigterm_grace_seconds)
         # Bound the stdout drain: on Python 3.12 proc.wait() itself already
         # returned above, but a grandchild that inherited the pipe can keep the
         # write-end open so _stream_stdout never sees EOF. Don't wait forever.
@@ -261,6 +345,12 @@ async def run_training_subprocess(
                 await stdout_task
 
     logger.info("Subprocess for task %s exited rc=%d", ctx.task.id, rc)
+    if rc != 0:
+        reason = _classify_failure(output_tail)
+        if reason is not None:
+            raise SubprocessResourceError(
+                f"task {ctx.task.id} failed (rc={rc}): {reason}"
+            )
     return rc
 
 
@@ -292,11 +382,14 @@ async def _stream_stdout(
     ctx: TaskContext,
     proc: asyncio.subprocess.Process,
     line_parser: LineParser | None,
+    tail: deque[str] | None = None,
 ) -> None:
     """Read lines from the child, emit progress events, mirror to logs.
 
     Best-effort: a single bad line doesn't fail the run. Every line goes
     to the parent log prefixed with the task id so operators can debug.
+    When ``tail`` is given, each line is also appended to it (a bounded ring
+    buffer) so the caller can classify a non-zero exit (OOM / disk-full).
     """
     if proc.stdout is None:
         return
@@ -324,6 +417,8 @@ async def _stream_stdout(
             if not line:
                 continue
             logger.info("[%s] %s", ctx.task.id, line)
+            if tail is not None:
+                tail.append(line)
 
             parsed: dict[str, Any] | None = None
             if line_parser is not None:
