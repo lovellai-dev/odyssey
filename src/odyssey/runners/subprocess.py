@@ -166,7 +166,7 @@ async def _wait_with_deadline(
         raise SubprocessTimeoutError(
             f"task {ctx.task.id} exceeded its deadline of "
             f"{spec.timeout_seconds:.0f}s"
-        )
+        ) from None
 
 
 async def run_training_subprocess(
