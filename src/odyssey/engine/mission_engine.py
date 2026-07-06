@@ -233,6 +233,22 @@ class MissionEngine:
 
         return run
 
+    def request_cancel(self, mission_id: str) -> bool:
+        """Signal a running mission to stop gracefully after the in-flight task.
+
+        Safe to call from an OS signal handler: synchronous, no await, no I/O —
+        it only sets the mission's cancel_event. ``start_mission``'s loop then
+        breaks and ``_finalize_mission`` performs the CANCELLED transition and
+        persistence, while the in-flight subprocess is SIGTERM'd by its
+        ``_watch_cancel``. Returns True if a running mission was signaled, False
+        if none is currently active (e.g. already finalized).
+        """
+        ev = self._cancel_events.get(mission_id)
+        if ev is None:
+            return False
+        ev.set()
+        return True
+
     async def cancel_mission(self, mission_id: str) -> MissionRun:
         run = await self.get_mission(mission_id)
         if is_terminal_mission(run.status):

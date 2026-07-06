@@ -15,7 +15,9 @@ network access — useful for smoke-testing the plumbing.
 from __future__ import annotations
 
 import asyncio
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import click
@@ -146,4 +148,35 @@ def run(
 async def _run_mission(engine: MissionEngine, spec: Mission) -> MissionRun:
     await engine.initialize()
     run_record = await engine.create_mission(spec)
-    return await engine.start_mission(run_record.id)
+
+    # Graceful shutdown: on SIGTERM (Cloud Run revision swap / preemptible-VM
+    # stop) or SIGINT (Ctrl-C), cancel the mission so the in-flight GPU
+    # subprocess is SIGTERM'd via its watcher and the run is persisted CANCELLED
+    # — instead of the process dying and orphaning the child with the mission
+    # stuck ACTIVE. A second signal reverts to the default disposition
+    # (force-quit) for an impatient operator.
+    loop = asyncio.get_running_loop()
+    installed: list[int] = []
+
+    def _on_signal(signum: int) -> None:
+        for s in installed:
+            with suppress(Exception):
+                loop.remove_signal_handler(s)
+        installed.clear()
+        if engine.request_cancel(run_record.id):
+            click.echo(
+                click.style(f"\n{signal.Signals(signum).name} received", fg="yellow", bold=True)
+                + " — cancelling after the in-flight task (send again to force-quit)…"
+            )
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, _on_signal, int(sig))
+            installed.append(int(sig))
+
+    try:
+        return await engine.start_mission(run_record.id)
+    finally:
+        for s in installed:
+            with suppress(Exception):
+                loop.remove_signal_handler(s)
