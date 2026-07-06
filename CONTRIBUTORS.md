@@ -20,6 +20,7 @@ welcome to add yourself in the same PR that lands your contribution.
 In order of first contribution:
 
 - **Pratik Mishra** ([@pratik1258m](https://github.com/pratik1258m)) — shared evaluation-helpers refactor ([#41](https://github.com/lovellai-dev/odyssey/pull/41))
+- **Owolabi Temitope E** ([@Temitope3003](https://github.com/Temitope3003)) — Windows test-suite portability bug report ([#52](https://github.com/lovellai-dev/odyssey/issues/52))
 
 ---
 
