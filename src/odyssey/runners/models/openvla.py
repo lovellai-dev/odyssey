@@ -337,6 +337,7 @@ class OpenVLARunner(Runner):
             agent_model_base = context.agent.model.base
 
         process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
             script_path=script_path,
             use_torchrun=True,
             argv_extra=build_openvla_argv(
