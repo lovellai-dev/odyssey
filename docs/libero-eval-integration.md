@@ -1,8 +1,9 @@
 # LIBERO evaluation integration — status & handoff
 
-**Status:** integration code complete and green (ruff + mypy + existing tests), but
-**blocked on one spec-policy decision** before the eval-only missions can `validate`.
-This doc captures the work, the blocker, and how to resume.
+**Status:** integration code complete and green (ruff + mypy + tests). The
+spec-policy decision below is **resolved — Option A**: the Mission spec now allows
+**eval-only** missions (zero training tasks), so the LIBERO example missions
+`validate` and run. This doc captures the work and the rationale.
 
 ## Why LIBERO
 
@@ -33,36 +34,34 @@ checkpoints — a future "support another VLA" runner, bigger lift.)
 Verified: `ruff check src/` clean · `mypy` clean (69 files) · `test_robosuite_runner` +
 `test_spec` pass (35). `LiberoRunner` imports with `libero`/`openvla` absent (lazy imports).
 
-## ⛔ Blocker: the spec forbids eval-only missions (by design)
+## ✅ Resolved: the spec now allows eval-only missions (Option A)
 
-`Mission` (`src/odyssey/spec/mission.py`) enforces a documented cardinality invariant:
+`Mission` (`src/odyssey/spec/mission.py`) previously enforced `tasks` length ≥ 2
+**and** ≥ 1 training task, so a single eval task with no training did not validate.
 
-- `tasks` length **≥ 2**,
-- **≥ 1 training task**,
-- **exactly 1 evaluation task** (and it must be last).
+**We relaxed it (Option A):**
 
-So a **single eval task with no training** does **not** validate — which is exactly
-what an eval-only LIBERO mission is. The spec docstring notes these invariants
-"match the CC missions-table NOT NULL columns", i.e. they may encode a **contract
-with Command Center / lai-trainer**, not just a local rule. **Not relaxed unilaterally.**
+- `tasks` `min_length 2 → 1`.
+- `_task_cardinality` no longer requires a training task — **zero or more** training
+  tasks are allowed. **Exactly one evaluation task** (and eval-is-last) is unchanged.
+- Docstring invariant updated; `test_zero_training_tasks_rejected` replaced by
+  `test_eval_only_mission_accepted` + `test_empty_tasks_rejected`.
 
-## Decision needed (then resume)
+**Why:** an eval-only mission is the flexibility we want — score an
+already-fine-tuned checkpoint (via `config.checkpoint`) with no training, and hold
+the pilot fixed while **swapping the SPECIALIST to re-run the same eval** (e.g.
+comparing planners once the pilot is trained). A single eval with `config.checkpoint`
+pointing at a published HF repo is the fastest route to a Franka that actually
+succeeds in sim.
 
-**Option A — relax the spec to allow eval-only missions.**
-- Change: `tasks` `min_length 2 → 1`; allow `training == 0` (keep "exactly 1 eval");
-  update the docstring invariant and `tests/unit/test_spec.py::test_zero_training_tasks_rejected`.
-- Pro: scores the **already-working** published checkpoint immediately, no training.
-- Con/risk: changes what a "Mission" means; **confirm CC/lai-trainer tolerate a
-  training-less mission** (the NOT NULL contract) before doing this.
+**Contract note (to verify downstream):** the spec docstring noted these invariants
+"match the CC missions-table NOT NULL columns" — a possible Command Center /
+lai-trainer contract. Eval-only missions must be accepted there too; confirm CC
+tolerates a training-less mission before relying on this end-to-end.
 
-**Option B — keep the spec: a train→eval LIBERO mission.**
-- "training" = a short fine-tune on `modified_libero_rlds` (10.2 GB) → eval.
-- Pro: no spec change; fits the current model.
-- Con: needs the dataset + training time, and re-trains when a working checkpoint
-  already exists.
-
-**Recommendation:** Option A if CC tolerates training-less missions in v0.1.0-alpha;
-otherwise B. The example missions in this branch are written for **A (eval-only)**.
+**Option B (rejected)** — keep the spec and make LIBERO a train→eval mission (short
+fine-tune on `modified_libero_rlds`, 10.2 GB). No spec change, but re-trains when a
+working checkpoint already exists; slower and less flexible than A.
 
 ## How to test on the VM (once unblocked)
 

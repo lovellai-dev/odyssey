@@ -147,11 +147,20 @@ def test_two_eval_tasks_rejected() -> None:
         _mission([_training_task(), _eval_task("e1"), _eval_task("e2")])
 
 
-def test_zero_training_tasks_rejected() -> None:
-    # Need >=2 tasks to satisfy min_length; two eval tasks fails BOTH
-    # cardinality rules — accept either error string.
+def test_eval_only_mission_accepted() -> None:
+    # Zero training tasks is valid: an eval-only mission scores an
+    # already-trained checkpoint (e.g. a published OpenVLA-LIBERO model).
+    m = _mission([_eval_task("score")])
+    assert len(m.tasks) == 1
+    assert m.tasks[0].kind == "evaluation"
+    assert sum(1 for t in m.tasks if t.kind == "training") == 0
+
+
+def test_empty_tasks_rejected() -> None:
+    # A mission still needs its one evaluation task — an empty tasks[]
+    # fails both min_length and the exactly-one-evaluation invariant.
     with pytest.raises(ValidationError):
-        _mission([_eval_task("e1"), _eval_task("e2")])
+        _mission([])
 
 
 # ---------------------------------------------------------------------------
