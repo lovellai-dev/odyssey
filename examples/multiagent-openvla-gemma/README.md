@@ -41,22 +41,32 @@ subprocess protocol (the planner runs once per episode, off the per-step hot loo
 
 > All commands are run from the **repository root**.
 
-### 1. Main venv (PILOT)
+> 💡 **Shortcut:** `examples/multiagent-openvla-gemma/setup.sh` builds **both**
+> venvs below (`env_pilot` + `env_specialist`) idempotently and writes a
+> sourceable `.env`. The manual steps follow if you'd rather do it by hand.
+
+The two agents need **two Python environments** with incompatible `transformers`
+versions, named by role so you can tell them apart at a glance: **`env_pilot`**
+(OpenVLA pilot + eval) and **`env_specialist`** (Gemma planner).
+
+### 1. Pilot venv (`env_pilot`)
 
 ```bash
+python -m venv env_pilot
+source env_pilot/bin/activate
 pip install -e ".[huggingface,openvla,robosuite]"
 git clone https://github.com/openvla/openvla.git /srv/openvla
 export OPENVLA_REPO_PATH=/srv/openvla
 pip install -e "$OPENVLA_REPO_PATH"   # pulls OpenVLA's pinned deps
 ```
 
-### 2. Out-of-process SPECIALIST venv
+### 2. Specialist venv (`env_specialist`)
 
 1. Create the specialist venv (modern transformers + torchvision + Gemma deps):
 
    ```bash
-   python -m venv ~/specialist-venv
-   ~/specialist-venv/bin/pip install -e ".[specialist]" \
+   python -m venv env_specialist
+   env_specialist/bin/pip install -e ".[specialist]" \
      -c constraints/specialist-known-good.txt
    ```
 
@@ -65,7 +75,7 @@ pip install -e "$OPENVLA_REPO_PATH"   # pulls OpenVLA's pinned deps
    your shell profile / VM startup script so it persists:
 
    ```bash
-   export ODYSSEY_SPECIALIST_PYTHON=~/specialist-venv/bin/python
+   export ODYSSEY_SPECIALIST_PYTHON="$PWD/env_specialist/bin/python"
    ```
 
 > **`ODYSSEY_SPECIALIST_PYTHON` is required for any mission with a SPECIALIST.**
