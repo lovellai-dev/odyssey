@@ -22,6 +22,7 @@ In order of first contribution:
 - **Pratik Mishra** ([@pratik1258m](https://github.com/pratik1258m)) — shared evaluation-helpers refactor ([#41](https://github.com/lovellai-dev/odyssey/pull/41))
 - **Owolabi Temitope E** ([@Temitope3003](https://github.com/Temitope3003)) — Windows test-suite portability bug report ([#52](https://github.com/lovellai-dev/odyssey/issues/52))
 - **Yang Yu** ([@paranoa233](https://github.com/paranoa233)) — cross-platform RemotePlanner cleanup fix ([#54](https://github.com/lovellai-dev/odyssey/pull/54)) & GR00T eval test-isolation fix ([#56](https://github.com/lovellai-dev/odyssey/pull/56))
+- **Matias Molinas** ([@matiasmolinas](https://github.com/matiasmolinas)) — community blog post: [Evolving Robot](https://evolvingagentslabs.github.io/evolving-robot/)
 
 ---
 
