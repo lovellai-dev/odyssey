@@ -15,7 +15,9 @@ itself asserted below.
 """
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -44,11 +46,28 @@ def _eval_task(**overrides: Any) -> EvaluationTask:
 # ---------------------------------------------------------------------------
 
 def test_module_imports_without_sim_deps() -> None:
-    # isaaclab / gymnasium / gr00t / torch are not installed in the core env;
-    # a clean import proves they are imported lazily in the run path, never at
-    # module load (otherwise this file would have failed to import at all).
-    for mod in ("isaaclab", "isaaclab_tasks", "gymnasium", "gr00t", "torch"):
-        assert mod not in sys.modules, f"{mod} leaked into module-load imports"
+    # Check import side effects in a clean interpreter so earlier tests cannot
+    # pollute sys.modules (for example by importing torch).
+    evals_dir = Path(__file__).resolve().parents[2] / "src" / "odyssey" / "runners" / "evals"
+    heavy_deps = ("isaaclab", "isaaclab_tasks", "gymnasium", "gr00t", "torch")
+    script = (
+        "import importlib, json, sys\n"
+        f"sys.path.insert(0, {str(evals_dir)!r})\n"
+        "importlib.import_module('gr00t_isaac_eval')\n"
+        f"print(json.dumps([m for m in {heavy_deps!r} if m in sys.modules]))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        "gr00t_isaac_eval failed to import in a clean interpreter:\n"
+        f"{result.stderr}"
+    )
+    leaked = json.loads(result.stdout)
+    assert leaked == [], f"gr00t_isaac_eval imported heavy deps at module load: {leaked}"
 
 
 # ---------------------------------------------------------------------------
