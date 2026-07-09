@@ -26,6 +26,7 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Sequence
@@ -34,6 +35,24 @@ from typing import IO, Any
 logger = logging.getLogger(__name__)
 
 _SERVER_MODULE = "odyssey.runners.agents.planner_server"
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _popen_creation_kwargs() -> dict[str, Any]:
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_process(proc: subprocess.Popen[str], sig: int) -> None:
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+    if killpg is not None and getpgid is not None:
+        killpg(getpgid(proc.pid), sig)
+    elif sig == signal.SIGTERM:
+        proc.terminate()
+    else:
+        proc.kill()
 
 
 def _encode_image(image: Any) -> str:
@@ -107,14 +126,14 @@ class RemotePlanner:
             argv += ["--quantization", self._quantization]
         logger.info("RemotePlanner: launching specialist server: %s", " ".join(argv))
         # stderr inherited -> model-loading logs stay visible in the terminal.
-        # start_new_session -> own process group for clean teardown.
+        # POSIX gets its own process group; Windows falls back to direct cleanup.
         self._proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
             bufsize=1,
-            start_new_session=True,
+            **_popen_creation_kwargs(),
         )
         assert self._proc.stdout is not None
         self._reader = threading.Thread(
@@ -212,8 +231,8 @@ class RemotePlanner:
                 proc.stdin.close()
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             if proc.poll() is None:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                _terminate_process(proc, signal.SIGTERM)
                 try:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    _terminate_process(proc, _SIGKILL)

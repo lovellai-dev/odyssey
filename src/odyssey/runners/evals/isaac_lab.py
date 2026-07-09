@@ -292,6 +292,7 @@ class IsaacLabRunner(Runner):
 
         collector = EvalProtocolCollector()
         process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
             script_path=eval_script,
             launcher=launcher,
             argv_extra=build_isaac_lab_argv(task=spec, checkpoint=checkpoint),

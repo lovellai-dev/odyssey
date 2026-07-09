@@ -205,6 +205,53 @@ def test_remote_planner_roundtrip(tmp_path: Path) -> None:
         planner.close()  # idempotent
 
 
+def test_remote_planner_close_falls_back_without_posix_process_groups(monkeypatch) -> None:
+    import odyssey.runners.agents.remote_planner as remote_planner
+
+    monkeypatch.delattr(remote_planner.os, "killpg", raising=False)
+    monkeypatch.delattr(remote_planner.os, "getpgid", raising=False)
+
+    class _FakeStdin:
+        closed = False
+
+        def write(self, _text: str) -> None:
+            pass
+
+        def flush(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _FakeProc:
+        stdin = _FakeStdin()
+        pid = 123
+        terminated = False
+        killed = False
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    planner = RemotePlanner("fake/model", python_path=sys.executable)
+    proc = _FakeProc()
+    planner._proc = proc  # type: ignore[assignment]
+
+    planner.close()
+
+    assert planner._proc is None
+    assert proc.terminated is True
+    assert proc.killed is False
+
+
 def test_remote_planner_encodes_image_into_request(tmp_path: Path) -> None:
     import numpy as np
 
