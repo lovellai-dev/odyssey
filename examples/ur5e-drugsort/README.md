@@ -9,7 +9,7 @@ The whole pipeline is:
 
 ```
 scripts/gen_ur5e_drugsort_demos.py   →  GR00T LeRobot v2.1 dataset  (CPU, no GPU)
-        │  (headless MuJoCo replay of the scripted pick-place policy + DR)
+        │  (headless MuJoCo, adaptive IK expert reaching the randomized vial + DR)
         ▼
 examples/ur5e-drugsort/ur5e_config.py  +  mission.yaml
         │  (GR00T new_embodiment modality config + odyssey `runner: gr00t` task)
@@ -50,8 +50,11 @@ transfer.
 The generator, the LeRobot writer, and the embodiment spec live in the library:
 
 - `scripts/gen_ur5e_drugsort_demos.py` — the CLI data generator.
-- `src/odyssey/embodiments/ur5e_drugsort/` — `embodiment.py` (modality/info spec)
-  + `policy.py` (the mujoco-free scripted pick-place FSM, ported from the browser).
+- `src/odyssey/embodiments/ur5e_drugsort/` — `embodiment.py` (modality/info spec),
+  `policy.py` (the mujoco-free pick-place FSM ported from the browser — supplies
+  the interpolation + gripper timing), and `ik.py` (the adaptive damped-least-
+  squares IK expert that re-solves the arm targets to the randomized vial pose,
+  so trajectories vary per episode; `--fixed-waypoints` replays the old fixed set).
 - `src/odyssey/datasets/lerobot_writer.py` — the GR00T LeRobot v2.1 writer.
 
 ## Validate without a GPU

@@ -11,11 +11,21 @@ sourced venv or the ROS Jazzy `PYTHONPATH` leak doesn't shadow the interpreter.
 
 ## Step 1 — Generate the dataset locally (CPU only)
 
-The generator loads the AseptiPack MJCF in **headless MuJoCo**, replays the
-scripted pick-and-place policy with vial-pose domain randomization, renders the
-`exterior` camera offscreen, and writes a GR00T LeRobot v2.1 dataset. It needs an
-offscreen GL context (EGL on a headless GPU host, GLFW on a desktop) — **not** a
-CUDA GPU.
+The generator loads the AseptiPack MJCF in **headless MuJoCo**, drives the
+**adaptive IK expert** (`src/odyssey/embodiments/ur5e_drugsort/ik.py`) with
+vial-pose domain randomization, renders the `exterior` camera offscreen, and
+writes a GR00T LeRobot v2.1 dataset. It needs an offscreen GL context (EGL on a
+headless GPU host, GLFW on a desktop) — **not** a CUDA GPU.
+
+The IK expert re-solves the arm joint targets (damped-least-squares Jacobian IK
+on the `gr_pinch` site) to the **actual randomized vial / pocket pose** each
+episode, so the recorded action/proprio trajectories genuinely vary with the
+scene — a policy trained on them must read the camera. Per run it prints and
+writes an adaptivity proof (`<out>/ik_adaptivity.json`): the per-joint std of the
+first-approach joint angles across episodes (materially > 0), vs the
+zero-variance `--fixed-waypoints` baseline (the old fixed-replay behaviour).
+The FSM's interpolation, convergence and gripper open/close *timing* are
+unchanged — only the joint *targets* adapt.
 
 ```bash
 cd "$ODYSSEY"
@@ -30,8 +40,18 @@ MUJOCO_GL=egl python scripts/gen_ur5e_drugsort_demos.py \
 # Full set for a real fine-tune (episode 0 is nominal; the rest are randomized):
 MUJOCO_GL=egl python scripts/gen_ur5e_drugsort_demos.py \
     --xml /path/to/aseptipack_description/aseptipack.xml \
-    --out /data/ur5e_drugsort --num-episodes 100 --jitter 0.008 --seed 0
+    --out /data/ur5e_drugsort --num-episodes 64 --seed 0
 ```
+
+The vial is randomized over the reachable tray each episode (defaults
+`--area-x 0.05 --area-y 0.07` m half-ranges + `--yaw-jitter 0.08` rad visual
+jitter). `--noslip-iterations 20` (default) enables MuJoCo's noslip friction
+refinement so the grasped vial is not ejected on lift (an in-memory solver
+option — it edits no MJCF and changes no recorded obs/action). Use
+`--fixed-waypoints` for the zero-variance scripted baseline, or the deprecated
+single-range `--jitter` alias. A recent 64-episode run scored **64/64
+grasp+place** with first-approach joint std up to ~0.06 rad (range ~0.23 rad)
+and IK error < 1 mm — see the printed proof + `ik_adaptivity.json`.
 
 The MJCF ships in the `lai-agent` tree at
 `src/embodiments/urdf/aseptipack_description/aseptipack.xml` (with its `assets/`
@@ -106,6 +126,14 @@ cp "$ODYSSEY/examples/ur5e-drugsort/ur5e_config.py" \
 accept the NVIDIA license first). The odyssey GR00T runner resolves it from the
 agent's `model.base` in `mission.yaml`, or set
 `NVIDIA_GR00T_N1_7_3B_PATH=/path/to/local/checkpoint` to skip the download.
+
+> **Gated-processor gotcha.** GR00T-N1.7-3B's Qwen3VL processor pulls its
+> image-processor config from the **gated** repo `nvidia/Cosmos-Reason2-2B`. If
+> that repo (and the base model) are already cached but the host isn't logged in,
+> `from_pretrained` still 401s while re-validating the gated repo online. Fix:
+> run with `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1` to load both from cache. (If
+> not cached, `hf auth login` with a token that has accepted both licenses, then
+> pre-download once.)
 
 **Run the fine-tune** through odyssey (drives `launch_finetune` as a subprocess,
 streams Trainer progress, and returns the checkpoint path):

@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Generate GR00T demonstration data for the UR5e / Robotiq drug-sorting cell.
 
-Loads the AseptiPack fill-finish MJCF in headless MuJoCo, replays the scripted
-pick-and-place policy (a Python port of the browser controller — see
-``odyssey.embodiments.ur5e_drugsort.policy``) with domain randomisation of the
-vial pose, renders the ``front`` + ``wrist`` cameras offscreen, and records each
-episode into the GR00T-flavoured LeRobot v2.1 dataset format via
+Loads the AseptiPack fill-finish MJCF in headless MuJoCo, drives the **adaptive
+IK expert** (:mod:`odyssey.embodiments.ur5e_drugsort.ik`) with domain
+randomisation of the vial pose, renders the single ``exterior`` camera offscreen,
+and records each episode into the GR00T-flavoured LeRobot v2.1 dataset format via
 :class:`odyssey.datasets.LeRobotDatasetWriter`.
+
+Unlike the fixed scripted policy (``--fixed-waypoints`` — kept as the
+zero-variance baseline), the IK expert re-solves the arm joint targets to the
+*actual* randomised vial / pocket pose each episode, so the recorded
+action/proprio trajectories genuinely vary with the scene (the first-approach
+joint-angle variance is logged + written to ``ik_adaptivity.json`` as proof).
+The FSM's interpolation, convergence and gripper open/close timing are unchanged
+(:class:`odyssey.embodiments.ur5e_drugsort.policy.PickPlaceController`); only the
+joint *targets* adapt.
 
 No GPU is required to *generate* data (only an OpenGL/EGL context for offscreen
 rendering); the resulting dataset feeds ``gr00t.experiment.launch_finetune`` on
@@ -15,15 +23,16 @@ a GPU box (see ``examples/ur5e-drugsort/RUNBOOK.md``).
 Usage::
 
     MUJOCO_GL=egl python scripts/gen_ur5e_drugsort_demos.py \
-        --xml /path/to/aseptipack.xml --out /tmp/ur5e_drugsort --num-episodes 3
+        --xml /path/to/aseptipack.xml --out /tmp/ur5e_drugsort --num-episodes 64
 
-The first episode is always nominal (no jitter) to guarantee a clean reference
-demonstration; the rest are domain-randomised.
+The first episode is always nominal (no randomisation) to guarantee a clean
+reference demonstration; the rest are domain-randomised over the reachable tray.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -40,6 +49,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from odyssey.datasets import LeRobotDatasetWriter
 from odyssey.embodiments.ur5e_drugsort import embodiment as emb
+from odyssey.embodiments.ur5e_drugsort.ik import (
+    DampedLeastSquaresIK,
+    build_adaptive_phases,
+)
 from odyssey.embodiments.ur5e_drugsort.policy import (
     ARM_ACTUATOR_NAMES,
     GRIP_CLOSE,
@@ -71,12 +84,15 @@ def _build_index(mj, model):  # type: ignore[no-untyped-def]
     arm_act = [m2i(model, obj.mjOBJ_ACTUATOR, n) for n in ARM_ACTUATOR_NAMES]
     grip_act = m2i(model, obj.mjOBJ_ACTUATOR, GRIPPER_ACTUATOR_NAME)
     arm_qadr = []
+    arm_dofadr = []
     for n in ARM_ACTUATOR_NAMES:
         j = m2i(model, obj.mjOBJ_JOINT, f"{n}_joint")
         arm_qadr.append(int(model.jnt_qposadr[j]))
+        arm_dofadr.append(int(model.jnt_dofadr[j]))
     grip_j = m2i(model, obj.mjOBJ_JOINT, GRIP_DRIVER_JOINT)
     grip_qadr = int(model.jnt_qposadr[grip_j])
 
+    pinch_site = m2i(model, obj.mjOBJ_SITE, "gr_pinch")
     vial_body = m2i(model, obj.mjOBJ_BODY, "vial_0")
     vial_qadr = -1
     for j in range(model.njnt):
@@ -88,10 +104,12 @@ def _build_index(mj, model):  # type: ignore[no-untyped-def]
     pocket_site = m2i(model, obj.mjOBJ_SITE, "pocket_0")
     if any(a < 0 for a in arm_act) or grip_act < 0:
         raise RuntimeError("could not resolve arm/gripper actuators in the MJCF")
+    if pinch_site < 0:
+        raise RuntimeError("could not resolve the gr_pinch site in the MJCF")
     return {
         "arm_act": arm_act, "grip_act": grip_act, "arm_qadr": arm_qadr,
-        "grip_qadr": grip_qadr, "vial_body": vial_body, "vial_qadr": vial_qadr,
-        "pocket_site": pocket_site,
+        "arm_dofadr": arm_dofadr, "grip_qadr": grip_qadr, "pinch_site": pinch_site,
+        "vial_body": vial_body, "vial_qadr": vial_qadr, "pocket_site": pocket_site,
     }
 
 
@@ -108,17 +126,25 @@ def _free_arm_collision(mj, model) -> int:  # type: ignore[no-untyped-def]
     return freed
 
 
-def _run_episode(mj, model, data, renderer, idx, ctrl, *, fps, jitter, rng, max_steps):  # type: ignore[no-untyped-def]
-    """Simulate one scripted pick-and-place; return recorded arrays + success."""
+def _run_episode(mj, model, data, renderer, idx, ik, *, fps, area_x, area_y, yaw_jitter, rng, max_steps):  # type: ignore[no-untyped-def]
+    """Simulate one adaptive pick-and-place; return recorded arrays + success.
+
+    ``ik`` is a :class:`DampedLeastSquaresIK` solver (or ``None`` to replay the
+    fixed scripted waypoints). ``area_x``/``area_y`` are the vial xy
+    randomisation half-ranges (m); ``yaw_jitter`` the vial yaw half-range (rad).
+    Pass all zero for a nominal (unrandomised) reference episode.
+    """
     key = mj.mj_name2id(model, mj.mjtObj.mjOBJ_KEY, "home")
     mj.mj_resetDataKeyframe(model, data, key)
 
-    # --- Domain randomisation: jitter the vial's initial pose ---------------
+    # --- Domain randomisation: place the vial anywhere in the reachable box --
     vq = idx["vial_qadr"]
-    if jitter > 0:
-        data.qpos[vq + 0] += float(rng.uniform(-jitter, jitter))
-        data.qpos[vq + 1] += float(rng.uniform(-jitter, jitter))
-        yaw = float(rng.uniform(-0.08, 0.08))
+    if area_x > 0:
+        data.qpos[vq + 0] += float(rng.uniform(-area_x, area_x))
+    if area_y > 0:
+        data.qpos[vq + 1] += float(rng.uniform(-area_y, area_y))
+    if yaw_jitter > 0:
+        yaw = float(rng.uniform(-yaw_jitter, yaw_jitter))
         data.qpos[vq + 3] = math.cos(yaw / 2.0)
         data.qpos[vq + 4] = 0.0
         data.qpos[vq + 5] = 0.0
@@ -130,6 +156,27 @@ def _run_episode(mj, model, data, renderer, idx, ctrl, *, fps, jitter, rng, max_
 
     def read_arm() -> tuple[float, ...]:
         return tuple(float(data.qpos[a]) for a in arm_qadr)
+
+    # --- Build this episode's controller ------------------------------------
+    # The FSM (interpolation / convergence / gripper timing) is unchanged; only
+    # the joint *targets* adapt. With IK we re-solve each Cartesian anchor to the
+    # randomised vial / pocket pose; without it we replay the fixed scripted set.
+    home_q = read_arm()
+    if ik is not None:
+        vial_xyz = np.array(data.xpos[idx["vial_body"]], dtype=np.float64)
+        pocket_xyz = np.array(data.site_xpos[idx["pocket_site"]], dtype=np.float64)
+        plan = build_adaptive_phases(
+            ik, vial_xyz=vial_xyz, pocket_xyz=pocket_xyz, home_q=home_q
+        )
+        ctrl = PickPlaceController(phases=plan.phases)
+        approach_q = plan.approach_q
+        ik_max_err = plan.max_pos_error
+        ik_converged = plan.all_converged
+    else:
+        ctrl = PickPlaceController()
+        approach_q = ctrl.phases[1].q
+        ik_max_err = 0.0
+        ik_converged = True
 
     # Settle at the home pose (gripper open) before starting the script.
     for a, q in zip(arm_act, read_arm(), strict=True):
@@ -187,6 +234,8 @@ def _run_episode(mj, model, data, renderer, idx, ctrl, *, fps, jitter, rng, max_
         "success": success, "lifted": lifted, "seated": seated,
         "lift_height": float(z_max - z0), "place_dist": place_dist,
         "num_frames": len(states), "sim_steps": step,
+        "approach_q": approach_q, "ik_max_err": ik_max_err,
+        "ik_converged": ik_converged,
     }
 
 
@@ -198,12 +247,29 @@ def main() -> int:
     ap.add_argument("--fps", type=int, default=emb.DEFAULT_FPS)
     ap.add_argument("--width", type=int, default=emb.DEFAULT_WIDTH)
     ap.add_argument("--height", type=int, default=emb.DEFAULT_HEIGHT)
-    ap.add_argument("--jitter", type=float, default=0.006,
-                    help="vial xy jitter half-range (m); episode 0 is always nominal")
+    ap.add_argument("--area-x", type=float, default=0.05,
+                    help="vial x randomisation half-range (m) over the reachable tray")
+    ap.add_argument("--area-y", type=float, default=0.07,
+                    help="vial y randomisation half-range (m) over the reachable tray")
+    ap.add_argument("--yaw-jitter", type=float, default=0.08,
+                    help="vial yaw randomisation half-range (rad) — visual jitter")
+    ap.add_argument("--jitter", type=float, default=None,
+                    help="DEPRECATED: if set, overrides --area-x/--area-y with this "
+                         "single xy half-range (m)")
+    ap.add_argument("--fixed-waypoints", action="store_true",
+                    help="replay the fixed scripted joint waypoints instead of the "
+                         "adaptive IK expert (for the zero-variance baseline)")
     ap.add_argument("--max-steps", type=int, default=30000)
+    ap.add_argument("--noslip-iterations", type=int, default=20,
+                    help="MuJoCo noslip solver iterations — stabilises the grasp so "
+                         "the lifted vial is not ejected (0 disables; 20 is robust)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--instruction", default=emb.DEFAULT_INSTRUCTION)
     args = ap.parse_args()
+
+    area_x, area_y = args.area_x, args.area_y
+    if args.jitter is not None:
+        area_x = area_y = args.jitter
 
     import mujoco as mj  # imported here so the module stays import-safe without GL
 
@@ -212,15 +278,34 @@ def main() -> int:
         print(f"ERROR: MJCF not found: {xml_path}", file=sys.stderr)
         return 2
     model = mj.MjModel.from_xml_path(str(xml_path))
+    # Enable MuJoCo's noslip friction refinement: without it the stiff pad/vial
+    # contact ejects the grasped vial the instant the arm accelerates on lift
+    # (both the scripted and IK experts blow up otherwise). This is an in-memory
+    # solver option only — it changes no MJCF file and no recorded obs/action.
+    if args.noslip_iterations > 0:
+        model.opt.noslip_iterations = args.noslip_iterations
     data = mj.MjData(model)
     idx = _build_index(mj, model)
     freed = _free_arm_collision(mj, model)
     print(f"[gen] loaded {xml_path.name}: nq={model.nq} nu={model.nu} "
           f"ncam={model.ncam}; freed {freed} arm-collision geoms; "
+          f"noslip_iters={model.opt.noslip_iterations}; "
           f"timestep={model.opt.timestep} decim={max(1, round((1.0/args.fps)/model.opt.timestep))}")
 
     renderer = mj.Renderer(model, args.height, args.width)
-    ctrl = PickPlaceController()
+    # The adaptive IK expert re-solves the arm targets to the randomised vial /
+    # pocket pose each episode; --fixed-waypoints falls back to the scripted set.
+    ik = None
+    if not args.fixed_waypoints:
+        ik = DampedLeastSquaresIK(
+            model=model,
+            site_id=idx["pinch_site"],
+            arm_qadr=tuple(idx["arm_qadr"]),
+            arm_dofadr=tuple(idx["arm_dofadr"]),
+        )
+    print(f"[gen] expert: {'FIXED scripted waypoints' if ik is None else 'ADAPTIVE IK'}"
+          f"; vial randomisation half-range xy=({area_x:.3f},{area_y:.3f})m "
+          f"yaw={args.yaw_jitter:.3f}rad (episode 0 nominal)")
     rng = np.random.default_rng(args.seed)
 
     writer = LeRobotDatasetWriter(
@@ -234,23 +319,38 @@ def main() -> int:
     )
 
     n_success = 0
+    approach_qs: list[np.ndarray] = []
+    per_ep_action_var: list[float] = []
+    worst_ik_err = 0.0
+    n_ik_nonconv = 0
     try:
         for ep in range(args.num_episodes):
-            jitter = 0.0 if ep == 0 else args.jitter
+            nominal = ep == 0
             result = _run_episode(
-                mj, model, data, renderer, idx, ctrl,
-                fps=args.fps, jitter=jitter, rng=rng, max_steps=args.max_steps,
+                mj, model, data, renderer, idx, ik,
+                fps=args.fps,
+                area_x=0.0 if nominal else area_x,
+                area_y=0.0 if nominal else area_y,
+                yaw_jitter=0.0 if nominal else args.yaw_jitter,
+                rng=rng, max_steps=args.max_steps,
             )
             n_success += int(result["success"])
+            approach_qs.append(np.asarray(result["approach_q"], dtype=np.float64))
+            per_ep_action_var.append(float(np.var(result["actions"])))
+            worst_ik_err = max(worst_ik_err, float(result["ik_max_err"]))
+            n_ik_nonconv += int(not result["ik_converged"])
             writer.add_episode(
                 states=result["states"], actions=result["actions"],
                 frames=result["frames"], task=args.instruction,
             )
+            aq = np.asarray(result["approach_q"], dtype=np.float64)
             print(
                 f"[gen] ep {ep:03d}: frames={result['num_frames']:4d} "
                 f"sim_steps={result['sim_steps']:6d} "
                 f"lift={result['lift_height']*100:5.1f}cm "
                 f"place_dist={result['place_dist']*100:5.1f}cm "
+                f"ik_err={result['ik_max_err']*1000:4.1f}mm "
+                f"approach_q=[{', '.join(f'{v:+.3f}' for v in aq)}] "
                 f"{'SUCCESS' if result['success'] else 'FAIL'} "
                 f"(lifted={result['lifted']} seated={result['seated']})"
             )
@@ -261,6 +361,38 @@ def main() -> int:
     print(f"[gen] wrote {info['total_episodes']} episodes / {info['total_frames']} "
           f"frames to {args.out}")
     print(f"[gen] grasp+place success: {n_success}/{args.num_episodes}")
+
+    # --- Adaptivity proof: variance of the first-approach joint angles ---------
+    approach_arr = np.asarray(approach_qs, dtype=np.float64)
+    approach_std = approach_arr.std(axis=0)
+    approach_range = approach_arr.max(axis=0) - approach_arr.min(axis=0)
+    action_var_mean = float(np.mean(per_ep_action_var))
+    proof = {
+        "expert": "fixed_waypoints" if ik is None else "adaptive_ik",
+        "num_episodes": int(args.num_episodes),
+        "success": int(n_success),
+        "randomisation": {
+            "area_x_m": area_x, "area_y_m": area_y, "yaw_rad": args.yaw_jitter,
+        },
+        "approach_joint_std_rad": approach_std.tolist(),
+        "approach_joint_range_rad": approach_range.tolist(),
+        "approach_joint_std_max_rad": float(approach_std.max()),
+        "mean_per_episode_action_variance": action_var_mean,
+        "ik_worst_pos_error_mm": worst_ik_err * 1000.0,
+        "ik_nonconverged_episodes": int(n_ik_nonconv),
+    }
+    (Path(args.out) / "ik_adaptivity.json").write_text(
+        json.dumps(proof, indent=2) + "\n"
+    )
+    print("[gen] ADAPTIVITY PROOF (first-approach joint angles across episodes):")
+    print(f"[gen]   per-joint std (rad): [{', '.join(f'{v:.4f}' for v in approach_std)}]")
+    print(f"[gen]   per-joint range (rad): [{', '.join(f'{v:.4f}' for v in approach_range)}]")
+    print(f"[gen]   max joint std: {approach_std.max():.4f} rad "
+          f"({'ADAPTIVE — targets vary with the vial' if approach_std.max() > 1e-3 else 'FIXED — zero variance'})")
+    print(f"[gen]   mean per-episode action variance: {action_var_mean:.5f}")
+    if ik is not None:
+        print(f"[gen]   IK worst pos error: {worst_ik_err*1000:.2f} mm; "
+              f"non-converged episodes: {n_ik_nonconv}/{args.num_episodes}")
     return 0
 
 
