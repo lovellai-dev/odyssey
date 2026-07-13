@@ -432,6 +432,56 @@ def _is_lora_checkpoint(checkpoint_path: Path) -> bool:
     return (checkpoint_path / "adapter_config.json").is_file()
 
 
+def _preferred_attn_implementations() -> list[str]:
+    """Attention backends to try at load time, fastest first.
+
+    FlashAttention-2 when the ``flash_attn`` package is importable, then
+    PyTorch SDPA (no extra dependency, still faster than the ``eager`` default).
+    ``_load_vla_model`` falls back to the model default if none are accepted by
+    the pinned OpenVLA remote code.
+    """
+    import importlib.util
+
+    impls: list[str] = []
+    if importlib.util.find_spec("flash_attn") is not None:
+        impls.append("flash_attention_2")
+    impls.append("sdpa")
+    return impls
+
+
+def _load_vla_model(model_ref: str) -> Any:
+    """Load an OpenVLA vision-to-seq model with the fastest available attention.
+
+    Same bf16 + ``low_cpu_mem_usage`` + ``trust_remote_code`` as before, but
+    tries FlashAttention-2 / SDPA first. If the custom OpenVLA modeling code
+    rejects ``attn_implementation`` (older pinned ``transformers``), it retries
+    without the kwarg so behaviour is unchanged on unsupported stacks.
+    """
+    import torch
+    from transformers import AutoModelForVision2Seq
+
+    common = {
+        "torch_dtype": torch.bfloat16,
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+    }
+    for attn in _preferred_attn_implementations():
+        try:
+            model = AutoModelForVision2Seq.from_pretrained(
+                model_ref, attn_implementation=attn, **common
+            )
+            logger.info("Loaded %s with attn_implementation=%r", model_ref, attn)
+            return model
+        except (ValueError, TypeError, ImportError) as e:
+            logger.info(
+                "attn_implementation=%r unavailable (%s); trying next backend",
+                attn,
+                e,
+            )
+    logger.info("Loading %s with model-default attention", model_ref)
+    return AutoModelForVision2Seq.from_pretrained(model_ref, **common)
+
+
 def make_openvla_policy(
     checkpoint_path: Path,
     *,
@@ -449,7 +499,14 @@ def make_openvla_policy(
     try:
         import torch
         from PIL import Image
-        from transformers import AutoModelForVision2Seq, AutoProcessor
+
+        # Probe the heavy deps here so a missing 'openvla' extra surfaces as a
+        # friendly NotImplementedError rather than a bare ImportError deep in
+        # _load_vla_model. AutoModelForVision2Seq is loaded there, not here.
+        from transformers import (
+            AutoModelForVision2Seq,  # noqa: F401
+            AutoProcessor,
+        )
     except ImportError as e:
         raise NotImplementedError(
             "OpenVLA inference policy requires the 'openvla' extra. "
@@ -475,12 +532,7 @@ def make_openvla_policy(
         processor = AutoProcessor.from_pretrained(
             base_model_name, trust_remote_code=True
         )
-        model = AutoModelForVision2Seq.from_pretrained(
-            base_model_name,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-        )
+        model = _load_vla_model(base_model_name)
         logger.info("Applying LoRA adapter from: %s", checkpoint_path)
         model = PeftModel.from_pretrained(model, str(checkpoint_path))
 
@@ -500,12 +552,7 @@ def make_openvla_policy(
         processor = AutoProcessor.from_pretrained(
             str(checkpoint_path), trust_remote_code=True
         )
-        model = AutoModelForVision2Seq.from_pretrained(
-            str(checkpoint_path),
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True,
-        )
+        model = _load_vla_model(str(checkpoint_path))
 
     model = model.to(device)
 
@@ -529,11 +576,12 @@ def make_openvla_policy(
         # The HF-hosted OpenVLAForActionPrediction.predict_action() expects
         # pre-tokenized input_ids, not raw image+instruction.
         inputs = processor(task_instruction, img_array).to(device, dtype=torch.bfloat16)
-        action = model.predict_action(
-            inputs["input_ids"],
-            unnorm_key=unnorm_key,
-            do_sample=False,
-        )
+        with torch.inference_mode():
+            action = model.predict_action(
+                inputs["input_ids"],
+                unnorm_key=unnorm_key,
+                do_sample=False,
+            )
         return np.array(action, dtype=np.float64)
 
     return policy
@@ -568,7 +616,13 @@ class VLARuntime:
     ) -> None:
         try:
             import torch
-            from transformers import AutoModelForVision2Seq, AutoProcessor
+
+            # Probe the heavy deps up front (see make_openvla_policy) so a
+            # missing 'openvla' extra raises a friendly NotImplementedError.
+            from transformers import (
+                AutoModelForVision2Seq,  # noqa: F401
+                AutoProcessor,
+            )
         except ImportError as e:
             raise NotImplementedError(
                 "VLARuntime requires the 'openvla' extra. "
@@ -589,12 +643,7 @@ class VLARuntime:
             self._processor = AutoProcessor.from_pretrained(
                 base_name, trust_remote_code=True
             )
-            model = AutoModelForVision2Seq.from_pretrained(
-                base_name,
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-            )
+            model = _load_vla_model(base_name)
             logger.info("VLARuntime: applying LoRA adapter from %s", self._checkpoint_path)
             model = PeftModel.from_pretrained(model, str(self._checkpoint_path))
             if hasattr(model, "merge_and_unload"):
@@ -607,12 +656,7 @@ class VLARuntime:
             self._processor = AutoProcessor.from_pretrained(
                 str(self._checkpoint_path), trust_remote_code=True
             )
-            model = AutoModelForVision2Seq.from_pretrained(
-                str(self._checkpoint_path),
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,
-            )
+            model = _load_vla_model(str(self._checkpoint_path))
 
         self._model = model.to(self._device)
         logger.info("VLARuntime ready on %s", self._device)
@@ -634,9 +678,10 @@ class VLARuntime:
         inputs = self._processor(instruction, image).to(
             self._device, dtype=torch.bfloat16
         )
-        action = self._model.predict_action(
-            inputs["input_ids"],
-            unnorm_key=self._unnorm_key,
-            do_sample=False,
-        )
+        with torch.inference_mode():
+            action = self._model.predict_action(
+                inputs["input_ids"],
+                unnorm_key=self._unnorm_key,
+                do_sample=False,
+            )
         return np.array(action, dtype=np.float64)
