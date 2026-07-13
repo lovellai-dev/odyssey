@@ -47,8 +47,11 @@ def main() -> None:
     runtime = VLARuntime(args.checkpoint, unnorm_key=args.unnorm_key)
     device = runtime._device  # read-only private access, benchmark only
     is_cuda = device.startswith("cuda")
+    # Ground truth of the attention backend transformers actually wired — this
+    # is what tells us whether the FlashAttn/SDPA change took effect at all.
+    attn = getattr(runtime._model.config, "_attn_implementation", "unknown")
     print(f"device={device}  iters={args.iters}  warmup={args.warmup}")
-    print("(check the load log above for the actual attn_implementation used)")
+    print(f"attn_implementation (resolved): {attn}")
 
     # Fixed synthetic frame — content is irrelevant for latency, only shape/dtype.
     rng = np.random.default_rng(0)
