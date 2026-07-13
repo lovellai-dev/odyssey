@@ -11,6 +11,13 @@ The planner sees the first frame of each episode and decomposes the goal into ph
 long-horizon, multi-stage nature is exactly where that decomposition is meant to help.
 It's the single-object variant of `PickPlace` (which juggles four objects/bins).
 
+> **Why the mission sets `task_instruction`.** Robosuite `PickPlaceCan` has **no**
+> built-in language annotation, so you supply the goal (`"put the can in the bin"`)
+> in the eval `config`: the OpenVLA pilot is language-conditioned on it and the
+> planner decomposes it into phases. This is the opposite of the
+> [`franka-libero`](../franka-libero/) example — LIBERO is language-conditioned and
+> ships an instruction per task, so there you set **none**.
+
 ## ⚠️ Read first: the domain gap
 
 | | Training | Evaluation |

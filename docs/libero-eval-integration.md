@@ -1,9 +1,14 @@
 # LIBERO evaluation integration — status & handoff
 
-**Status:** integration code complete and green (ruff + mypy + tests). The
+**Status:** integration code complete and green (ruff + mypy + tests), and the eval
+pipeline is **validated end-to-end on a GCP L4** (2026-07-13): deps install, model
+loads, the LIBERO env builds, episodes run and are scored, videos are captured. The
 spec-policy decision below is **resolved — Option A**: the Mission spec now allows
 **eval-only** missions (zero training tasks), so the LIBERO example missions
-`validate` and run. This doc captures the work and the rationale.
+`validate` and run. One open item — the published checkpoint's `success_rate` came
+out 0/2 on a first tiny run (arm approaches but misses the grasp); tracked in
+**issue #61** (variance vs a center-crop preprocessing gap). This doc captures the
+work and the rationale; `examples/franka-libero/README.md` is the user-facing guide.
 
 ## Why LIBERO
 
@@ -63,19 +68,25 @@ tolerates a training-less mission before relying on this end-to-end.
 fine-tune on `modified_libero_rlds`, 10.2 GB). No spec change, but re-trains when a
 working checkpoint already exists; slower and less flexible than A.
 
-## How to test on the VM (once unblocked)
+## How to test on the VM (validated procedure)
+
+Full user-facing steps + a dependency-gotcha table are in
+`examples/franka-libero/README.md`; `examples/franka-libero/setup.sh` automates the
+install. In short:
 
 ```bash
-# 1. install LIBERO + encoder (DEPENDENCY SPIKE — see risks). Isolate into a
-#    dedicated venv so LIBERO's robosuite/robomimic pins can't disturb the
-#    validated env_pilot (OpenVLA + the robosuite eval). Build it once, then
-#    install LIBERO into it:
+# 0. system build + render deps (needs sudo). LIBERO's egl_probe (via robomimic)
+#    builds from C source (needs cmake + a compiler); MuJoCo needs a headless GL lib.
+sudo apt-get update && sudo apt-get install -y cmake build-essential \
+  libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libosmesa6-dev
+
+# 1. dedicated venv with the OpenVLA stack (isolates the robosuite 1.4.0 downgrade),
+#    then install LIBERO into it (clone + safe deps + .pth; see setup.sh header):
 examples/multiagent-openvla-gemma/setup.sh --pilot-venv "$PWD/env_pilot_libero"
 source env_pilot_libero/bin/activate
 examples/franka-libero/setup.sh                 # installs into the active venv
-# (or plain `examples/franka-libero/setup.sh` to use the default env_pilot)
 
-# 2. headless render (compute-only driver → OSMesa)
+# 2. headless render (compute-only driver → OSMesa; EGL failed headless on the L4)
 export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 
 # 3. single-agent (checkpoint auto-downloads from HF; no dataset needed)
@@ -90,6 +101,13 @@ odyssey run examples/franka-libero/mission-multiagent.yaml
 find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;
 ```
 
+**Install gotchas found during validation (all handled by `setup.sh`):** LIBERO ships
+no top-level `__init__.py` (PEP 420 namespace package → registered via a `.pth`, not
+`pip install -e .`); its `requirements.txt` hard-pins `transformers==4.21.1` +
+`numpy==1.22.4` which would break the OpenVLA stack, so we install its deps **minus
+those two**; `robosuite` is downgraded 1.5.2 → 1.4.0 (fine in the dedicated venv);
+and the first `import libero` prompts on stdin, so the config is pre-initialized.
+
 ## Risks / to verify on first run
 
 1. **Dependency spike (biggest):** LIBERO pins its own robosuite/robomimic versions —
@@ -100,13 +118,21 @@ find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;
    validated `env_pilot` untouched. If pip still conflicts, pin
    (a `constraints/libero-known-good.txt`).
 2. **obs orientation** (`_libero_image`, 180° flip) and **gripper action**
-   (`_libero_action`, binarize + invert) mirror OpenVLA's `run_libero_eval.py`. If
-   the arm behaves inverted, check these two against the reference script.
-3. **`unnorm_key` must match the suite/checkpoint** (e.g. `libero_object`).
-4. Headless EGL/OSMesa (same as the rollout-video work).
+   (`_libero_action`, normalize + binarize + invert) — verified during validation to
+   **match** OpenVLA's `run_libero_eval.py` (incl. camera 256², 10 settle no-ops, and
+   raw `predict_action` gripper `[0,1]`). Not the cause of the observed miss.
+3. **`unnorm_key` must match the suite/checkpoint** (e.g. `libero_object`). Verified.
+4. **`success_rate` (open, issue #61):** the published `libero-object` checkpoint
+   scored 0/2 on a first run — arm approaches but misses the grasp. Leading suspect if
+   systematic (rather than small-sample variance): **center-crop** — the
+   `finetuned-libero-*` checkpoints trained with `center_crop=True`; audit that
+   `make_openvla_policy` replicates the crop. Re-run with `num_episodes: 10` first.
+5. Headless EGL/OSMesa: EGL failed headless on the L4 → OSMesa (CPU render, slower).
 
 ## Follow-ups (tracked separately)
 
+- **`success_rate` investigation — issue #61** (variance vs center-crop). Re-run
+  `num_episodes: 10`; if ~0, audit `center_crop` in `make_openvla_policy`.
 - Consolidate the duplicated multi-agent helpers (`_has_specialist`,
   `_find_specialist_model`, `_build_planned_runtime`) from `robosuite.py` + `libero.py`
   into `_common.py` (avoid the cross-runner private-import coupling PR #41 removed).
