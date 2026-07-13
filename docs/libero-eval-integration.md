@@ -66,8 +66,14 @@ working checkpoint already exists; slower and less flexible than A.
 ## How to test on the VM (once unblocked)
 
 ```bash
-# 1. install LIBERO + encoder into the OpenVLA env (DEPENDENCY SPIKE — see risks)
-examples/franka-libero/setup.sh
+# 1. install LIBERO + encoder (DEPENDENCY SPIKE — see risks). Isolate into a
+#    dedicated venv so LIBERO's robosuite/robomimic pins can't disturb the
+#    validated env_pilot (OpenVLA + the robosuite eval). Build it once, then
+#    install LIBERO into it:
+examples/multiagent-openvla-gemma/setup.sh --pilot-venv "$PWD/env_pilot_libero"
+source env_pilot_libero/bin/activate
+examples/franka-libero/setup.sh                 # installs into the active venv
+# (or plain `examples/franka-libero/setup.sh` to use the default env_pilot)
 
 # 2. headless render (compute-only driver → OSMesa)
 export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
@@ -87,8 +93,12 @@ find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;
 ## Risks / to verify on first run
 
 1. **Dependency spike (biggest):** LIBERO pins its own robosuite/robomimic versions —
-   confirm it co-installs with the OpenVLA stack in `env_pilot`. If pip conflicts,
-   pin (a `constraints/libero-known-good.txt`) or use a dedicated venv.
+   confirm it co-installs with the OpenVLA stack. Note OpenVLA and LIBERO run in the
+   **same process** during eval (policy + sim), so they must co-install in one venv —
+   a separate venv isolates but does not resolve an inherent conflict. We install into
+   a dedicated **`env_pilot_libero`** (via `franka-libero/setup.sh --venv`) to keep the
+   validated `env_pilot` untouched. If pip still conflicts, pin
+   (a `constraints/libero-known-good.txt`).
 2. **obs orientation** (`_libero_image`, 180° flip) and **gripper action**
    (`_libero_action`, binarize + invert) mirror OpenVLA's `run_libero_eval.py`. If
    the arm behaves inverted, check these two against the reference script.

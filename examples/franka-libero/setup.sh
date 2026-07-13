@@ -21,7 +21,17 @@
 # resolve it (pin, or a dedicated venv). Installing LIBERO is the first real test.
 #
 # Usage:
-#   examples/franka-libero/setup.sh
+#   examples/franka-libero/setup.sh [--venv PATH]
+#
+#   --venv PATH   target venv to install LIBERO into (default: <repo>/env_pilot).
+#                 Point it at a dedicated venv (e.g. <repo>/env_pilot_libero) to
+#                 keep the validated env_pilot (OpenVLA + robosuite eval) untouched
+#                 in case LIBERO's pinned robosuite/robomimic shift versions. Build
+#                 that venv first with the OpenVLA stack, e.g.:
+#                   examples/multiagent-openvla-gemma/setup.sh --pilot-venv <path>
+#                 NOTE: OpenVLA and LIBERO run in the SAME process during eval, so a
+#                 separate venv isolates env_pilot but both must still co-install here.
+#   An already-active venv ($VIRTUAL_ENV) always wins over --venv.
 #
 # Linux + NVIDIA GPU assumed (GCP L4). Re-runnable.
 
@@ -30,10 +40,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# --- activate the pilot venv if present ---
-if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$REPO_ROOT/env_pilot/bin/activate" ]; then
-  # shellcheck disable=SC1091
-  source "$REPO_ROOT/env_pilot/bin/activate"
+# --- venv selection (default env_pilot; --venv overrides for isolation) ---
+VENV="${VENV:-$REPO_ROOT/env_pilot}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --venv) VENV="$2"; shift 2 ;;
+    -h|--help)
+      grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1 (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+# --- activate the target venv if none is already active ---
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+  if [ -f "$VENV/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    source "$VENV/bin/activate"
+  else
+    echo "[setup] WARNING: no venv at $VENV — installing into the current Python." >&2
+    echo "        Build it first with the OpenVLA stack, e.g.:" >&2
+    echo "          examples/multiagent-openvla-gemma/setup.sh --pilot-venv $VENV" >&2
+  fi
 fi
 
 # --- LIBERO package (provides the env, task suites, bddl + init states) ---
