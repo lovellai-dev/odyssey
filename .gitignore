@@ -18,6 +18,7 @@ wheels/
 
 # Virtual envs
 .venv/
+.venv-*/
 venv/
 env/
 env_pilot/        # multi-agent setup.sh: OpenVLA pilot venv

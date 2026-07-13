@@ -1,0 +1,102 @@
+# UR5e drug-sorting fine-tune mission.
+#
+# Fine-tunes NVIDIA Isaac GR00T N1.7 (3B) on the AseptiPack fill-finish cell's
+# scripted pick-and-place demonstrations (generated head-lessly by
+# scripts/gen_ur5e_drugsort_demos.py into GR00T LeRobot v2.1 format), producing
+# a checkpoint that drops into the **Lovell AI Robot Playground** Pilot slot.
+#
+# obs/action contract (matches the Playground setTargets(q, grip) bridge +
+# TrueSensorRenderer primary view — see examples/ur5e-drugsort/README.md):
+#   * action : 6 UR5e joint targets (rad) + gripper closure in [0, 1]
+#   * state  : 6 joint positions + gripper closure
+#   * video  : one `exterior` camera-mount view (256x256)
+#
+# Validate without a GPU:
+#   odyssey validate examples/ur5e-drugsort/mission.yaml
+#   odyssey run examples/ur5e-drugsort/mission.yaml --use-mock-runner
+#
+# Real fine-tune (GPU + Isaac-GR00T checkout): see RUNBOOK.md.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: ur5e-drugsort-finetune
+  description: Fine-tune GR00T N1.7 on the UR5e AseptiPack drug-sorting cell for the Playground.
+  tags: [gr00t, nvidia, ur5e, robotiq, aseptipack, drug-sorting, playground]
+
+objective: |
+  Fine-tune the GR00T N1.7 3B foundation model on scripted UR5e / Robotiq 2F-85
+  pick-and-place demonstrations of the AseptiPack fill-finish cell so the
+  resulting policy can pick a vial and seat it in the rack, deployable directly
+  into the Lovell AI Robot Playground Pilot slot.
+
+acceptance_criteria: |
+  The fine-tune produces a checkpoint; deployed as a policy server it drives the
+  Playground cell (setTargets bridge) to complete at least one pick-and-place,
+  and (optionally) scores at least one success in a closed-loop Isaac Lab eval.
+
+robot:
+  # Odyssey robot-catalog name (the local provider validates against this set).
+  # The full cell is a UR5e + Robotiq 2F-85; the dataset carries the precise
+  # robot_type "ur5e_robotiq_2f85" in meta/info.json.
+  embodiment: ur5e
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: finetune-gr00t-ur5e
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # Generated locally by scripts/gen_ur5e_drugsort_demos.py. An absolute
+      # path is passed straight through; a relative `local` ref resolves against
+      # $ISAAC_GR00T_REPO_PATH (see the GR00T runner). Point this at your dataset.
+      ref: /data/ur5e_drugsort
+      # GR00T trains on LeRobot v2.1 + meta/modality.json (state/action/video keys).
+      format: lerobot
+    config:
+      # OpenVLA + GR00T both serve wildcard training tasks — route to GR00T.
+      runner: gr00t
+      embodiment_tag: new_embodiment
+      # The UR5e modality config (this repo's source-of-truth copy). Pass an
+      # ABSOLUTE path, or copy the file into the Isaac-GR00T checkout and use a
+      # repo-relative path (resolved against $ISAAC_GR00T_REPO_PATH). See RUNBOOK.
+      modality_config_path: examples/UR5e_DrugSort/ur5e_config.py
+      # Remaining keys mirror gr00t/experiment/launch_finetune.py flags
+      # (underscores become dashes on the CLI).
+      global_batch_size: 16
+      max_steps: 2000
+      save_steps: 1000
+      dataloader_num_workers: 4
+
+  # A mission needs exactly one evaluation task, last. The primary deploy target
+  # is the browser Playground (see RUNBOOK step 4); this closed-loop Isaac Lab
+  # eval is an OPTIONAL secondary check that auto-serves the trained checkpoint.
+  - name: eval-gr00t-ur5e
+    kind: evaluation
+    evaluation_type: isaac_lab
+    benchmark_name: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    num_episodes: 1
+    config:
+      eval_script: src/odyssey/runners/evals/gr00t_isaac_eval.py
+      serve_checkpoint: true                 # deploy the freshly trained checkpoint
+      embodiment_tag: new_embodiment         # MUST match the training embodiment_tag
+      server_python: ${ISAAC_GR00T_REPO_PATH}/.venv/bin/python
+      server_device: cuda:0
+      host: 127.0.0.1
+      port: 5555
+      instruction: "pick up the vial and place it in the rack"
+      pos_scale: 0.05
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false

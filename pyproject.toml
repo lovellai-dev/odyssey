@@ -49,6 +49,9 @@ dev = [
     # imageio: rollout-video helper tests encode synthetic frames to a GIF
     # (pillow plugin, no ffmpeg). CI installs only the dev extra.
     "imageio>=2.31",
+    # pyarrow: the GR00T LeRobot dataset writer (odyssey.datasets) emits
+    # list<float32> parquet columns; its schema/dims tests run in the unit lane.
+    "pyarrow>=14",
 ]
 # Optional providers / runners — kept out of base install so the wheel
 # stays light. Users opt in per-feature.
@@ -90,6 +93,16 @@ specialist = [
     # torchvision: Gemma 4's image processor (Gemma4ImageProcessor) imports
     # torchvision.transforms.v2. Must match the installed torch ABI.
     "torchvision",
+]
+drugsort = [
+    # UR5e drug-sorting demonstration-data generator
+    # (scripts/gen_ur5e_drugsort_demos.py): loads the AseptiPack MJCF in headless
+    # MuJoCo, replays the scripted pick-place policy, and writes a GR00T LeRobot
+    # v2.1 dataset. Video is encoded via the system ``ffmpeg`` binary (no imageio
+    # ffmpeg wheel needed). No GPU required — only an offscreen GL/EGL context.
+    "mujoco>=3.0",
+    "numpy>=1.24",
+    "pyarrow>=14",
 ]
 gr00t = [
     # GR00T policy-server CLIENT transport (PolicyClient over ZMQ). The GR00T
@@ -148,7 +161,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2"]
+module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2", "pyarrow", "pyarrow.parquet"]
 ignore_missing_imports = true
 follow_imports = "skip"
 # Also skip these libs' bundled .pyi stubs. By default mypy follows imports into
