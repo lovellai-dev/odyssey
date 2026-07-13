@@ -53,10 +53,20 @@ ur5e_drugsort_config = {
             "gripper",
         ],
         action_configs=[
-            # single_arm: RELATIVE = delta from current joint state (generalises
-            # across the small vial-pose randomisation in the demo set).
+            # single_arm: ABSOLUTE = predict the absolute joint-position target
+            # directly (NOT a delta from the current state). The earlier RELATIVE
+            # rep integrated its deltas on top of whatever pose the arm was in, so
+            # in closed loop a small error compounded — the base joint drifted
+            # monotonically past its training range to ~2π (the "shoulder_pan
+            # runaway" that failed the first eval 0/20). Predicting absolute
+            # targets lets the policy pull the arm back onto the manifold from an
+            # off-distribution pose instead of amplifying the drift. The recorded
+            # action IS already the absolute joint target (rad), so this needs no
+            # dataset change — only how the fine-tune interprets it. The served
+            # policy still returns absolute targets, so eval + the Playground
+            # setTargets bridge apply them unchanged.
             ActionConfig(
-                rep=ActionRepresentation.RELATIVE,
+                rep=ActionRepresentation.ABSOLUTE,
                 type=ActionType.NON_EEF,  # joint-space, not end-effector
                 format=ActionFormat.DEFAULT,
             ),

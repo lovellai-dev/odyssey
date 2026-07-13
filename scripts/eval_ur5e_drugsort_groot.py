@@ -251,12 +251,15 @@ def main() -> int:
     ap.add_argument("--yaw-jitter", type=float, default=0.08)
     ap.add_argument("--max-ticks", type=int, default=1000,
                     help="control frames per episode (demos are ~890 frames).")
-    ap.add_argument("--n-action-steps", type=int, default=4,
+    ap.add_argument("--n-action-steps", type=int, default=8,
                     help="action-chunk steps replayed per GR00T query before "
-                         "re-observing (chunk is 16). A sweep on this checkpoint "
-                         "found 4 best: >=8 lets the base joint overshoot into an "
-                         "off-distribution runaway; <=2 under-progresses and stalls "
-                         "at home. 4 lets the policy approach + attempt the grasp.")
+                         "re-observing (chunk is 16). For the ABSOLUTE-rep v2 "
+                         "checkpoint, 8 is best (reliable approach + grasp attempt, "
+                         "grip fires in ~12/20 episodes); 4 is too passive (grip "
+                         "fires ~4/20). For the older RELATIVE-rep checkpoint 4 was "
+                         "best because >=8 triggered a base-joint runaway — the "
+                         "absolute rep removes that runaway, so a larger replay is "
+                         "safe and progresses the trajectory better.")
     ap.add_argument("--noslip-iterations", type=int, default=20)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--instruction", default=emb.DEFAULT_INSTRUCTION)

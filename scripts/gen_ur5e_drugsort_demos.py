@@ -126,7 +126,79 @@ def _free_arm_collision(mj, model) -> int:  # type: ignore[no-untyped-def]
     return freed
 
 
-def _run_episode(mj, model, data, renderer, idx, ik, *, fps, area_x, area_y, yaw_jitter, rng, max_steps):  # type: ignore[no-untyped-def]
+def _snapshot_visual(mj, model):  # type: ignore[no-untyped-def]
+    """Copy the render-only model fields we domain-randomise so each episode can
+    reset to nominal before re-jittering (jitter stays centred on nominal)."""
+    room_cam = mj.mj_name2id(model, mj.mjtObj.mjOBJ_CAMERA, "room")
+    snap = {
+        "room_cam": room_cam,
+        "cam_pos": model.cam_pos.copy(),
+        "cam_fovy": model.cam_fovy.copy(),
+        "geom_rgba": model.geom_rgba.copy(),
+        "hl_diffuse": np.array(model.vis.headlight.diffuse, dtype=np.float64),
+        "hl_ambient": np.array(model.vis.headlight.ambient, dtype=np.float64),
+        "hl_specular": np.array(model.vis.headlight.specular, dtype=np.float64),
+    }
+    snap["mat_rgba"] = model.mat_rgba.copy() if model.nmat else None
+    snap["light_pos"] = model.light_pos.copy() if model.nlight else None
+    snap["light_diffuse"] = model.light_diffuse.copy() if model.nlight else None
+    snap["light_ambient"] = model.light_ambient.copy() if model.nlight else None
+    return snap
+
+
+def _apply_visual_dr(model, snap, rng, strength=1.0):  # type: ignore[no-untyped-def]
+    """Randomise render-only fields (camera pose/FOV, lighting, material colour).
+
+    None of this touches physics or the recorded state/action — only the rendered
+    ``exterior`` frames vary, so a policy trained on them is robust to appearance
+    shifts (crucially: the Playground's Three.js render, which is lit/shaded
+    differently from MuJoCo's). Reset to nominal first so jitter stays centred.
+    """
+    # --- reset to nominal ---
+    model.cam_pos[:] = snap["cam_pos"]
+    model.cam_fovy[:] = snap["cam_fovy"]
+    model.geom_rgba[:] = snap["geom_rgba"]
+    if snap["mat_rgba"] is not None:
+        model.mat_rgba[:] = snap["mat_rgba"]
+    if snap["light_pos"] is not None:
+        model.light_pos[:] = snap["light_pos"]
+        model.light_diffuse[:] = snap["light_diffuse"]
+        model.light_ambient[:] = snap["light_ambient"]
+    model.vis.headlight.diffuse[:] = snap["hl_diffuse"]
+    model.vis.headlight.ambient[:] = snap["hl_ambient"]
+    model.vis.headlight.specular[:] = snap["hl_specular"]
+    if strength <= 0:
+        return
+
+    s = float(strength)
+    # --- camera: viewpoint + zoom jitter (robust to the deploy camera being off) ---
+    cid = snap["room_cam"]
+    if cid >= 0:
+        model.cam_pos[cid] = snap["cam_pos"][cid] + rng.uniform(-0.05, 0.05, 3) * s
+        model.cam_fovy[cid] = float(snap["cam_fovy"][cid] + rng.uniform(-2.5, 2.5) * s)
+    # --- lighting: global intensity + colour temperature + light position ---
+    diff = float(np.clip(1.0 + rng.uniform(-0.4, 0.4) * s, 0.2, 1.8))
+    amb = float(np.clip(1.0 + rng.uniform(-0.5, 0.6) * s, 0.2, 2.0))
+    warm = 1.0 + rng.uniform(-0.12, 0.12, 3) * s  # per-channel colour-temperature tilt
+    model.vis.headlight.diffuse[:] = np.clip(snap["hl_diffuse"] * diff * warm, 0.0, 1.0)
+    model.vis.headlight.ambient[:] = np.clip(snap["hl_ambient"] * amb, 0.0, 1.0)
+    if snap["light_pos"] is not None and snap["light_pos"].size:
+        model.light_pos[:] = snap["light_pos"] + rng.uniform(-0.35, 0.35, snap["light_pos"].shape) * s
+        model.light_diffuse[:] = np.clip(snap["light_diffuse"] * diff, 0.0, 1.0)
+        model.light_ambient[:] = np.clip(snap["light_ambient"] * amb, 0.0, 1.0)
+    # --- material / geom colour: a global tint + small per-element jitter ---
+    tint = np.clip(1.0 + rng.uniform(-0.18, 0.18, 3) * s, 0.4, 1.6)
+    if snap["mat_rgba"] is not None and model.nmat:
+        base = snap["mat_rgba"][:, :3]
+        jit = 1.0 + rng.uniform(-0.10, 0.10, base.shape) * s
+        model.mat_rgba[:, :3] = np.clip(base * tint * jit, 0.0, 1.0)
+    gbase = snap["geom_rgba"][:, :3]
+    gjit = 1.0 + rng.uniform(-0.10, 0.10, gbase.shape) * s
+    model.geom_rgba[:, :3] = np.clip(gbase * tint * gjit, 0.0, 1.0)
+
+
+def _run_episode(mj, model, data, renderer, idx, ik, *, fps, area_x, area_y, yaw_jitter, rng, max_steps,
+                 visual_dr=None, dr_strength=1.0):  # type: ignore[no-untyped-def]
     """Simulate one adaptive pick-and-place; return recorded arrays + success.
 
     ``ik`` is a :class:`DampedLeastSquaresIK` solver (or ``None`` to replay the
@@ -150,6 +222,10 @@ def _run_episode(mj, model, data, renderer, idx, ik, *, fps, area_x, area_y, yaw
         data.qpos[vq + 5] = 0.0
         data.qpos[vq + 6] = math.sin(yaw / 2.0)
     mj.mj_forward(model, data)
+
+    # --- Visual domain randomisation (render-only; no physics / obs-action change) ---
+    if visual_dr is not None:
+        _apply_visual_dr(model, visual_dr, rng, strength=dr_strength)
 
     arm_act, grip_act = idx["arm_act"], idx["grip_act"]
     arm_qadr, grip_qadr = idx["arm_qadr"], idx["grip_qadr"]
@@ -263,6 +339,13 @@ def main() -> int:
     ap.add_argument("--noslip-iterations", type=int, default=20,
                     help="MuJoCo noslip solver iterations — stabilises the grasp so "
                          "the lifted vial is not ejected (0 disables; 20 is robust)")
+    ap.add_argument("--visual-dr", type=float, default=0.0,
+                    help="visual domain-randomisation strength (0 disables; 1.0 is the "
+                         "recommended range). Randomises the exterior camera pose/FOV, "
+                         "lighting intensity/colour and material colour per episode "
+                         "(render-only; no obs/action change) so the policy is robust "
+                         "to the Playground's Three.js appearance. Episode 0 stays "
+                         "nominal (clean reference).")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--instruction", default=emb.DEFAULT_INSTRUCTION)
     args = ap.parse_args()
@@ -306,6 +389,10 @@ def main() -> int:
     print(f"[gen] expert: {'FIXED scripted waypoints' if ik is None else 'ADAPTIVE IK'}"
           f"; vial randomisation half-range xy=({area_x:.3f},{area_y:.3f})m "
           f"yaw={args.yaw_jitter:.3f}rad (episode 0 nominal)")
+    # Nominal snapshot of the render-only fields for visual domain randomisation.
+    visual_snap = _snapshot_visual(mj, model) if args.visual_dr > 0 else None
+    print(f"[gen] visual DR: {'OFF' if visual_snap is None else f'strength={args.visual_dr:.2f} '
+          '(camera/lighting/material jitter per episode; ep0 nominal)'}")
     rng = np.random.default_rng(args.seed)
 
     writer = LeRobotDatasetWriter(
@@ -333,6 +420,8 @@ def main() -> int:
                 area_y=0.0 if nominal else area_y,
                 yaw_jitter=0.0 if nominal else args.yaw_jitter,
                 rng=rng, max_steps=args.max_steps,
+                visual_dr=None if nominal else visual_snap,
+                dr_strength=args.visual_dr,
             )
             n_success += int(result["success"])
             approach_qs.append(np.asarray(result["approach_q"], dtype=np.float64))
