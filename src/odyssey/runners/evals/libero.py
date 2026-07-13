@@ -118,9 +118,11 @@ def _libero_action(action: Any) -> Any:
 class LiberoRunner(Runner):
     """Evaluation runner for ``evaluation_type: libero`` tasks."""
 
-    def __init__(self, *, max_steps_per_episode: int = 600):
-        # LIBERO tasks are longer-horizon than robosuite Lift; 600 is a safe default
-        # (long suite needs more). Override via config.max_steps_per_episode.
+    def __init__(self, *, max_steps_per_episode: int = 1200):
+        # LIBERO tasks are longer-horizon than robosuite Lift. 1200 is a generous
+        # default: on-VM rollouts moved smoothly toward the target but ran out of
+        # steps at 600 (arm reaches but doesn't finish the grasp in time), so the
+        # horizon is doubled. Override via config.max_steps_per_episode.
         self._max_steps = max_steps_per_episode
 
     @property

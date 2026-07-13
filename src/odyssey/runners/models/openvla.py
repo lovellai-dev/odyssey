@@ -450,7 +450,7 @@ def _center_crop_image(image: Any, crop_scale: float = 0.9) -> Any:
     cw, ch = round(w * side), round(h * side)
     left, top = (w - cw) // 2, (h - ch) // 2
     cropped = image.crop((left, top, left + cw, top + ch))
-    return cropped.resize((w, h), Image.BILINEAR)
+    return cropped.resize((w, h), Image.Resampling.BILINEAR)
 
 
 def make_openvla_policy(
