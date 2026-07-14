@@ -73,9 +73,26 @@ class ObserverService:
         from odyssey.embodiments.ur5e_drugsort.observer import (
             GraspTargetObserver,
             ObserverAgent,
+            ObserverServoConfig,
         )
         from odyssey.embodiments.ur5e_drugsort.success_classifier import SuccessClassifier
 
+        # Deploy-time tunables (env-overridable so the config can be A/B'd without
+        # re-deploying code). Defaults are the *conservative* deploy profile: a
+        # gentle, tightly-gated servo with re-grasp OFF, because on the loose
+        # free-body vial an over-eager re-grasp walks the vial across the table.
+        def _f(name: str, default: float) -> float:
+            return float(os.environ.get(name, default))
+
+        self._cfg = ObserverServoConfig(
+            servo_gain=_f("OBSERVER_SERVO_GAIN", 0.4),
+            servo_max_step=_f("OBSERVER_SERVO_MAX_STEP", 0.02),
+            grasp_gate_xy=_f("OBSERVER_GRASP_GATE_XY", 0.10),
+            place_gate_xy=_f("OBSERVER_PLACE_GATE_XY", 0.12),
+            agree_max=_f("OBSERVER_AGREE_MAX", 0.12),
+            secure_xy=_f("OBSERVER_SECURE_XY", 0.045),
+            regrasp_max_attempts=int(_f("OBSERVER_REGRASP_MAX_ATTEMPTS", 0)),
+        )
         self.bridge_url = bridge_url.rstrip("/")
         self._lock = threading.Lock()
         self._mj = mj
@@ -126,7 +143,9 @@ class ObserverService:
         print(
             f"[observer-sidecar] ready | backbone={self._observer.backbone_id} device={device} "
             f"base_pos={np.round(base_pos, 3).tolist()} pocket={np.round(pocket_world, 3).tolist()} "
-            f"bridge={self.bridge_url}",
+            f"bridge={self.bridge_url} | cfg servo_gain={self._cfg.servo_gain} "
+            f"max_step={self._cfg.servo_max_step} agree={self._cfg.agree_max} "
+            f"grasp_gate={self._cfg.grasp_gate_xy} regrasp_attempts={self._cfg.regrasp_max_attempts}",
             flush=True,
         )
 
@@ -150,6 +169,7 @@ class ObserverService:
                 base_pos=self._base_pos, base_mat=self._base_mat,
                 pocket_world=self._pocket_world,
                 perception=self._observer, verifier=self._classifier,
+                config=self._cfg,
             )
             ag.reset()
             if len(self._agents) > 8:      # bound memory across stale sessions
