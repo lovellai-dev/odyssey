@@ -18,10 +18,13 @@
 #   4. closed-loop eval N=20 -> record the number in dagger_results.jsonl
 # Repeat ITERS times, each rolling out the previous DAgger checkpoint.
 #
-# GPU COORDINATION with the parallel v4 pipeline: DAgger does NO GPU-heavy work
-# until v4 reaches a terminal state (PIPELINE DONE/FAILED in v4_pipeline.log),
-# and every launch_finetune is additionally gated on nvidia-smi being free +
-# no other launch_finetune running — so it never fights v4 for the H100. DAgger
+# GPU COORDINATION with the parallel v4 pipeline: v4's long phase is CPU-bound
+# data-gen (MuJoCo + EGL), during which the H100 is essentially free, so DAgger
+# starts IMMEDIATELY and races to finish inside that window (its ~6-9h run
+# typically completes before v4's ~2h train even begins). It never fully waits on
+# v4; instead every launch_finetune is gated on nvidia-smi being free (>=55 GB)
+# AND no other launch_finetune running — so if v4's train happens to start during
+# DAgger's last iteration, DAgger's own next fine-tune simply waits it out. DAgger
 # uses its own ZMQ port + tmux session (dagger_server) so it never touches v4's
 # groot_server/groot_bridge.
 #
@@ -54,7 +57,6 @@ FINAL=/home/ubuntu/eval_result_dagger.json
 EVAL_VENV=/home/ubuntu/odyssey-eval-venv/bin/python
 GROOT=/home/ubuntu/Isaac-GR00T
 GROOT_PY=$GROOT/.venv/bin/python
-V4LOG=/home/ubuntu/v4_pipeline.log
 
 log(){ echo "=== [dagger] $* $(date -u +%FT%TZ) ==="; }
 fail(){ echo "=== [dagger] PIPELINE FAILED: $1 (rc=${2:-?}) $(date -u +%FT%TZ) ==="; echo "PIPELINE FAILED"; exit 1; }
@@ -64,22 +66,19 @@ mkdir -p "$WORK"
 log "START (DAgger: ITERS=$ITERS N_ROLLOUT=$N_ROLLOUT TRAIN_STEPS=$TRAIN_STEPS port=$DPORT)"
 
 # --- GPU coordination -------------------------------------------------------
-wait_for_v4(){
-  if [ ! -f "$V4LOG" ]; then log "no v4_pipeline.log found — assuming GPU free"; return 0; fi
-  if grep -qE "PIPELINE DONE|PIPELINE FAILED" "$V4LOG"; then
-    log "v4 already terminal: $(grep -oE 'PIPELINE DONE|PIPELINE FAILED' "$V4LOG" | tail -1)"; return 0
-  fi
-  log "v4 pipeline still running — DAgger waits for it to finish (not fighting for the GPU)"
-  while ! grep -qE "PIPELINE DONE|PIPELINE FAILED" "$V4LOG"; do sleep 120; done
-  log "v4 pipeline terminal: $(grep -oE 'PIPELINE DONE|PIPELINE FAILED' "$V4LOG" | tail -1)"
-}
-
+# No outer wait on v4: v4's long phase is CPU-bound data-gen (H100 free), so
+# DAgger starts now. The per-fine-tune gate below is the only GPU coordination —
+# it blocks a DAgger train only if the GPU is genuinely busy (a foreign
+# launch_finetune running or <55 GB free), covering the edge case where v4's own
+# train starts during DAgger's final iteration.
 wait_for_gpu(){
   local need=$1 ft free
   while true; do
-    ft=$(pgrep -fc "launch_finetune" 2>/dev/null || echo 0)
-    free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1 | tr -d ' ')
-    if [ "${ft:-0}" -eq 0 ] && [ "${free:-0}" -ge "$need" ]; then return 0; fi
+    # pgrep -c prints "0" AND exits 1 when nothing matches, so capture without
+    # `|| echo` (which would append a second line) and collapse to one integer.
+    ft=$(pgrep -fc "launch_finetune" 2>/dev/null | head -1); ft=${ft:-0}
+    free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1 | tr -d ' '); free=${free:-0}
+    if [ "$ft" -eq 0 ] && [ "$free" -ge "$need" ]; then return 0; fi
     log "GPU busy (foreign launch_finetune=$ft free=${free}MB need=${need}MB) — wait 60s"
     sleep 60
   done
@@ -126,10 +125,7 @@ run_train(){  # $1=dataset  $2=output-ckpt  $3=global-batch
     --max-steps "$TRAIN_STEPS" --save-steps "$SAVE_STEPS" --dataloader-num-workers 8
 }
 
-# --- 0. Yield the GPU to v4 until it is done --------------------------------
-wait_for_v4
-
-# --- DAgger iterations ------------------------------------------------------
+# --- DAgger iterations (start immediately; v4 data-gen leaves the H100 free) -
 CUR_CKPT="$BASE_CKPT"
 AGG_PREV="$BASE_DS"
 BEST_RATE=-1; BEST_ITER=0
