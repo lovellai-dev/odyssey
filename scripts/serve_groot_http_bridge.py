@@ -35,12 +35,49 @@ import base64
 import io
 import json
 import sys
+import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
 
 DEFAULT_INSTRUCTION = "pick up the vial and place it in the rack"
+
+
+class SafeClient:
+    """Thread-safe, self-healing wrapper around the GR00T ZMQ ``PolicyClient``.
+
+    ``ThreadingHTTPServer`` handles each browser request on its own thread, but a
+    ZMQ ``REQ`` socket is **not** thread-safe and demands strict send→recv
+    alternation. Concurrent access — or a transaction interrupted by a client
+    disconnect / page reload mid-``get_action`` — leaves the socket wedged
+    (``zmq.error.ZMQError: Operation cannot be accomplished in current state``),
+    after which every later query fails and the browser sees ``Failed to fetch``.
+
+    This serialises all socket use behind a lock (so requests never overlap) and,
+    if a call still raises, recreates the client (a fresh REQ socket) and retries
+    once — so one bad request can no longer take the whole bridge down.
+    """
+
+    def __init__(self, factory):
+        self._factory = factory
+        self._lock = threading.Lock()
+        self._client = factory()
+
+    def ping(self):
+        with self._lock:
+            return self._client.ping()
+
+    def get_action(self, obs):
+        with self._lock:
+            try:
+                return self._client.get_action(obs)
+            except Exception:  # noqa: BLE001 — socket may be wedged; heal and retry once
+                traceback.print_exc()
+                print("[bridge] get_action failed — reconnecting ZMQ client and retrying once",
+                      flush=True)
+                self._client = self._factory()
+                return self._client.get_action(obs)
 
 
 def make_handler(client, instruction_default: str):
@@ -141,7 +178,10 @@ def main() -> int:
     sys.path.insert(0, args.isaac_gr00t)
     from gr00t.policy.server_client import PolicyClient
 
-    client = PolicyClient(host=args.zmq_host, port=args.zmq_port, timeout_ms=args.timeout_ms)
+    def _factory():
+        return PolicyClient(host=args.zmq_host, port=args.zmq_port, timeout_ms=args.timeout_ms)
+
+    client = SafeClient(_factory)
     print(f"[bridge] ping GR00T {args.zmq_host}:{args.zmq_port} -> {client.ping()}", flush=True)
 
     handler = make_handler(client, args.instruction)
