@@ -1,0 +1,16 @@
+# Generated artifacts from the browser-frame data-gen / eval harness (never commit).
+out_full/
+out_smoke/
+browser_capture_out/
+raw_all/
+dataset_browser/
+dataset_browser_full/
+percep_browser/
+percep_weights_browser/
+eval_baseline/
+eval_new/
+eval_new_observer/
+eval_out/
+eval_validate*/
+plans*.json
+*.log
