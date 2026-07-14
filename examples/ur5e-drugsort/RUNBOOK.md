@@ -94,6 +94,69 @@ PY
 
 ---
 
+## Step 1b — Browser-frame (Three.js) capture — closing the render gap
+
+Step 1 renders with MuJoCo's `Renderer`, but the policy **deploys** on the Lovell
+AI Robot Playground's **Three.js** renderer. That render gap degrades both GR00T
+(≈2/20 headless → ≈0 in-browser) and the Observer (2.5 cm → 3.5–5.5 cm). To retrain
+on the deployment appearance we first capture training frames from the Playground's
+*real* renderer. The harness lives in `browser_capture/` and reuses the SAME adaptive
+IK expert + LeRobot writer as Step 1 — only the *pixels* change.
+
+Three stages (headless Chrome; needs a running Playground server + `puppeteer-core`
++ a Chrome/Chromium, plus `MUJOCO_GL=egl` for the IK solve):
+
+```bash
+cd examples/ur5e-drugsort/browser_capture
+
+# 1) Precompute the per-episode adaptive-IK expert plans (Python mujoco; no GPU).
+#    Randomizes the vial + solves DLS-IK exactly as scripts/gen_ur5e_drugsort_demos.py,
+#    emitting the vial qpos + 10 adaptive joint-target waypoints to plans.json.
+MUJOCO_GL=egl python precompute_plans.py --num-episodes 5 --seed 0 --out plans.json
+
+# 2) Replay the expert IN THE BROWSER, capturing the exterior+wrist frames rendered
+#    by the Playground's DEPLOYMENT sensor path (groot-pilot.js makeCapture -> the same
+#    THREE.WebGLRenderer + scene the served GR00T policy receives), + proprio + expert
+#    action + ground-truth vial/nest pose. SAFE: own Chrome, unique --user-data-dir,
+#    PID captured + cleaned up by PID; read-only page loads (never touches the /api bridge).
+PLANS=plans.json OUT=./out PORT=8021 PUPPETEER_CORE=/path/to/puppeteer-core \
+    node browser_harness.js          # writes out/raw/epNNN/{exterior,wrist}/*.png + meta.json
+
+# 3) Assemble into the SAME GR00T LeRobot v2.1 schema as Step 1 (LeRobotDatasetWriter +
+#    ur5e_drugsort.embodiment, unchanged) + a per-frame GT-pose sidecar (meta/gt/) for
+#    the Observer's grasp-target labels.
+python assemble_lerobot.py --raw ./out/raw --out ./dataset_browser
+
+# 4) (optional) Confirm it loads in the UPSTREAM GR00T loader (Isaac-GR00T model venv):
+env -u PYTHONPATH HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    "$ISAAC_GR00T_REPO_PATH/.venv/bin/python" validate_groot_loader.py --dataset ./dataset_browser
+```
+
+The resulting `dataset_browser/` is byte-identical in layout to the Step-1 dataset
+(same `meta/{info,modality,stats}.json`, same `observation.images.exterior` /
+`observation.images.wrist` video keys) — it drops straight into `launch_finetune`
+and the Observer training with no code change; only the frames are Three.js instead
+of MuJoCo. GT poses are written to `meta/gt/episode_XXXXXX.json` (a sidecar OUTSIDE
+the loader-read files, so the core dataset still loads unchanged).
+
+**Why browser-drive (not a standalone headless-Three.js renderer):** fidelity. The
+frames must match what the policy deploys on, so we render the Playground's own
+`window.viewer.scene` through its own `window.viewer.renderer` with its PBR
+"cell-upgrade" materials (glass vials, polished metal, wood worktop). A separate
+Three scene would risk material/lighting drift from the real deploy target.
+
+**Smoke-set result (5 episodes, verified):** 5/5 grasp+place SUCCESS in-browser
+(lift ≈11.4 cm, place <1 cm from the nest), ~919 frames/episode, and the dataset
+built 18 shards in the upstream GR00T loader. **Throughput ≈96 s/episode** (single
+headless tab), i.e. **≈8 h wall-clock for a full ~300-episode dataset**. The cost is
+dominated by physics stepping + the two 256×256 `readRenderTargetPixels` captures per
+20 Hz step; episodes run long because the browser arm often rides the FSM's
+convergence dwell. Levers if 8 h is too slow: run several headless tabs/Chrome
+instances in parallel (near-linear speedup; each is independent), tighten the FSM
+convergence window, or lower the capture rate.
+
+---
+
 ## Step 2 — Fine-tune on the GPU (H100 VM)
 
 **Preconditions.** A CUDA-12.x GPU (**verified target: the H100 VM,
