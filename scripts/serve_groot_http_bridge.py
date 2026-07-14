@@ -5,9 +5,15 @@ The GR00T policy server (``gr00t.eval.run_gr00t_server``) speaks ZMQ/msgpack,
 which a browser cannot. This tiny stdlib HTTP server sits next to it on the GPU
 host and translates one browser request into one GR00T query:
 
-    POST /get_action   {image_b64: <png/jpeg dataURL or base64>, state: [7],
+    POST /get_action   {image_b64: <exterior png/jpeg dataURL or base64>,
+                        image_b64_wrist: <wrist view, iteration 3>, state: [7],
                         instruction?: str}
       -> {q: [6] rad, grip: 0..1, chunk_q: [[6]...], chunk_grip: [...]}
+
+The iteration-3 checkpoint is trained on TWO video keys (``exterior`` overhead +
+``wrist`` eye-in-hand), so the browser must send both frames; ``image_b64_wrist``
+is required for that checkpoint (a single-view request would be missing the key
+the policy expects).
 
 It returns the whole 16-step action chunk so the caller can replay N steps per
 query (the closed-loop eval found N=4 best for this checkpoint). The Playground
@@ -71,17 +77,30 @@ def make_handler(client, instruction_default: str):
             try:
                 from PIL import Image
 
+                def _decode(b64: str) -> np.ndarray:
+                    raw = str(b64).split(",")[-1]  # tolerate data: URL prefix
+                    im = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    if im.size != (256, 256):
+                        im = im.resize((256, 256))
+                    return np.asarray(im, dtype=np.uint8)
+
                 n = int(self.headers.get("content-length", 0) or 0)
                 req = json.loads(self.rfile.read(n) or b"{}")
-                raw = str(req["image_b64"]).split(",")[-1]  # tolerate data: URL prefix
-                img = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
-                if img.size != (256, 256):
-                    img = img.resize((256, 256))
-                frame = np.asarray(img, dtype=np.uint8)
+                # Video keys: exterior (required) + wrist (iteration-3 eye-in-hand).
+                # Accept an explicit ``images`` dict or the flat image_b64 fields.
+                images = req.get("images") if isinstance(req.get("images"), dict) else {}
+                video: dict = {}
+                ext = images.get("exterior") or req.get("image_b64")
+                if ext is None:
+                    raise KeyError("image_b64 (exterior view) is required")
+                video["exterior"] = _decode(ext)[None, None]                       # (1,1,256,256,3)
+                wrist = images.get("wrist") or req.get("image_b64_wrist")
+                if wrist is not None:
+                    video["wrist"] = _decode(wrist)[None, None]
                 state = np.asarray(req["state"], dtype=np.float32).reshape(-1)[:7]
                 instr = req.get("instruction") or instruction_default
                 obs = {
-                    "video": {"exterior": frame[None, None]},                       # (1,1,256,256,3)
+                    "video": video,
                     "state": {
                         "single_arm": state[:6][None, None],                        # (1,1,6)
                         "gripper": state[6:7][None, None],                          # (1,1,1)

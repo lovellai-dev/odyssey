@@ -259,7 +259,9 @@ def build_adaptive_phases(
             info = ik.solve(tgt, ph.q)
             solves[ph.name] = info
             q = info.q
-        new_phases.append(Waypoint(name=ph.name, q=q, grip=ph.grip, hold=ph.hold))
+        new_phases.append(
+            Waypoint(name=ph.name, q=q, grip=ph.grip, hold=ph.hold, move_steps=ph.move_steps)
+        )
         prev_q = q
 
     approach_q = solves["approach"].q if "approach" in solves else prev_q

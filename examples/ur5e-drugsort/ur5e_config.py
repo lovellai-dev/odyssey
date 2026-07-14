@@ -12,7 +12,7 @@
 # contract (setTargets(q, grip) + TrueSensorRenderer primary view):
 #   * state  : single_arm (6 UR5e joint positions) + gripper (closure in [0,1])
 #   * action : single_arm (6 joint-position targets) + gripper (closure in [0,1])
-#   * video  : exterior (the Playground primary camera-mount view, 256x256)
+#   * video  : exterior + wrist (two Playground camera-mount views, 256x256 each)
 #   * language: annotation.human.task_description
 #
 # This is the odyssey source-of-truth copy. `launch_finetune` importlib-loads
@@ -35,7 +35,10 @@ ur5e_drugsort_config = {
     # Video: current frame only; keys must match "video" entries in meta/modality.json.
     "video": ModalityConfig(
         delta_indices=[0],
-        modality_keys=["exterior"],  # single Playground primary camera-mount view
+        modality_keys=[
+            "exterior",  # fixed workcell-overview mount (MJCF room camera)
+            "wrist",     # eye-in-hand mount (iteration 3: close-range grasp depth cue)
+        ],
     ),
     # State: current proprioceptive reading; keys must match "state" entries.
     "state": ModalityConfig(

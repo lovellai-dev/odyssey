@@ -25,9 +25,11 @@ def test_modality_json_slices_cover_the_vector() -> None:
 
 def test_modality_video_keys_map_to_observation_images() -> None:
     m = emb.modality_json()
-    # Single `exterior` view = the Playground primary camera-mount (capturePrimary).
-    assert set(m["video"]) == {"exterior"}
+    # Two views = the Playground camera-mounts published each tick: the fixed
+    # `exterior` overview and the `wrist` eye-in-hand (iteration 3 grasp depth).
+    assert set(m["video"]) == {"exterior", "wrist"}
     assert m["video"]["exterior"]["original_key"] == "observation.images.exterior"
+    assert m["video"]["wrist"]["original_key"] == "observation.images.wrist"
     assert m["annotation"]["human.task_description"]["original_key"] == "task_index"
 
 
@@ -36,7 +38,7 @@ def test_features_shapes_and_names() -> None:
     assert feats["action"]["shape"] == [7]
     assert feats["observation.state"]["shape"] == [7]
     assert feats["action"]["names"] == list(emb.FEATURE_NAMES)
-    for key in ("observation.images.exterior",):
+    for key in ("observation.images.exterior", "observation.images.wrist"):
         assert feats[key]["dtype"] == "video"
         assert feats[key]["shape"] == [256, 256, 3]
         assert feats[key]["info"]["video.fps"] == 20
@@ -51,12 +53,13 @@ def test_info_json_top_level_fields() -> None:
     assert info["robot_type"] == "ur5e_robotiq_2f85"
     assert info["total_episodes"] == 3
     assert info["total_frames"] == 1500
-    assert info["total_videos"] == 3  # 3 episodes x 1 camera (exterior)
+    assert info["total_videos"] == 6  # 3 episodes x 2 cameras (exterior + wrist)
     assert info["total_chunks"] == 1
     assert info["fps"] == 20
     assert info["splits"] == {"train": "0:3"}
     assert "episode_{episode_index:06d}.parquet" in info["data_path"]
     assert set(info["features"]) >= {
-        "action", "observation.state", "observation.images.exterior",
+        "action", "observation.state",
+        "observation.images.exterior", "observation.images.wrist",
         "timestamp", "frame_index", "episode_index", "index", "task_index",
     }

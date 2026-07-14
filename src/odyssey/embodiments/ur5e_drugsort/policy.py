@@ -49,6 +49,19 @@ CONV_TOL: float = 6e-3
 CONV_MAX: int = 2200
 SETTLE_STEPS: int = 180
 
+# --- Iteration-3 grasp densification -----------------------------------------
+# The iteration-2 policy fired the gripper but closed ~7 cm short on the final
+# descent (closed-loop eval 0/20, every episode lifted=False). Two levers add
+# demonstration frames exactly where the policy was under-resolved:
+#   * DESCEND_MOVE_STEPS slows the final ``descend`` interpolation (vs the
+#     default MOVE_STEPS) so ~2x more frames are recorded lowering onto the vial.
+#     The ease-in/out profile naturally clusters the extra frames near the bottom
+#     of the descent — the exact stretch the policy stopped short of.
+#   * CLOSE_DWELL lengthens the closed-gripper dwell before the lift so the
+#     Robotiq fully seats on the vial and more grasp-hold frames are recorded.
+DESCEND_MOVE_STEPS: int = 1600
+CLOSE_DWELL: int = 600
+
 
 @dataclass(frozen=True)
 class Waypoint:
@@ -60,6 +73,10 @@ class Waypoint:
     # ``"conv"`` -> advance once the arm converges; ``int`` -> dwell that many
     # physics steps after the interpolated move completes.
     hold: str | int
+    # Optional per-phase interpolation length (physics steps); ``None`` falls
+    # back to the controller's global ``move_steps``. Set on ``descend`` to slow
+    # the final approach so the grasp region is densely sampled (iteration 3).
+    move_steps: int | None = None
 
 
 # The precomputed waypoint solutions (radians) + gripper ctrl, verbatim from
@@ -68,8 +85,9 @@ class Waypoint:
 PHASES: tuple[Waypoint, ...] = (
     Waypoint("home", (2.850, -1.670, 1.580, -1.413, -1.590, -0.291), GRIP_OPEN, "conv"),
     Waypoint("approach", (3.174, -1.617, 1.582, -1.466, -1.567, 0.032), GRIP_OPEN, "conv"),
-    Waypoint("descend", (3.176, -1.572, 1.871, -1.798, -1.568, 0.034), GRIP_OPEN, "conv"),
-    Waypoint("close", (3.176, -1.572, 1.871, -1.798, -1.568, 0.034), GRIP_CLOSE, 320),
+    Waypoint("descend", (3.176, -1.572, 1.871, -1.798, -1.568, 0.034), GRIP_OPEN, "conv",
+             move_steps=DESCEND_MOVE_STEPS),
+    Waypoint("close", (3.176, -1.572, 1.871, -1.798, -1.568, 0.034), GRIP_CLOSE, CLOSE_DWELL),
     Waypoint("lift", (3.175, -1.616, 1.581, -1.466, -1.567, 0.033), GRIP_CLOSE, "conv"),
     Waypoint("transport", (2.436, -1.729, 1.686, -1.475, -1.617, -0.704), GRIP_CLOSE, "conv"),
     Waypoint("lower", (2.435, -1.683, 1.992, -1.824, -1.616, -0.705), GRIP_CLOSE, 140),
@@ -156,7 +174,9 @@ class PickPlaceController:
         ph = self.phases[self._phase]
         # Same target as prev? (a pure grip change) -> no interpolation.
         same = all(abs(x - p) < 1e-3 for x, p in zip(ph.q, self._prev, strict=True))
-        move_dur = 0 if same else self.move_steps
+        # Per-phase move length overrides the global default (slower descend).
+        phase_move = ph.move_steps if ph.move_steps is not None else self.move_steps
+        move_dur = 0 if same else phase_move
 
         if self._s < move_dur:
             frac = ease(self._s / move_dur)

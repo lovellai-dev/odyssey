@@ -13,20 +13,23 @@ Layout
   positions (rad) + normalised gripper closure in ``[0, 1]`` (0 open, 1 closed).
 * **action** (7-D ``action``): the 6 arm joint-position targets (rad) + the
   commanded gripper closure in ``[0, 1]``.
-* **video**: a single ``exterior`` view — the fixed workcell overview
-  (MJCF ``room`` camera), stored as ``observation.images.exterior``.
+* **video**: TWO views — ``exterior`` (the fixed workcell overview, MJCF
+  ``room`` camera) and ``wrist`` (the eye-in-hand camera rigidly mounted on
+  ``wrist_3_link``, re-aimed to look down the tool axis at the gripper+vial),
+  stored as ``observation.images.exterior`` / ``observation.images.wrist``.
 * **language**: a single task-description annotation resolved from
   ``task_index``.
 
 The camera contract is chosen to match the **Lovell AI Robot Playground** deploy
-target, not Isaac. The Playground's ``TrueSensorRenderer.capturePrimary()`` is
-the single image authority the closed-loop inference client sends each tick; it
-returns the ``exterior`` primary mount view at the mount's ``render_resolution``
-(default 256x256). Training on any view the inference loop does not publish
-(e.g. a wrist camera the browser bridge doesn't emit as primary) would break
-transfer, so we record exactly the one primary ``exterior`` view. Likewise the
-action space mirrors the Playground ``setTargets(q, grip)`` bridge: 6 arm joint
-targets (rad) + gripper closure in ``[0, 1]``.
+target, not Isaac. The Playground's ``TrueSensorRenderer`` publishes exactly the
+mounts recorded here each tick. Iteration 2 trained on the single ``exterior``
+overhead view; its closed-loop eval scored 0/20 — the arm reliably approached and
+fired the gripper but closed ~7 cm short on the final descent, a depth-precision
+limit of a single overhead camera. Iteration 3 adds the ``wrist`` eye-in-hand
+view as a second video key to give the policy a close-range depth cue at the
+grasp, so both the training render and the Playground bridge must publish it.
+The action space mirrors the Playground ``setTargets(q, grip)`` bridge: 6 arm
+joint targets (rad) + gripper closure in ``[0, 1]``.
 
 The state/action share feature names (joint ``.pos`` + ``gripper.pos``), the
 same convention the upstream SO-100 demo set uses.
@@ -59,13 +62,16 @@ ACTION_DIM = ARM_DIM + GRIPPER_DIM  # 7
 FEATURE_NAMES: tuple[str, ...] = (*(f"{j}.pos" for j in ARM_JOINT_NAMES), "gripper.pos")
 
 # --- Cameras / video keys ---------------------------------------------------
-# LeRobot video key  ->  MJCF camera name. A single ``exterior`` view maps to the
-# fixed workcell-overview ``room`` camera, matching the Playground's primary
-# (``exterior``) TrueSensorRenderer mount — the one image the inference loop
-# publishes each tick. Add a second entry here ONLY if the Playground embodiment
-# also publishes that mount as an observation the inference client sends.
+# LeRobot video key  ->  MJCF camera name. ``exterior`` is the fixed
+# workcell-overview ``room`` camera; ``wrist`` is the eye-in-hand camera on
+# ``wrist_3_link`` (re-aimed down the tool axis so it frames the gripper+vial).
+# Both are published by the Playground's TrueSensorRenderer each tick, so the
+# closed-loop inference client sends both. Order matters only for readability;
+# the modality/info builders iterate this mapping. Add a key here ONLY if the
+# Playground embodiment also publishes that mount as an observation.
 VIDEO_KEY_TO_CAMERA: dict[str, str] = {
     "exterior": "room",
+    "wrist": "wrist",
 }
 # LeRobot video key  ->  parquet/video "original_key" used in modality.json.
 VIDEO_ORIGINAL_KEYS: dict[str, str] = {

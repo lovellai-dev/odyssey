@@ -70,7 +70,10 @@ from gen_ur5e_drugsort_demos import (  # noqa: E402
     _free_arm_collision,
 )
 
-EXTERIOR_CAMERA = emb.VIDEO_KEY_TO_CAMERA["exterior"]  # MJCF "room" camera
+# All video keys the fine-tune consumes, mapped to their MJCF camera names. The
+# closed-loop obs must publish every key the training set declared (iteration 3:
+# exterior overhead + wrist eye-in-hand), rendered from the SAME MJCF cameras.
+VIDEO_KEY_TO_CAMERA = dict(emb.VIDEO_KEY_TO_CAMERA)
 
 
 class GrootPolicyClient:
@@ -124,11 +127,15 @@ class GrootPolicyClient:
         return action
 
 
-def build_obs(arm_qpos6: np.ndarray, grip_norm: float, frame_rgb: np.ndarray,
+def build_obs(arm_qpos6: np.ndarray, grip_norm: float, frames: dict[str, np.ndarray],
               instruction: str) -> dict:
-    """Assemble the nested GR00T observation for one tick (B=1, T=1)."""
+    """Assemble the nested GR00T observation for one tick (B=1, T=1).
+
+    ``frames`` maps each video key (``exterior``, ``wrist``) to its HxWx3 uint8
+    frame; every key the fine-tune declared must be present.
+    """
     return {
-        "video": {"exterior": frame_rgb[None, None].astype(np.uint8)},          # (1,1,H,W,3)
+        "video": {k: f[None, None].astype(np.uint8) for k, f in frames.items()},  # (1,1,H,W,3)
         "state": {
             "single_arm": arm_qpos6[None, None].astype(np.float32),             # (1,1,6)
             "gripper": np.asarray([[[grip_norm]]], dtype=np.float32),           # (1,1,1)
@@ -187,12 +194,16 @@ def run_episode(mj, model, data, renderer, idx, client, *, fps, area_x, area_y,
     while tick < max_ticks:
         measured = read_arm()
         grip_meas = float(np.clip(data.qpos[grip_qadr] / GRIP_DRIVER_RANGE, 0.0, 1.0))
-        renderer.update_scene(data, camera=EXTERIOR_CAMERA)
-        frame = renderer.render().copy()
+        # Render every video key the fine-tune consumes from its MJCF camera.
+        view: dict[str, np.ndarray] = {}
+        for vkey, cam in VIDEO_KEY_TO_CAMERA.items():
+            renderer.update_scene(data, camera=cam)
+            view[vkey] = renderer.render().copy()
         if save_frames:
-            frames.append(frame)
+            # Side-by-side (exterior | wrist) so the render shows the policy's view.
+            frames.append(np.concatenate([view[k] for k in VIDEO_KEY_TO_CAMERA], axis=1))
 
-        obs = build_obs(measured, grip_meas, frame, instruction)
+        obs = build_obs(measured, grip_meas, view, instruction)
         t0 = time.time()
         action = client.get_action(obs)
         query_t += time.time() - t0
