@@ -44,11 +44,24 @@ from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 logger = logging.getLogger(__name__)
 
 
-def _make_libero_env(suite_name: str, task_id: int, cfg: dict[str, Any]) -> Any:
+def _make_libero_env(
+    suite_name: str, task_id: int, cfg: dict[str, Any], *, horizon: int
+) -> Any:
     """Create a LIBERO offscreen env for ``task_id`` in ``suite_name``.
 
     Returns ``(env, task, init_states)``. Mirrors the env construction in
     OpenVLA's ``run_libero_eval.py``.
+
+    ``horizon`` sets robosuite's internal episode limit. It MUST cover the full
+    rollout (warmup + ``max_steps_per_episode``): robosuite flips its internal
+    ``self.done`` when ``timestep >= horizon`` and then raises
+    ``"executing action in terminated episode"`` on the next ``step()``. LIBERO
+    overrides the *returned* ``done`` to be task-success only, so the rollout loop
+    never sees the horizon termination — if the env horizon is smaller than the
+    step budget the episode crashes instead of ending cleanly. OpenVLA's reference
+    eval sidesteps this by capping per-suite ``max_steps`` (220-520) below
+    robosuite's default ``horizon=1000``; we raise the horizon instead so longer
+    rollouts stay safe.
     """
     try:
         from libero.libero import benchmark, get_libero_path
@@ -85,6 +98,7 @@ def _make_libero_env(suite_name: str, task_id: int, cfg: dict[str, Any]) -> Any:
         bddl_file_name=bddl_file,
         camera_heights=height,
         camera_widths=width,
+        horizon=horizon,
     )
     return env, task, init_states
 
@@ -176,7 +190,14 @@ class LiberoRunner(Runner):
             step="env_construct",
             step_label=f"suite={suite_name} task_id={task_id}",
         )
-        env, task, init_states = _make_libero_env(suite_name, task_id, cfg)
+        # robosuite's internal horizon must exceed the full per-episode step
+        # budget (warmup + max_steps) or it terminates mid-rollout and the next
+        # env.step() raises "executing action in terminated episode". Add a small
+        # margin on top.
+        env_horizon = warmup_steps + max_steps + 100
+        env, task, init_states = _make_libero_env(
+            suite_name, task_id, cfg, horizon=env_horizon
+        )
         instruction = str(getattr(task, "language", None) or cfg.get("task_instruction") or "complete the task")
         logger.info("LIBERO task %d instruction: %r", task_id, instruction)
 
