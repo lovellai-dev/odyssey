@@ -42,6 +42,10 @@ tasks:
   - name: eval-libero-object
     kind: evaluation
     evaluation_type: libero
+    # Human-readable statement of the task. The authoritative instruction is the
+    # benchmark's own task.language (resolved at runtime from task_id); this is
+    # documentation + a cross-check target for config.task_instruction below.
+    description: Pick-and-place of the task_id=0 object into the basket (LIBERO object suite).
     benchmark_name: libero_object        # LIBERO task suite (spatial/object/goal/libero_10)
     num_episodes: 10
     config:
@@ -49,3 +53,10 @@ tasks:
       unnorm_key: libero_object          # MUST match the checkpoint/suite
       task_id: 0                         # which task within the suite (0..9)
       capture_video: true                # one MP4 per episode
+      # OPTIONAL alignment contract: declare the instruction you believe task_id
+      # carries. The runner cross-checks it against the benchmark's task.language
+      # and WARNS on drift (set strict_instruction: true to hard-fail). Leave it
+      # commented until you know the exact string — grab it from the first run's
+      # log line: "LIBERO task 0 instruction: '...'", then paste it here verbatim.
+      # task_instruction: "pick up the ... and place it in the basket"
+      # strict_instruction: false

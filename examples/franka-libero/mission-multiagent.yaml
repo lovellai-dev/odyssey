@@ -52,6 +52,11 @@ tasks:
   - name: eval-libero-object
     kind: evaluation
     evaluation_type: libero
+    # Human-readable statement of the task. The authoritative instruction is the
+    # benchmark's own task.language — and here it's ALSO what the Gemma SPECIALIST
+    # decomposes into phases, so declaring/verifying it keeps the plan aligned with
+    # exactly what gets scored.
+    description: Pick-and-place of the task_id=0 object into the basket (LIBERO object suite).
     benchmark_name: libero_object
     num_episodes: 10
     config:
@@ -60,3 +65,8 @@ tasks:
       task_id: 0
       steps_per_phase: 50          # PlannedEvalRuntime: advance phase every N steps
       capture_video: true
+      # OPTIONAL alignment contract (see mission.yaml). The declared instruction is
+      # cross-checked against the benchmark's task.language; the SPECIALIST plans
+      # from that same authoritative instruction. Fill from the first run's log.
+      # task_instruction: "pick up the ... and place it in the basket"
+      # strict_instruction: false

@@ -113,6 +113,47 @@ def _libero_image(obs: Any, image_key: str) -> Any:
     return img[::-1, ::-1]
 
 
+def _resolve_libero_instruction(task: Any, cfg: dict[str, Any]) -> str:
+    """Resolve the natural-language instruction, cross-checking the yaml against
+    the benchmark's ground truth.
+
+    LIBERO is the well-aligned case: each ``task_id`` ships its own instruction
+    (``task.language``) *and* the BDDL goal predicate that decides ``done`` — the
+    text the SPECIALIST decomposes is exactly what is scored. This helper makes
+    that alignment a **contract** rather than an implicit assumption:
+
+    * ``task.language`` (the benchmark's own instruction) is authoritative and is
+      always what conditions the pilot — it is what success is measured against.
+    * The mission may *declare* ``config.task_instruction`` as the instruction it
+      believes the ``(suite, task_id)`` pair carries. If the declared string drifts
+      from ``task.language`` we surface it instead of silently ignoring it (the old
+      ``task.language or cfg.task_instruction`` precedence dropped the declared value
+      on the floor whenever the benchmark had one). Set ``config.strict_instruction:
+      true`` to hard-fail on drift; the default warns and proceeds with the
+      benchmark's instruction.
+    * If the benchmark exposes no instruction, fall back to the declared one, then
+      to ``"complete the task"`` (mirrors ``robosuite._resolve_task_instruction``).
+    """
+    ground_truth = getattr(task, "language", None)
+    declared = cfg.get("task_instruction")
+
+    if ground_truth:
+        gt = str(ground_truth)
+        if declared and str(declared).strip() != gt.strip():
+            msg = (
+                "LIBERO instruction mismatch: mission declared task_instruction "
+                f"{str(declared)!r} but the benchmark task carries {gt!r}. The "
+                "benchmark instruction is authoritative (it defines the scored goal); "
+                "update the mission's config.task_instruction to match, or drop it."
+            )
+            if bool(cfg.get("strict_instruction", False)):
+                raise ValueError(msg)
+            logger.warning(msg)
+        return gt
+
+    return str(declared or "complete the task")
+
+
 def _libero_action(action: Any) -> Any:
     """Map an OpenVLA 7-DoF action to LIBERO's expected action.
 
@@ -198,7 +239,7 @@ class LiberoRunner(Runner):
         env, task, init_states = _make_libero_env(
             suite_name, task_id, cfg, horizon=env_horizon
         )
-        instruction = str(getattr(task, "language", None) or cfg.get("task_instruction") or "complete the task")
+        instruction = _resolve_libero_instruction(task, cfg)
         logger.info("LIBERO task %d instruction: %r", task_id, instruction)
 
         # Single-agent (OpenVLA policy) vs multi-agent (PlannedEvalRuntime + Gemma).
