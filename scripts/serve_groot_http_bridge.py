@@ -134,14 +134,23 @@ def make_handler(client, instruction_default: str):
                 wrist = images.get("wrist") or req.get("image_b64_wrist")
                 if wrist is not None:
                     video["wrist"] = _decode(wrist)[None, None]
-                state = np.asarray(req["state"], dtype=np.float32).reshape(-1)[:7]
+                state = np.asarray(req["state"], dtype=np.float32).reshape(-1)
                 instr = req.get("instruction") or instruction_default
+                state_dict = {
+                    "single_arm": state[:6][None, None],                            # (1,1,6)
+                    "gripper": state[6:7][None, None],                              # (1,1,1)
+                }
+                # Observer-conditioned checkpoint (roadmap Step 2): a 10-D state carries
+                # the 3D vial-cap grasp target (robot base frame) in slot 7:10 — supplied
+                # live by the Observer at deploy (see serve_observer_conditioning.py). Pass
+                # it through as the `grasp_target` modality key so the 10-D state encoder
+                # gets its target input. A legacy 7-D request simply omits the key, so this
+                # stays backward-compatible with the pre-Step-2 checkpoints.
+                if state.shape[0] >= 10:
+                    state_dict["grasp_target"] = state[7:10][None, None]            # (1,1,3)
                 obs = {
                     "video": video,
-                    "state": {
-                        "single_arm": state[:6][None, None],                        # (1,1,6)
-                        "gripper": state[6:7][None, None],                          # (1,1,1)
-                    },
+                    "state": state_dict,
                     "language": {"annotation.human.task_description": [[instr]]},
                 }
                 action, _info = client.get_action(obs)

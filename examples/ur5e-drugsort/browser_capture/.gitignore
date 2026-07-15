@@ -5,6 +5,7 @@ browser_capture_out/
 raw_all/
 dataset_browser/
 dataset_browser_full/
+dataset_browser_cond/
 percep_browser/
 percep_weights_browser/
 eval_baseline/

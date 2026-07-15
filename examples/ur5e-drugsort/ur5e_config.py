@@ -44,8 +44,17 @@ ur5e_drugsort_config = {
     "state": ModalityConfig(
         delta_indices=[0],
         modality_keys=[
-            "single_arm",  # 6 UR5e joint positions (rad)
-            "gripper",     # normalised Robotiq closure in [0, 1]
+            "single_arm",    # 6 UR5e joint positions (rad)
+            "gripper",       # normalised Robotiq closure in [0, 1]
+            # Observer-conditioned deploy (roadmap Step 2): the 3D vial-cap grasp
+            # target in the robot BASE frame (metres), slot 7:10 in meta/modality.json.
+            # In the dataset it is filled from the GT vial pose (see
+            # examples/ur5e-drugsort/browser_capture/augment_state_grasp_target.py);
+            # at deploy the sub-cm Observer supplies it live from the exterior+wrist
+            # frames. Giving GR00T the target as an EXPLICIT input removes the depth
+            # ambiguity that pinned the pixel-only browser pilot at 0/15 (it no longer
+            # has to infer descent depth from Three.js pixels).
+            "grasp_target",  # [cap_base_x, cap_base_y, cap_base_z]
         ],
     ),
     # Action: 16-step prediction horizon; one ActionConfig per modality key.
