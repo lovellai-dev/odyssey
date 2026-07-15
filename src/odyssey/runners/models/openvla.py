@@ -482,6 +482,27 @@ def _load_vla_model(model_ref: str) -> Any:
     return AutoModelForVision2Seq.from_pretrained(model_ref, **common)
 
 
+def _center_crop_image(image: Any, crop_scale: float = 0.9) -> Any:
+    """Center-crop to ``crop_scale`` of the frame, then resize back to the original size.
+
+    OpenVLA checkpoints fine-tuned with image augmentation (``image_aug=True`` — e.g. the
+    published ``openvla-7b-finetuned-libero-*``) were trained on a RandomResizedCrop, so
+    inference must apply the matching deterministic center crop (mirrors ``crop_and_resize``
+    in OpenVLA's ``run_libero_eval.py``). Skipping it widens the input FOV vs. training and
+    degrades spatial precision — the arm approaches the target but misses the grasp.
+    """
+    import math
+
+    from PIL import Image
+
+    w, h = image.size
+    side = math.sqrt(crop_scale)
+    cw, ch = round(w * side), round(h * side)
+    left, top = (w - cw) // 2, (h - ch) // 2
+    cropped = image.crop((left, top, left + cw, top + ch))
+    return cropped.resize((w, h), Image.Resampling.BILINEAR)
+
+
 def make_openvla_policy(
     checkpoint_path: Path,
     *,
@@ -520,6 +541,10 @@ def make_openvla_policy(
     )
     image_key = cfg.get("image_key", "agentview_image")
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    # OpenVLA checkpoints trained with image_aug expect a matching center crop at eval
+    # (e.g. the finetuned-libero-* checkpoints). Default on; disable via config.
+    center_crop = bool(cfg.get("center_crop", True))
+    crop_scale = float(cfg.get("crop_scale", 0.9))
 
     checkpoint_path = Path(checkpoint_path)
     is_lora = _is_lora_checkpoint(checkpoint_path)
@@ -573,6 +598,9 @@ def make_openvla_policy(
         if not isinstance(img_array, Image.Image):
             img_array = Image.fromarray(img_array.astype("uint8"), "RGB")
 
+        if center_crop:
+            img_array = _center_crop_image(img_array, crop_scale)
+
         # The HF-hosted OpenVLAForActionPrediction.predict_action() expects
         # pre-tokenized input_ids, not raw image+instruction.
         inputs = processor(task_instruction, img_array).to(device, dtype=torch.bfloat16)
@@ -613,6 +641,8 @@ class VLARuntime:
         *,
         unnorm_key: str = "bridge_orig",
         device: str | None = None,
+        center_crop: bool = True,
+        crop_scale: float = 0.9,
     ) -> None:
         try:
             import torch
@@ -632,6 +662,8 @@ class VLARuntime:
         self._checkpoint_path = Path(checkpoint_path)
         self._unnorm_key = unnorm_key
         self._device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._center_crop = center_crop
+        self._crop_scale = crop_scale
 
         is_lora = _is_lora_checkpoint(self._checkpoint_path)
 
@@ -673,6 +705,9 @@ class VLARuntime:
 
         if not isinstance(image, Image.Image):
             image = Image.fromarray(np.asarray(image, dtype=np.uint8), "RGB")
+
+        if self._center_crop:
+            image = _center_crop_image(image, self._crop_scale)
 
         # Pre-tokenize with processor, then pass input_ids to predict_action
         inputs = self._processor(instruction, image).to(
