@@ -64,6 +64,18 @@ class MockPlanner:
         return list(self._steps)
 
 
+class MockDetector:
+    """Completion detector stub — confirms done from the Nth poll onward."""
+
+    def __init__(self, done_after: int | None = None) -> None:
+        self._done_after = done_after
+        self.calls = 0
+
+    def check_done(self, instruction: str, image: object) -> bool:
+        self.calls += 1
+        return self._done_after is not None and self.calls >= self._done_after
+
+
 # ---------------------------------------------------------------------------
 # Mock runner that uses PlannedEvalRuntime for eval tasks
 # ---------------------------------------------------------------------------
@@ -355,3 +367,35 @@ async def test_mock_pilot_satisfies_protocol() -> None:
 
 async def test_mock_planner_satisfies_protocol() -> None:
     assert isinstance(MockPlanner(), PlannerRuntime)
+
+
+async def test_completion_gated_drains_phase_advance_telemetry() -> None:
+    """The runner's drain+emit pattern turns completion-gated advances into
+    phase_advance telemetry — the runtime is sync, the async loop emits."""
+    from odyssey.runners.agents.planned import PhaseStrategy
+
+    pilot = MockPilot()
+    planner = MockPlanner(["reach", "grasp"])
+    detector = MockDetector(done_after=1)  # confirms on its first poll
+    cfg = PhaseConfig(
+        strategy=PhaseStrategy.COMPLETION_GATED, check_every=2, max_steps_per_phase=50
+    )
+    runtime = PlannedEvalRuntime(pilot, planner, phase_config=cfg, detector=detector)
+    runtime.begin_episode("pick and place")
+
+    pub = CapturingPublisher()
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    # Mirror the runner step loop: get_action, then drain -> publish. Two steps
+    # is one poll cadence (check_every=2): off-cadence step 1, then step 2 polls
+    # the detector, which confirms -> exactly one completion advance.
+    for _ in range(2):
+        runtime.get_action(img)
+        for ev in runtime.drain_phase_events():
+            await pub.publish("task.progress", {"step": "phase_advance", **ev})
+
+    advances = [p for _, p in pub.events if p.get("step") == "phase_advance"]
+    assert len(advances) == 1
+    assert advances[0]["reason"] == "completion"
+    assert advances[0]["from"] == 0
+    assert advances[0]["to"] == 1
+    assert detector.calls == 1

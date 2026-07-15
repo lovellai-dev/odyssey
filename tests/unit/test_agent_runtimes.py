@@ -20,8 +20,13 @@ from odyssey.runners.agents.planned import (
     PlannedEvalRuntime,
     _PhaseState,
 )
-from odyssey.runners.agents.planner import LLMPlanner, _parse_plan
-from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGenerator
+from odyssey.runners.agents.planner import LLMPlanner, _parse_plan, _parse_yes_no
+from odyssey.runners.agents.runtime import (
+    CompletionDetector,
+    PilotRuntime,
+    PlannerRuntime,
+    TextGenerator,
+)
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -62,6 +67,40 @@ class FakePlanner:
         self.call_count += 1
         self.last_image = image
         return list(self._steps)
+
+
+class FakeDetector:
+    """Completion detector stub. Returns True from the Nth call onward.
+
+    ``done_after=None`` never confirms; records each (instruction, image) call.
+    """
+
+    def __init__(self, done_after: int | None = None) -> None:
+        self._done_after = done_after
+        self.calls: list[tuple[str, Any]] = []
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        self.calls.append((instruction, image))
+        return self._done_after is not None and len(self.calls) >= self._done_after
+
+
+class FakePlannerWithCheck(FakePlanner):
+    """A planner that also satisfies CompletionDetector (like RemotePlanner)."""
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        return False
+
+
+class FakeVisionGenerator:
+    """Multimodal TextGenerator stub — its generate() accepts an image."""
+
+    def __init__(self, response: str) -> None:
+        self._response = response
+        self.calls: list[tuple[list[dict[str, str]], Any]] = []
+
+    def generate(self, messages: list[dict[str, str]], image: Any = None) -> str:
+        self.calls.append((messages, image))
+        return self._response
 
 
 # ---------------------------------------------------------------------------
@@ -325,3 +364,157 @@ def test_llm_planner_passes_instruction_to_generator() -> None:
     planner.plan("pick up the red cube")
     assert len(calls) == 1
     assert "pick up the red cube" in calls[0][0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# COMPLETION_GATED strategy
+# ---------------------------------------------------------------------------
+
+def _gated_cfg(**kw: Any) -> PhaseConfig:
+    return PhaseConfig(strategy=PhaseStrategy.COMPLETION_GATED, **kw)
+
+
+def test_completion_gated_advances_on_detector() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["phase-1", "phase-2"])
+    detector = FakeDetector(done_after=1)  # True on its first poll
+    cfg = _gated_cfg(check_every=2, max_steps_per_phase=100)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg, detector=detector)
+    rt.begin_episode("task")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    rt.get_action(img)  # step 1: off-cadence, detector NOT polled
+    assert rt.current_phase_index == 0
+    assert detector.calls == []
+
+    rt.get_action(img)  # step 2: on-cadence, detector polled -> True -> advance
+    assert rt.current_phase_index == 1
+    assert len(detector.calls) == 1
+
+
+def test_completion_gated_advances_at_cap_when_never_done() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["phase-1", "phase-2"])
+    detector = FakeDetector(done_after=None)  # never confirms
+    cfg = _gated_cfg(check_every=2, max_steps_per_phase=6)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg, detector=detector)
+    rt.begin_episode("task")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    for _ in range(5):
+        rt.get_action(img)
+    assert rt.current_phase_index == 0  # not yet at cap
+    rt.get_action(img)  # step 6 hits the cap
+    assert rt.current_phase_index == 1
+    # Cap is checked before the detector, so step 6 does not poll: only steps 2 & 4.
+    assert len(detector.calls) == 2
+    events = rt.drain_phase_events()
+    assert events == [
+        {"from": 0, "to": 1, "instruction": "phase-2", "reason": "cap"}
+    ]
+
+
+def test_completion_gated_no_detector_falls_back_to_cap() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["phase-1", "phase-2"])  # no check_done -> no detector
+    cfg = _gated_cfg(check_every=2, max_steps_per_phase=3)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg)
+    assert rt._detector is None
+    rt.begin_episode("task")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    for _ in range(2):
+        rt.get_action(img)
+    assert rt.current_phase_index == 0
+    rt.get_action(img)  # step 3 == cap
+    assert rt.current_phase_index == 1
+    assert rt.drain_phase_events()[0]["reason"] == "cap"
+
+
+def test_completion_gated_detector_gets_current_frame_and_instruction() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["grasp the cube", "lift"])
+    detector = FakeDetector(done_after=None)
+    cfg = _gated_cfg(check_every=1, max_steps_per_phase=100)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg, detector=detector)
+    rt.begin_episode("task")
+
+    img = np.ones((8, 8, 3), dtype=np.uint8) * 7
+    rt.get_action(img)
+    assert detector.calls[0][0] == "grasp the cube"
+    np.testing.assert_array_equal(detector.calls[0][1], img)
+
+
+def test_detector_auto_discovered_from_planner() -> None:
+    rt = PlannedEvalRuntime(FakePilot(), FakePlannerWithCheck(["a", "b"]))
+    assert rt._detector is not None
+
+
+def test_no_detector_when_planner_lacks_check_done() -> None:
+    rt = PlannedEvalRuntime(FakePilot(), FakePlanner(["a", "b"]))
+    assert rt._detector is None
+
+
+def test_drain_phase_events_empties_the_buffer() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["a", "b"])
+    cfg = PhaseConfig(strategy=PhaseStrategy.FIXED_STEPS, steps_per_phase=1)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg)
+    rt.begin_episode("task")
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+
+    rt.get_action(img)  # advances immediately (steps_per_phase=1)
+    first = rt.drain_phase_events()
+    assert first and first[0]["reason"] == "fixed_steps"
+    assert rt.drain_phase_events() == []  # drained
+
+
+def test_fixed_steps_emits_no_events_mid_phase() -> None:
+    pilot = FakePilot()
+    planner = FakePlanner(["a", "b"])
+    cfg = PhaseConfig(strategy=PhaseStrategy.FIXED_STEPS, steps_per_phase=5)
+    rt = PlannedEvalRuntime(pilot, planner, phase_config=cfg)
+    rt.begin_episode("task")
+    rt.get_action(np.zeros((8, 8, 3), dtype=np.uint8))
+    assert rt.drain_phase_events() == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_yes_no + LLMPlanner.check_done
+# ---------------------------------------------------------------------------
+
+def test_parse_yes_no_true_cases() -> None:
+    for text in ["YES", "yes", "Yes.", "  yes it is done", "y", "**YES**"]:
+        assert _parse_yes_no(text) is True, text
+
+
+def test_parse_yes_no_false_cases() -> None:
+    for text in ["NO", "no", "", "maybe", "not yet", "almost yes"]:
+        assert _parse_yes_no(text) is False, text
+
+
+def test_llm_planner_check_done_yes() -> None:
+    planner = LLMPlanner(FakeVisionGenerator("YES"))
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert planner.check_done("grasp the cube", img) is True
+
+
+def test_llm_planner_check_done_no() -> None:
+    planner = LLMPlanner(FakeVisionGenerator("NO"))
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert planner.check_done("grasp the cube", img) is False
+
+
+def test_llm_planner_check_done_false_without_image() -> None:
+    planner = LLMPlanner(FakeVisionGenerator("YES"))
+    assert planner.check_done("grasp", None) is False
+
+
+def test_llm_planner_check_done_false_for_text_only_generator() -> None:
+    # FakeTextGenerator.generate has no image param -> can't verify -> False.
+    planner = LLMPlanner(FakeTextGenerator("YES"))
+    assert planner.check_done("grasp", np.zeros((8, 8, 3), dtype=np.uint8)) is False
+
+
+def test_llm_planner_satisfies_completion_detector() -> None:
+    assert isinstance(LLMPlanner(FakeVisionGenerator("YES")), CompletionDetector)

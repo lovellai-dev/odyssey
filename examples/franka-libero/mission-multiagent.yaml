@@ -63,8 +63,18 @@ tasks:
       checkpoint: openvla/openvla-7b-finetuned-libero-object   # HF repo id (eval-only)
       unnorm_key: libero_object
       task_id: 0
-      steps_per_phase: 50          # PlannedEvalRuntime: advance phase every N steps
       capture_video: true
+      # Phase advancement (PlannedEvalRuntime). Default is open-loop fixed_steps:
+      #   phase_strategy: fixed_steps   # (default) advance every steps_per_phase steps
+      #   steps_per_phase: 50
+      # Opt into CLOSED-LOOP: the SPECIALIST is re-asked "is this sub-instruction
+      # done?" from the current frame every phase_check_every steps and the phase
+      # advances only when it says yes — with phase_max_steps as a safety cap. Reuses
+      # the same loaded Gemma (no extra VRAM); adds ~1-2s per check, so keep the
+      # cadence >= 10. Meant to fix "grasped but switched to the next step too early".
+      phase_strategy: completion_gated
+      phase_check_every: 10
+      phase_max_steps: 100
       # OPTIONAL alignment contract (see mission.yaml). The declared instruction is
       # cross-checked against the benchmark's task.language; the SPECIALIST plans
       # from that same authoritative instruction. Fill from the first run's log.

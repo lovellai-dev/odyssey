@@ -313,6 +313,18 @@ class RobosuiteRunner(Runner):
                     if capture_video:
                         _capture_frame(frames, image)
                     action = runtime.get_action(image)
+                    for ev in runtime.drain_phase_events():
+                        await context.emit_progress(
+                            "executing",
+                            step="phase_advance",
+                            step_index=ep,
+                            step_total=num_episodes,
+                            step_label=(
+                                f"episode {ep} phase {ev['from']}->{ev['to']} "
+                                f"({ev['reason']}): {ev['instruction']}"
+                            ),
+                            metadata=ev,
+                        )
                 else:
                     assert policy is not None
                     if capture_video:
@@ -512,9 +524,9 @@ def _build_planned_runtime(
         python_path=specialist_python,
     )
 
-    # Phase config from mission config
-    steps_per_phase = cfg.get("steps_per_phase", 50)
-    phase_config = PhaseConfig(steps_per_phase=steps_per_phase)
+    # Phase config from mission config (opt-in completion-gating; default
+    # stays fixed_steps so existing missions are unchanged).
+    phase_config = PhaseConfig.from_config(cfg)
 
     task_instruction = _resolve_task_instruction(spec)
 

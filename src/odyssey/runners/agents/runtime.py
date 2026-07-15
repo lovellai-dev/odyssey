@@ -101,3 +101,24 @@ class PlannerRuntime(Protocol):
         sequentially.
         """
         ...
+
+
+@runtime_checkable
+class CompletionDetector(Protocol):
+    """Answers whether a sub-instruction is satisfied in the current frame.
+
+    Used by ``PlannedEvalRuntime``'s ``COMPLETION_GATED`` strategy to close the
+    loop: instead of advancing phases on a blind step counter, it asks a VLM
+    whether the active sub-instruction is done before moving on. The
+    out-of-process SPECIALIST satisfies both this and ``PlannerRuntime`` from
+    the same loaded model, so no second model is loaded.
+    """
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Return True if ``instruction`` is satisfied in ``image``.
+
+        Must be conservative and fail-safe: return False when uncertain or on
+        any error, so a phase never advances on a false positive (the runtime's
+        step cap still guarantees forward progress).
+        """
+        ...

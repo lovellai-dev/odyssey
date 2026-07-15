@@ -39,6 +39,14 @@ _SYSTEM_PROMPT_VISION = (
     "numbered list, nothing else."
 )
 
+_COMPLETION_PROMPT = (
+    "You are a robot task supervisor. You are given the current scene image and "
+    "the single sub-instruction the robot arm is currently executing. Decide "
+    "whether that sub-instruction is now FULLY completed in the image. Answer "
+    "with EXACTLY one word: YES if it is fully completed, otherwise NO. Do not "
+    "explain."
+)
+
 _NUMBERED_LINE = re.compile(r"^\s*\d+[\.\)]\s*(.+)$")
 
 
@@ -50,6 +58,19 @@ def _parse_plan(text: str) -> list[str]:
         if m:
             lines.append(m.group(1).strip())
     return lines
+
+
+def _parse_yes_no(text: str) -> bool:
+    """True only when the output's first word is an explicit yes.
+
+    Takes the first alphabetic run (ignoring surrounding markdown/punctuation
+    like ``**YES**``). Conservative by design: anything ambiguous (``no``,
+    empty, ``maybe``, a sentence not starting with yes) → False, so a phase
+    never advances on an unclear answer (the runtime's step cap still
+    guarantees progress).
+    """
+    m = re.search(r"[a-zA-Z]+", text or "")
+    return m is not None and m.group(0).lower() in ("yes", "y")
 
 
 class LLMPlanner:
@@ -98,3 +119,24 @@ class LLMPlanner:
             )
             return [task_instruction]
         return steps
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Return True if ``instruction`` looks completed in ``image``.
+
+        Satisfies ``CompletionDetector``. Requires a multimodal generator and a
+        frame — without either, the check is impossible, so it returns False
+        (never a false positive; the runtime's step cap still advances phases).
+        """
+        if not self._accepts_image or image is None:
+            logger.debug(
+                "check_done unavailable (accepts_image=%s, image=%s) — returning False",
+                self._accepts_image,
+                image is not None,
+            )
+            return False
+        messages = [
+            {"role": "user", "content": f"{_COMPLETION_PROMPT}\n\nSub-instruction: {instruction}"},
+        ]
+        text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
+        logger.debug("check_done(%r) raw output: %r", instruction, text)
+        return _parse_yes_no(text)

@@ -312,6 +312,18 @@ class LiberoRunner(Runner):
 
                 if runtime:
                     raw_action = runtime.get_action(image)
+                    for ev in runtime.drain_phase_events():
+                        await context.emit_progress(
+                            "executing",
+                            step="phase_advance",
+                            step_index=ep,
+                            step_total=num_episodes,
+                            step_label=(
+                                f"episode {ep} phase {ev['from']}->{ev['to']} "
+                                f"({ev['reason']}): {ev['instruction']}"
+                            ),
+                            metadata=ev,
+                        )
                 else:
                     assert policy is not None
                     raw_action = policy({image_key: image})
@@ -426,7 +438,7 @@ def _build_planned_runtime(
     logger.info("SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python)
     planner = RemotePlanner(model_base, quantization, python_path=specialist_python)
 
-    phase_config = PhaseConfig(steps_per_phase=int(cfg.get("steps_per_phase", 50)))
+    phase_config = PhaseConfig.from_config(cfg)
     return PlannedEvalRuntime(
         pilot=pilot,
         planner=planner,

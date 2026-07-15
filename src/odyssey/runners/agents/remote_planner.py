@@ -88,6 +88,10 @@ class RemotePlanner:
         model, so this is generous.
     request_timeout:
         Seconds to wait for a single plan response.
+    check_timeout:
+        Seconds to wait for a single completion-check response. Short by design
+        (the check runs on the per-step loop, every K steps): a hung check
+        falls back to ``False`` rather than freezing the episode.
     launch_args:
         Argv (after ``python_path``) that starts the server. Defaults to
         ``("-m", planner_server)``; overridable for tests.
@@ -101,6 +105,7 @@ class RemotePlanner:
         python_path: str,
         startup_timeout: float = 600.0,
         request_timeout: float = 120.0,
+        check_timeout: float = 5.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
     ) -> None:
         self._model_base = model_base
@@ -108,6 +113,7 @@ class RemotePlanner:
         self._python_path = python_path
         self._startup_timeout = startup_timeout
         self._request_timeout = request_timeout
+        self._check_timeout = check_timeout
         self._launch_args = list(launch_args)
         self._proc: subprocess.Popen[str] | None = None
         # A background thread drains stdout into this queue. We avoid
@@ -216,6 +222,38 @@ class RemotePlanner:
                 task_instruction,
             )
         return [task_instruction]
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Ask the out-of-process SPECIALIST if ``instruction`` is completed.
+
+        Satisfies ``CompletionDetector``. Reuses the same loaded model as
+        ``plan`` over the same channel; unlike ``plan`` this runs on the
+        per-step loop (every K steps), so it uses the short ``check_timeout``.
+        Fails safe: any error, timeout, missing frame, or a server that doesn't
+        support checks (``{"error": ...}``) returns ``False`` — a phase never
+        advances on a bad check (the runtime's step cap still guarantees
+        progress).
+        """
+        if image is None:
+            return False
+        try:
+            self._ensure_started()
+            proc = self._proc
+            assert proc is not None and proc.stdin is not None
+            request = {
+                "check": {"instruction": instruction, "image": _encode_image(image)}
+            }
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+            msg = self._read_message(self._check_timeout)
+            return bool((msg or {}).get("done"))
+        except Exception as e:
+            logger.warning(
+                "RemotePlanner.check_done failed (%s) for %r — treating as not done",
+                e,
+                instruction,
+            )
+            return False
 
     def close(self) -> None:
         """Shut down the server process. Idempotent; also runs at exit."""
