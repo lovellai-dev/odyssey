@@ -148,7 +148,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2"]
+module = ["huggingface_hub", "datasets", "robosuite", "libero.*", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2"]
 ignore_missing_imports = true
 follow_imports = "skip"
 # Also skip these libs' bundled .pyi stubs. By default mypy follows imports into

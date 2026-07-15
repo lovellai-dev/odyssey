@@ -7,8 +7,11 @@ Per design §2 v0.3.2 (with the agent-aware spec correction):
   * `objective` and `acceptance_criteria` are required prose fields —
     matching the CC missions-table NOT NULL columns. These are the inputs
     the mission materializer extracts structured artifacts from.
-  * Mission cardinality: at least one training task, exactly one evaluation
-    task, and the evaluation task is the last entry in ``tasks[]``.
+  * Mission cardinality: zero or more training tasks, exactly one
+    evaluation task, and the evaluation task is the last entry in
+    ``tasks[]``. An eval-only mission (no training) is valid — e.g.
+    scoring an already-fine-tuned checkpoint, or holding the pilot fixed
+    and swapping the SPECIALIST to re-run the same eval.
   * A robot carries a loadout of agents (today: exactly one). Every
     training task names the agent it updates via ``agent_id``, which
     must resolve to an entry in ``robot.agents``.
@@ -103,7 +106,7 @@ class Mission(BaseModel):
     materialized_profile: str | None = None
 
     robot: RobotSpec
-    tasks: list[TaskSpec] = Field(min_length=2)
+    tasks: list[TaskSpec] = Field(min_length=1)
 
     leaderboard: LeaderboardSpec = Field(default_factory=LeaderboardSpec)
     graph: GraphSpec = Field(default_factory=GraphSpec)
@@ -118,12 +121,10 @@ class Mission(BaseModel):
 
     @model_validator(mode="after")
     def _task_cardinality(self) -> Mission:
-        training = sum(1 for t in self.tasks if t.kind == "training")
+        # Training tasks are optional (zero or more): an eval-only mission
+        # scores an already-trained checkpoint. Exactly one evaluation
+        # task is still required — it is the mission's point.
         evaluation = sum(1 for t in self.tasks if t.kind == "evaluation")
-        if training < 1:
-            raise ValueError(
-                f"Mission must have at least one training task, got {training}"
-            )
         if evaluation != 1:
             raise ValueError(
                 f"Mission must have exactly one evaluation task, got {evaluation}"
