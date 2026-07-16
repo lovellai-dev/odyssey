@@ -68,16 +68,81 @@ def phase_onehot(phase_label: np.ndarray, n: int = N_PHASES) -> np.ndarray:
     return oh
 
 
-def build_xy(arrays: dict[str, np.ndarray], output_design: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (X (N,14), Y (N, 112|5280), episodes (N,)).
+def t_norm_feature(arrays: dict[str, np.ndarray]) -> np.ndarray:
+    """Normalized episode progress per sample: frame_idx / (episode length).
 
+    v0.1 fix for expert-state ALIASING: the scripted expert is time-indexed
+    (slow ramps + convergence holds), so 68% of chunks are near-static and a
+    time-free net collapses to the "stay" majority — an absorbing fixed point
+    at home in the live loop (Stage-B A/B: 13/15 steered home-freezes).
+    Episode length proxy = max frame_idx within the episode + REAL_STEPS.
+    Deploy-side equivalent: executed_ticks / 900 (see SteeringEngine).
+    """
+    fi = np.asarray(arrays["frame_idx"], dtype=np.float64).reshape(-1)
+    ep = np.asarray(arrays["episode"], dtype=np.int64).reshape(-1)
+    ep_len: dict[int, float] = {}
+    for e in np.unique(ep):
+        ep_len[int(e)] = float(fi[ep == e].max()) + float(REAL_STEPS)
+    t = np.array([fi[i] / ep_len[int(ep[i])] for i in range(len(fi))],
+                 dtype=np.float32)
+    return np.clip(t, 0.0, 1.0)
+
+
+def motion_weights(motion: np.ndarray, *, floor: float = 0.2,
+                   ref: float = 0.05) -> np.ndarray:
+    """Per-sample loss weights emphasizing MOVING expert windows.
+
+    weight = floor + (1-floor) * min(1, motion/ref). Static holds (68% of the
+    dataset) keep a small floor so legitimate pauses stay learnable (the t_norm
+    feature disambiguates them), while the expert's actual skill — the moving
+    ~30% — dominates the gradient.
+    """
+    m = np.asarray(motion, dtype=np.float32).reshape(-1)
+    return (floor + (1.0 - floor) * np.clip(m / ref, 0.0, 1.0)).astype(np.float32)
+
+
+def chunk_motion_from_dataset(arrays: dict[str, np.ndarray], dataset_dir: str | Path
+                              ) -> np.ndarray:
+    """Endpoint arm motion (max |a[f+15] - a[f]| over the 6 arm dims, rad) of the
+    expert chunk at each (episode, frame_idx) sample, from the LeRobot parquet."""
+    import pyarrow.parquet as pq
+    dataset_dir = Path(dataset_dir)
+    ep = np.asarray(arrays["episode"], dtype=np.int64).reshape(-1)
+    fi = np.asarray(arrays["frame_idx"], dtype=np.int64).reshape(-1)
+    cache: dict[int, np.ndarray] = {}
+    out = np.zeros(len(ep), dtype=np.float32)
+    for i in range(len(ep)):
+        e = int(ep[i])
+        if e not in cache:
+            f = dataset_dir / "data" / "chunk-000" / f"episode_{e:06d}.parquet"
+            cache[e] = np.stack(
+                pq.read_table(f, columns=["action"]).column("action").to_pylist()
+            )[:, :6]
+        a = cache[e]
+        s = int(fi[i])
+        end = min(s + REAL_STEPS - 1, len(a) - 1)
+        out[i] = float(np.abs(a[end] - a[s]).max())
+    return out
+
+
+def build_xy(arrays: dict[str, np.ndarray], output_design: str,
+             features: str = "v1") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (X (N,14|15), Y (N, 112|5280), episodes (N,)).
+
+    features: 'v1' -> [proprio7, grasp_target3, phase_onehot4]           (14)
+              'v2' -> v1 + [t_norm]  (normalized episode progress)       (15)
     output_design: 'real112' -> Y = w_star_real flattened (112);
                    'full5280' -> Y = w_star_full flattened (5280) [requires w_star_full].
     """
     proprio7 = np.asarray(arrays["proprio7"], dtype=np.float32)        # (N,7)
     gt3 = np.asarray(arrays["grasp_target3"], dtype=np.float32)         # (N,3)
     oh = phase_onehot(arrays["phase_label"])                            # (N,4)
-    X = np.concatenate([proprio7, gt3, oh], axis=1).astype(np.float32)  # (N,14)
+    cols = [proprio7, gt3, oh]
+    if features == "v2":
+        cols.append(t_norm_feature(arrays)[:, None])                    # (N,1)
+    elif features != "v1":
+        raise ValueError(f"unknown features {features!r}")
+    X = np.concatenate(cols, axis=1).astype(np.float32)                 # (N,14|15)
     if output_design == "real112":
         Y = np.asarray(arrays["w_star_real"], dtype=np.float32).reshape(len(X), REAL_OUT)
     elif output_design == "full5280":
@@ -137,16 +202,27 @@ def mode_train(args) -> dict:
 
     arrays = load_shards(args.shards)
     design = args.output_design
-    X, Y, episodes = build_xy(arrays, design)
+    X, Y, episodes = build_xy(arrays, design, features=args.features)
     train_idx, val_idx = episode_split(episodes, val_frac=args.val_frac, seed=args.seed)
     n_train, n_val = len(train_idx), len(val_idx)
-    print(f"[train] N={len(X)} in={X.shape[1]} out={Y.shape[1]} design={design} | "
-          f"train={n_train} val={n_val} | val_eps={len(np.unique(episodes[val_idx]))}",
-          flush=True)
+    print(f"[train] N={len(X)} in={X.shape[1]} out={Y.shape[1]} design={design} "
+          f"features={args.features} | train={n_train} val={n_val} | "
+          f"val_eps={len(np.unique(episodes[val_idx]))}", flush=True)
+
+    # v0.1: motion-weighted loss (needs the dataset for expert chunk motion).
+    motion = None
+    W = np.ones(len(X), dtype=np.float32)
+    if args.dataset:
+        motion = chunk_motion_from_dataset(arrays, args.dataset)
+        W = motion_weights(motion, floor=args.weight_floor, ref=args.weight_ref)
+        W = W / W.mean()   # keep the loss scale comparable to unweighted MSE
+        print(f"[train] motion weights: static(<0.02rad)={float(np.mean(motion < 0.02)):.1%} "
+              f"w_mean=1.0 w_min={W.min():.3f} w_max={W.max():.3f}", flush=True)
 
     dev = args.device
     Xt = torch.as_tensor(X, dtype=torch.float32, device=dev)
     Yt = torch.as_tensor(Y, dtype=torch.float32, device=dev)
+    Wt = torch.as_tensor(W, dtype=torch.float32, device=dev)
     tr = torch.as_tensor(train_idx, device=dev)
     va = torch.as_tensor(val_idx, device=dev)
 
@@ -169,7 +245,8 @@ def mode_train(args) -> dict:
             idx = perm[i:i + args.batch]
             opt.zero_grad()
             pred = net(Xt[idx])
-            loss = lossfn(pred, Yt[idx])
+            # motion-weighted MSE (Wt=1 when no --dataset given)
+            loss = (Wt[idx, None] * (pred - Yt[idx]) ** 2).mean()
             loss.backward()
             opt.step()
             tot += float(loss) * len(idx)
@@ -206,11 +283,21 @@ def mode_train(args) -> dict:
         final_p99 = float(torch.quantile(vpred.abs().flatten().float(), 0.99))
         tpred = net(Xt[tr])
         final_train = float(lossfn(tpred, Yt[tr]))
+        # v0.1 stratified validation: the Stage-B lesson — an unstratified metric
+        # is dominated by the 68% static windows and hides an always-stay net.
+        val_mse_moving = val_mse_static = None
+        if motion is not None:
+            vm = torch.as_tensor(motion[val_idx] >= 0.02, device=dev)
+            if bool(vm.any()):
+                val_mse_moving = float(((vpred[vm] - Yt[va][vm]) ** 2).mean())
+            if bool((~vm).any()):
+                val_mse_static = float(((vpred[~vm] - Yt[va][~vm]) ** 2).mean())
 
     ckpt = {
         "state_dict": {k: v.cpu().numpy() for k, v in net.state_dict().items()},
         "in_dim": X.shape[1], "out_dim": Y.shape[1], "hidden": args.hidden,
         "output_design": design, "pad_seed": PAD_SEED,
+        "features": args.features,
         "val_episodes": np.unique(episodes[val_idx]).tolist(),
     }
     np.savez(args.model_out, **{f"sd.{k}": v for k, v in ckpt["state_dict"].items()},
@@ -219,7 +306,10 @@ def mode_train(args) -> dict:
 
     result = {
         "output_design": ("real112+fixed-pads" if design == "real112" else "full5280"),
-        "train_mse": final_train, "val_mse": final_val, "p99_pred": final_p99,
+        "features": args.features,
+        "train_mse": final_train, "val_mse": final_val,
+        "val_mse_moving": val_mse_moving, "val_mse_static": val_mse_static,
+        "p99_pred": final_p99,
         "best_epoch": best_epoch, "n_train": n_train, "n_val": n_val,
         "val_episodes": np.unique(episodes[val_idx]).tolist(),
         "model_out": str(args.model_out),
@@ -303,6 +393,12 @@ def main() -> int:
     pt.add_argument("--seed", type=int, default=0)
     pt.add_argument("--device", default="cuda")
     pt.add_argument("--out", default=None)
+    # v0.1 anti-aliasing options (see t_norm_feature / motion_weights docstrings)
+    pt.add_argument("--features", default="v2", choices=["v1", "v2"])
+    pt.add_argument("--dataset", default=None,
+                    help="LeRobot dataset dir; enables motion-weighted loss + stratified val")
+    pt.add_argument("--weight-floor", type=float, default=0.2)
+    pt.add_argument("--weight-ref", type=float, default=0.05)
 
     pc = sub.add_parser("pad-check")
     pc.add_argument("--model-path", default="/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000")

@@ -118,3 +118,40 @@ def test_load_shards_roundtrip(tmp_path):
     assert loaded["proprio7"].shape == (50, 7)
     assert loaded["w_star_real"].shape == (50, ts.REAL_STEPS, ts.REAL_DIMS)
     assert np.allclose(loaded["proprio7"], arr["proprio7"])
+
+
+# ---------------------------------------------------------------------------
+# v0.1 anti-aliasing features (t_norm + motion weights)
+# ---------------------------------------------------------------------------
+
+def test_build_xy_v2_appends_t_norm():
+    arr = _fake_arrays()
+    X, Y, eps = ts.build_xy(arr, "real112", features="v2")
+    assert X.shape == (200, 15)
+    t = X[:, 14]
+    assert float(t.min()) >= 0.0 and float(t.max()) <= 1.0
+    # within each episode, t_norm must be monotonic in frame_idx
+    for e in np.unique(arr["episode"]):
+        m = arr["episode"] == e
+        order = np.argsort(arr["frame_idx"][m])
+        assert np.all(np.diff(t[m][order]) >= 0)
+
+
+def test_t_norm_uses_per_episode_length():
+    # two episodes with very different lengths -> same frame_idx maps to
+    # different t_norm
+    arr = _fake_arrays(n=4, n_eps=1)
+    arr["episode"] = np.array([0, 0, 1, 1], dtype=np.int64)
+    arr["frame_idx"] = np.array([100, 884, 100, 84], dtype=np.int64)
+    t = ts.t_norm_feature(arr)
+    assert t[0] < t[2]          # frame 100 of a 900-frame ep < frame 100 of a 116-frame ep
+    assert t[1] > 0.95          # last chunk of the long episode ~1
+    assert 0.6 < t[3] < 0.8     # frame 84 of a 116-frame episode ~0.72
+
+
+def test_motion_weights_floor_and_saturation():
+    w = ts.motion_weights(np.array([0.0, 0.025, 0.05, 1.0]), floor=0.2, ref=0.05)
+    assert np.isclose(w[0], 0.2)          # static -> floor
+    assert np.isclose(w[1], 0.6)          # halfway
+    assert np.isclose(w[2], 1.0)          # at ref -> full
+    assert np.isclose(w[3], 1.0)          # saturates

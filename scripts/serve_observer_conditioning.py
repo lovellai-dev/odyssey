@@ -142,6 +142,8 @@ class PhaseInference:
         xy_lock_radius: float = 0.10,
         home_tol: float = 0.15,
         open_thresh: float = 0.30,
+        promote_radius: float = 0.035,
+        dwell_n: int = 2,
     ) -> None:
         self._pinch = pinch_fn
         self._home_q = np.asarray(home_q, dtype=np.float64).reshape(6)
@@ -149,23 +151,27 @@ class PhaseInference:
         self._rad = float(xy_lock_radius)
         self._home_tol = float(home_tol)
         self._open = float(open_thresh)
+        self._promote_rad = float(promote_radius)
+        self._dwell_n = int(dwell_n)
         self._sess: dict[str, dict[str, Any]] = {}
 
     def reset(self, sid: str) -> None:
         self._sess.pop(sid, None)
 
-    def infer(self, sid: str, state7: Any) -> int:
+    def infer(self, sid: str, state7: Any, tgt3: Any = None) -> int:
         s7 = np.asarray(state7, dtype=np.float64).reshape(-1)[:7]
         q6, grip = s7[:6], float(s7[6])
         st = self._sess.setdefault(
-            sid, {"has_closed": False, "was_closed": False, "locked_xy": None})
+            sid, {"has_closed": False, "was_closed": False, "locked_xy": None,
+                  "promoted": False, "dwell": 0})
         closed = grip >= self._close
         # Episode-boundary reset: back at (or still at) home with the gripper
         # open. Clears has_closed so a new episode starts in REACH. (Known GT
         # mismatch: the post-place home2 frames are bucket 3 in training.)
         if (not closed and grip < self._open
                 and float(np.max(np.abs(q6 - self._home_q))) < self._home_tol):
-            st.update(has_closed=False, was_closed=False, locked_xy=None)
+            st.update(has_closed=False, was_closed=False, locked_xy=None,
+                      promoted=False, dwell=0)
             return self.REACH
         if closed:
             pinch = np.asarray(self._pinch(q6), dtype=np.float64).reshape(3)
@@ -173,10 +179,35 @@ class PhaseInference:
                 st["locked_xy"] = pinch[:2].copy()
                 st["has_closed"] = True
                 st["was_closed"] = True
+                st["promoted"] = False
+                st["dwell"] = 0
             xy = float(np.linalg.norm(pinch[:2] - st["locked_xy"]))
             return self.GRASP if xy <= self._rad else self.TRANSPORT
         st["was_closed"] = False
-        return self.PLACE if st["has_closed"] else self.REACH
+        if st["has_closed"]:
+            return self.PLACE
+        # v0.1 DWELL PROMOTION — breaks the grasp deadlock found in the Stage-B
+        # A/B (steered arm reached 0.2-0.7 cm but never closed): the phase used
+        # to advance only on the policy's OWN grip command, while REACH-phase
+        # noise never commands closure. Now, hovering with the pinch xy within
+        # promote_radius of the Observer target for dwell_n consecutive queries
+        # promotes REACH -> GRASP on geometry + dwell alone, so the net (trained
+        # on close/lift windows at GRASP) can emit the closing action. Hysteresis
+        # at 1.5x the radius demotes if the arm drifts away while still open.
+        if tgt3 is not None:
+            tgt = np.asarray(tgt3, dtype=np.float64).reshape(3)
+            pinch = np.asarray(self._pinch(q6), dtype=np.float64).reshape(3)
+            xy = float(np.linalg.norm(pinch[:2] - tgt[:2]))
+            if st["promoted"]:
+                if xy <= 1.5 * self._promote_rad:
+                    return self.GRASP
+                st.update(promoted=False, dwell=0)
+                return self.REACH
+            st["dwell"] = st["dwell"] + 1 if xy <= self._promote_rad else 0
+            if st["dwell"] >= self._dwell_n:
+                st["promoted"] = True
+                return self.GRASP
+        return self.REACH
 
 
 class MjPinchFK:
@@ -236,22 +267,39 @@ class SteeringEngine:
 
         self._forward, meta = load_steering_net(weights)
         self.design = str(meta.get("output_design", "full5280"))
+        self.in_dim = int(meta.get("in_dim", 14))   # 14 = v1; 15 = v2 (+ t_norm)
         self._ts = ts
         self._fixed_pads = None if self.design == "full5280" else ts.deploy_pads(1)[0]
         self.phase_inf = PhaseInference(pinch_fn, home_q)
         self.n_attached = 0
         self.phase_ticks = [0, 0, 0, 0]
+        # v0.1 t_norm feature: executed ticks per SESSION / nominal episode ticks.
+        # Correct t_norm relies on the client sending a FRESH sid per episode
+        # (eval_browser_groot.js does since v0.1). Deliberately NOT reset by the
+        # phase machine's home detection — a home-frozen arm pinned at t_norm=0
+        # would recreate the exact absorbing fixed point this feature removes.
+        self._ticks_per_query = int(os.environ.get("STEER_TICKS_PER_QUERY", "8"))
+        self._ep_ticks = float(os.environ.get("STEER_EP_TICKS", "900"))
+        self._ticks: dict[str, int] = {}
         print(f"[steer] ready | weights={weights} design={self.design} "
-              f"in_dim={meta.get('in_dim')} out_dim={meta.get('out_dim')}", flush=True)
+              f"in_dim={self.in_dim} out_dim={meta.get('out_dim')} "
+              f"t_norm={'ON' if self.in_dim >= 15 else 'off'}", flush=True)
 
     def init_noise(self, sid: str, state7: Any, tgt3: Any) -> tuple[np.ndarray, int]:
-        phase = self.phase_inf.infer(sid, state7)
+        phase = self.phase_inf.infer(sid, state7, tgt3)
         oh = np.zeros(N_PHASES, dtype=np.float32)
         oh[phase] = 1.0
-        x = np.concatenate([
+        cols = [
             np.asarray(state7, dtype=np.float32).reshape(-1)[:7],
             np.asarray(tgt3, dtype=np.float32).reshape(3), oh,
-        ]).astype(np.float32)[None]                                   # (1, 14)
+        ]
+        if self.in_dim >= 15:
+            if len(self._ticks) > 64:                  # bound per-session state
+                self._ticks.pop(next(iter(self._ticks)))
+            t = min(1.0, self._ticks.get(sid, 0) / self._ep_ticks)
+            self._ticks[sid] = self._ticks.get(sid, 0) + self._ticks_per_query
+            cols.append(np.array([t], dtype=np.float32))
+        x = np.concatenate(cols).astype(np.float32)[None]             # (1, 14|15)
         pred = self._forward(x)
         if self.design == "full5280":
             noise = pred.reshape(ACTION_HORIZON, ACTION_DIM).astype(np.float32)

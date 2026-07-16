@@ -106,7 +106,15 @@ def mode_decode(args) -> dict:
         phases = load_gt_phases(dataset_dir, ep, gt_cache)
         plabel = phase_bucket(phases[fr]) if (phases is not None and fr < len(phases)) else 0
         oh = ts.phase_onehot(np.array([plabel]))[0]
-        obs_low = np.concatenate([s10[:7], s10[7:10], oh]).astype(np.float32)[None]  # (1,14)
+        cols = [s10[:7], s10[7:10], oh]
+        if int(meta.get("in_dim", 14)) >= 15:
+            # v0.1 t_norm feature: frame / (episode length proxy). Matches the
+            # trainer's t_norm_feature semantics (max frame + REAL_STEPS).
+            n_frames = (len(phases) if phases is not None
+                        else fr + REAL_STEPS)
+            cols.append(np.array([min(1.0, fr / max(1.0, float(n_frames)))],
+                                 dtype=np.float32))
+        obs_low = np.concatenate(cols).astype(np.float32)[None]  # (1, 14|15)
 
         # (a) steered: build init_noise from the net output per its design.
         pred = forward(obs_low)

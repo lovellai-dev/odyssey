@@ -91,7 +91,11 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   const z0 = vialPose()[2];
   let zMax = z0, ticks = 0, queries = 0, gripCmd = 0, gripMax = 0, err = null, minPad = Infinity;
   const url = cfg.agents === 'groot-observer' ? '/api/groot/get_action_observer' : '/api/groot/get_action';
-  const sid = cfg.agents === 'groot-observer' ? ('obs-' + Date.now() + '-' + Math.floor(Math.random() * 1e6)) : null;
+  // ALWAYS send a fresh per-episode session id: the sidecar keys its per-session
+  // state (phase machine, hold-last Observer target, v0.1 t_norm tick counter)
+  // by sid — without one, all 15 episodes share "default" and state leaks across
+  // episode boundaries (found in the Stage-B A/B).
+  const sid = (cfg.agents === 'groot-observer' ? 'obs-' : 'ep-') + Date.now() + '-' + Math.floor(Math.random() * 1e6);
 
   while (ticks < cfg.maxTicks) {
     const measured = readArm();

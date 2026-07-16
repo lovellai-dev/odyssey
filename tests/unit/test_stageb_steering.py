@@ -107,3 +107,52 @@ def test_decode_init_noise_defaults_and_rejects_bad_size():
     assert out.shape == (1, cond.ACTION_HORIZON, cond.ACTION_DIM)
     with pytest.raises(ValueError):
         bridge.decode_init_noise(b64, [16, 7])                    # size mismatch
+
+
+# ---------------------------------------------------------------------------
+# v0.1 dwell promotion (breaks the Stage-B grasp deadlock)
+# ---------------------------------------------------------------------------
+
+def test_dwell_promotes_reach_to_grasp_near_target():
+    pi = cond.PhaseInference(_linear_fk, HOME_Q, promote_radius=0.035, dwell_n=2)
+    tgt = [0.45, 0.15, 0.25]
+    assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt) == pi.REACH   # dwell 1
+    assert pi.infer("s", _state(0.451, 0.151, 0.0), tgt) == pi.GRASP  # dwell 2 -> promoted
+    # stays promoted while hovering (hysteresis radius 1.5x)
+    assert pi.infer("s", _state(0.47, 0.17, 0.0), tgt) == pi.GRASP
+
+
+def test_dwell_demotes_when_arm_leaves_while_open():
+    pi = cond.PhaseInference(_linear_fk, HOME_Q, promote_radius=0.035, dwell_n=2)
+    tgt = [0.45, 0.15, 0.25]
+    pi.infer("s", _state(0.45, 0.15, 0.0), tgt)
+    assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt) == pi.GRASP
+    # drift far away while still open -> demote to REACH, dwell resets
+    assert pi.infer("s", _state(0.60, 0.40, 0.0), tgt) == pi.REACH
+    assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt) == pi.REACH   # dwell 1 again
+
+
+def test_dwell_needs_consecutive_proximity():
+    pi = cond.PhaseInference(_linear_fk, HOME_Q, promote_radius=0.035, dwell_n=2)
+    tgt = [0.45, 0.15, 0.25]
+    assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt) == pi.REACH   # dwell 1
+    assert pi.infer("s", _state(0.60, 0.40, 0.0), tgt) == pi.REACH   # away -> dwell 0
+    assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt) == pi.REACH   # dwell 1 (not 2)
+
+
+def test_real_closure_still_takes_precedence_and_no_tgt_is_v0_compatible():
+    pi = cond.PhaseInference(_linear_fk, HOME_Q)
+    # no tgt3 -> v0 behavior (never promotes)
+    for _ in range(5):
+        assert pi.infer("s", _state(0.45, 0.15, 0.0)) == pi.REACH
+    # a real close locks the column and enters GRASP as before
+    assert pi.infer("s", _state(0.45, 0.15, 0.9)) == pi.GRASP
+    # release after a real close -> PLACE (dwell promotion must not override)
+    assert pi.infer("s", _state(0.45, 0.15, 0.05), [0.45, 0.15, 0.25]) == pi.PLACE
+
+
+def test_home_reset_clears_promotion():
+    pi = cond.PhaseInference(_linear_fk, HOME_Q, promote_radius=0.05, dwell_n=1)
+    tgt = [-1.5708, -1.5708, 0.25]   # stub FK: home pinch xy = (q0, q1) = home
+    # promoted at the (contrived) target right at home xy...
+    assert pi.infer("s", _state(-1.5708, -1.5708, 0.0), tgt) == pi.REACH  # home reset wins

@@ -37,9 +37,12 @@ CHROME=/usr/bin/google-chrome-stable
 NODE=/home/daniel/.nvm/versions/node/v22.22.0/bin/node
 XML=/home/daniel/LovellAI/lai-agent-multiagent/src/embodiments/urdf/aseptipack_description/aseptipack.xml
 
-WORK=$HOME/stageb_ab
-LOG=$HOME/stageb_ab.log
-RESULT=$HOME/stageb_ab_result.json
+# RUN_TAG parameterizes the whole run (v0.1 retrains re-use this driver with
+# new weights + a fresh workdir/result: RUN_TAG=v01 STEER_NPZ_SRC=... ).
+RUN_TAG=${RUN_TAG:-v0}
+WORK=$HOME/stageb_ab${RUN_TAG:+_$RUN_TAG}
+LOG=$HOME/stageb_ab${RUN_TAG:+_$RUN_TAG}.log
+RESULT=$HOME/stageb_ab${RUN_TAG:+_$RUN_TAG}_result.json
 OUTDIR=$WORK/out
 # Fresh OUTDIR every run: stale eval jsons from an aborted attempt must never
 # leak into a later verdict. Steering weights live in $WORK (outside OUTDIR).
@@ -52,7 +55,9 @@ BRIDGE_PORT=5596
 COND_PORT=5604
 CKPT=/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000
 OBS_WEIGHTS=$BC/percep_weights_browser
-STEER_NPZ=$WORK/steering_net_v0.npz
+STEER_NPZ=$WORK/steering_net.npz
+# Where to fetch the weights from if not already in $WORK (local path or VM copy)
+STEER_NPZ_SRC=${STEER_NPZ_SRC:-/home/ubuntu/steering_net_v0.npz}
 PLANS=$HOME/observer_cond/plans_eval.json
 EVAL_N=${EVAL_N:-15}
 N_ACTION_STEPS=${N_ACTION_STEPS:-8}
@@ -139,16 +144,20 @@ echo "STAGEB_AB PID=$$"
 [ -f "$XML" ] || fail "no-fk-xml($XML)"
 $SSH "$VM" "echo ok >/dev/null" || fail "vm-unreachable"
 $SSH "$VM" "[ -d $CKPT ]" || fail "no-vm-ckpt($CKPT)"
-# steering weights: local copy, else pull the A4 artifact from the VM
+# steering weights: local copy, else STEER_NPZ_SRC (local path or VM artifact)
 if [ ! -f "$STEER_NPZ" ]; then
-  scp -q -o StrictHostKeyChecking=no "$VM:/home/ubuntu/steering_net_v0.npz" "$STEER_NPZ" || fail "no-steering-weights"
+  if [ -f "$STEER_NPZ_SRC" ]; then
+    cp -f "$STEER_NPZ_SRC" "$STEER_NPZ" || fail "no-steering-weights"
+  else
+    scp -q -o StrictHostKeyChecking=no "$VM:$STEER_NPZ_SRC" "$STEER_NPZ" || fail "no-steering-weights"
+  fi
 fi
 "$PYUR5E" - "$STEER_NPZ" <<'PY' || fail "bad-steering-weights"
 import json, sys
 import numpy as np
 z = np.load(sys.argv[1], allow_pickle=True)
 meta = json.loads(str(z["meta"]))
-assert meta.get("in_dim") == 14 and meta.get("out_dim") in (112, 5280), meta
+assert meta.get("in_dim") in (14, 15) and meta.get("out_dim") in (112, 5280), meta
 print("[stageb] steering meta:", {k: meta[k] for k in ("in_dim", "out_dim", "output_design")})
 PY
 # the init_noise patch must be live in the VM checkout the server runs from
@@ -226,8 +235,8 @@ PY
 }
 smoke_post "$OUTDIR/smoke_steered.json" || fail "smoke-steered-post"
 grep -q '"ok": true' "$OUTDIR/smoke_steered.json" || fail "smoke-steered-bad-response"
-grep -q '^\[steer\] n=' "$WORK/conditioner_smoke_on.log" || fail "smoke-no-steer-log"
-SMOKE_ATTACH=$(grep -c '^\[steer\] n=' "$WORK/conditioner_smoke_on.log" || true)
+grep -q '\[steer\]' "$WORK/conditioner_smoke_on.log" || fail "smoke-no-steer-log"
+SMOKE_ATTACH=$(grep -c '\[steer\]' "$WORK/conditioner_smoke_on.log" || true)
 log "smoke: steered POSTs ok, sidecar attached noise x$SMOKE_ATTACH"
 
 log "STEP3 smoke gate: stock arm (sidecar restart WITHOUT weights)"
