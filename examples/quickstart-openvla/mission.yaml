@@ -59,6 +59,9 @@ tasks:
     config:
       unnorm_key: bridge_orig
       capture_video: true   # one MP4 per episode (README: "Recording rollout videos")
+      # video_camera: frontview   # record from a dedicated camera instead of the
+      # video_height: 512         # policy's 256x256 agentview frame; unset =
+      # video_width: 512          # record the policy frame (near-free default)
 
 leaderboard:
   publish: false   # Backend not live yet in v0.1.0-alpha.

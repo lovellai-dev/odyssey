@@ -423,6 +423,27 @@ for the policy, so capture only adds a list append per step plus one encode per
 episode (offloaded to a thread). Optional knobs: `video_fps` (default 24),
 `video_format` (default `mp4`).
 
+### Choosing the video camera
+
+By default the clip records the **policy's own input frame** (`agentview` at
+256×256) — a view framed for the model, not for humans, so the robot may sit
+partially out of frame. To record from a dedicated, better-framed camera
+*without changing what the policy sees*, set `video_camera`:
+
+```yaml
+    config:
+      capture_video: true
+      video_camera: frontview    # any robosuite camera, e.g. frontview, sideview
+      video_height: 512          # optional, default 512
+      video_width: 512           # optional, default 512
+```
+
+The env then renders both cameras each step — the policy keeps consuming its
+own camera and the MP4 records the other — at the cost of one extra render
+stream per step. When `video_camera` is unset, behavior is exactly the near-free
+default above. Setting it to the policy's own camera raises an error: unset it
+instead to record the policy view.
+
 > **Dependency.** MP4 encoding needs `imageio[ffmpeg]`, which ships with the
 > `[robosuite]` (and `[all]`) extra — no extra install step if you already run
 > eval. It's best-effort: if the encoder is missing it logs a warning and the
