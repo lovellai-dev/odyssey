@@ -1,0 +1,40 @@
+{
+  "a1_patch": {
+    "determinism_pass": true,
+    "wire_options_pass": true,
+    "patch_file": "scripts/patches/isaac_groot_init_noise.patch"
+  },
+  "a2_inverter": {
+    "bf16_decode_mse": 3.121341933365329e-06,
+    "bf16_decode_mse_vs_target": 5.622182652587071e-05,
+    "bf16_ok": true
+  },
+  "a3_inversion": {
+    "n_chunks": 17255,
+    "n_chunks_in": 17295,
+    "drop_rate": 0.0023128071697022263,
+    "gpu_hours": 1.4436072281996408,
+    "stride": 8,
+    "t_per_chunk_s": 0.36401352286338806
+  },
+  "a4_steering": {
+    "output_design": "full5280",
+    "pad_influence_mse": 0.002135261194780469,
+    "train_mse": 0.007094134576618671,
+    "val_mse": 0.006246238946914673,
+    "p99_pred": 2.8220605850219727
+  },
+  "a5_offline_gate": {
+    "n_holdout_states": 100,
+    "steered_beats_stock_frac": 1.0,
+    "ee_dist_cm": {
+      "stock_mean": 2.048252180749735,
+      "steered_mean": 0.737584420922271,
+      "oracle_mean": 0.4182556861721099
+    },
+    "improvement_toward_oracle": 0.8040923794545292,
+    "pass": true
+  },
+  "verdict": "STAGE_B_GO",
+  "notes": "Gate passes both conditions decisively: steered beats the 8-seed stock mean real-dim MSE on 100/100 held-out states (>=70% req) and closes 80.4% of the stock->oracle EE gap (>=30% req); EE-to-expert 2.05cm stock -> 0.74cm steered -> 0.42cm oracle. Honest caveats for Stage B: (1) pad-influence check found pads DO matter (2.1e-3 > 1e-4 thresh) so the net outputs the FULL 40x132 tensor (design=full5280), not real-dims+fixed-pads; (2) phase_onehot input is GT-sidecar-derived here, so at real browser deploy phase must be inferred (may degrade steering) -- Stage B should supply an inferred phase; (3) gate is OFFLINE/closed-form decode fidelity on in-distribution EXPERT dataset states, NOT closed-loop task success and NOT the policy's own drifted rollout states -- Stage B A/B validates real grasp+place success and steering authority at drift; (4) bf16 deploy precision adds only 3.1e-6 real-dim MSE vs fp32 (bounded, negligible); (5) A4 val_mse 0.0062 on unit-variance w* targets => steered init_noise ~ oracle, consistent with the scripted IK expert being a low-entropy function of (arm state, grasp_target, phase). fp_per_step=16, all metrics on real dims [:16,:7]."
+}
