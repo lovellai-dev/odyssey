@@ -27,27 +27,28 @@ VM=ubuntu@192.222.52.169
 SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30"
 GPY=/home/ubuntu/Isaac-GR00T/.venv/bin/python
 
-LOG=$HOME/v01_pipeline.log
-RESULT=$HOME/v01_result.json
-VM_NET=/home/ubuntu/steering_net_v01.npz
-VM_TRAIN_JSON=/home/ubuntu/steering_v01_train.json
-VM_GATE_JSON=/home/ubuntu/steering_v01_gate.json
+VER=${VER:-v02}
+LOG=$HOME/${VER}_pipeline.log
+RESULT=$HOME/${VER}_result.json
+VM_NET=/home/ubuntu/steering_net_${VER}.npz
+VM_TRAIN_JSON=/home/ubuntu/steering_${VER}_train.json
+VM_GATE_JSON=/home/ubuntu/steering_${VER}_gate.json
 
 cd "$BC"
 exec >>"$LOG" 2>&1
 echo "" ; echo "#################################################################"
-log(){ echo "=== [v01] $* $(date -u +%FT%TZ) ==="; }
+log(){ echo "=== [$VER] $* $(date -u +%FT%TZ) ==="; }
 fail(){
   trap - TERM INT HUP
   log "FAILED at: $*"
   printf '{"pipeline":"steering-v0.1","status":"FAILED","failed_at":"%s"}\n' "$*" > "$RESULT"
-  echo "V01_PIPELINE FAILED: $*"
+  echo "${VER^^}_PIPELINE FAILED: $*"
   exit 1
 }
 trap 'fail "signal"' TERM INT HUP
 
 log "START pid=$$"
-echo "V01_PIPELINE PID=$$"
+echo "${VER^^}_PIPELINE PID=$$"
 
 # ---- 0. sanity -----------------------------------------------------------------
 $SSH "$VM" "echo ok >/dev/null" || fail "vm-unreachable"
@@ -70,9 +71,9 @@ $SSH "$VM" "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 timeout 3
   --output-design full5280 --features v2 --dataset /home/ubuntu/ur5e_drugsort_obscond \
   --weight-floor 0.2 --weight-ref 0.05 \
   --model-out $VM_NET --out $VM_TRAIN_JSON" || fail "vm-retrain"
-$SSH "$VM" "[ -f $VM_NET ]" || fail "no-v01-net"
-scp -q -o StrictHostKeyChecking=no "$VM:$VM_TRAIN_JSON" "$HOME/steering_v01_train.json" || true
-log "retrain done: $("$PYUR5E" -c "import json;d=json.load(open('$HOME/steering_v01_train.json'));print({k:d.get(k) for k in ('val_mse','val_mse_moving','val_mse_static','p99_pred','best_epoch')})" 2>/dev/null || echo '?')"
+$SSH "$VM" "[ -f $VM_NET ]" || fail "no-net"
+scp -q -o StrictHostKeyChecking=no "$VM:$VM_TRAIN_JSON" "$HOME/steering_${VER}_train.json" || true
+log "retrain done: $("$PYUR5E" -c "import json;d=json.load(open('$HOME/steering_${VER}_train.json'));print({k:d.get(k) for k in ('val_mse','val_mse_moving','val_mse_static','p99_pred','best_epoch')})" 2>/dev/null || echo '?')"
 
 # ---- 3. offline gate (same two-stage protocol as A5, v2-aware) --------------------
 # decode = GR00T venv (GPU); fk-gate = mujoco venv (EE-distance verdict).
@@ -80,43 +81,44 @@ EVALPY=/home/ubuntu/odyssey-eval-venv/bin/python
 log "STEP3a VM gate decode (GR00T venv, held-out states)"
 $SSH "$VM" "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 timeout 5400 \
   $GPY flowdagger_offline_gate_ur5e.py decode --steering-net $VM_NET \
-  --decoded-out /home/ubuntu/v01_gate_decoded.npz --out /home/ubuntu/v01_decode.json" || fail "vm-gate-decode"
+  --decoded-out /home/ubuntu/${VER}_gate_decoded.npz --out /home/ubuntu/${VER}_decode.json" || fail "vm-gate-decode"
 log "STEP3b VM fk-gate (mujoco venv)"
 $SSH "$VM" "cd /home/ubuntu && timeout 1200 \
   $EVALPY flowdagger_offline_gate_ur5e.py fk-gate \
-  --decoded-npz /home/ubuntu/v01_gate_decoded.npz --out $VM_GATE_JSON" || fail "vm-fk-gate"
-scp -q -o StrictHostKeyChecking=no "$VM:$VM_GATE_JSON" "$HOME/steering_v01_gate.json" || fail "scp-gate"
-GATEPASS=$("$PYUR5E" -c "import json;print(1 if json.load(open('$HOME/steering_v01_gate.json')).get('pass') else 0)" 2>/dev/null)
-log "offline gate: $("$PYUR5E" -c "import json;d=json.load(open('$HOME/steering_v01_gate.json'));print({k:d.get(k) for k in ('steered_beats_stock_frac','improvement_toward_oracle','pass')})" 2>/dev/null || echo '?')"
+  --decoded-npz /home/ubuntu/${VER}_gate_decoded.npz --out $VM_GATE_JSON" || fail "vm-fk-gate"
+scp -q -o StrictHostKeyChecking=no "$VM:$VM_GATE_JSON" "$HOME/steering_${VER}_gate.json" || fail "scp-gate"
+GATEPASS=$("$PYUR5E" -c "import json;print(1 if json.load(open('$HOME/steering_${VER}_gate.json')).get('pass') else 0)" 2>/dev/null)
+log "offline gate: $("$PYUR5E" -c "import json;d=json.load(open('$HOME/steering_${VER}_gate.json'));print({k:d.get(k) for k in ('steered_beats_stock_frac','improvement_toward_oracle','pass')})" 2>/dev/null || echo '?')"
 [ "$GATEPASS" = "1" ] || fail "offline-gate-failed"
 
 # ---- 4. browser A/B with the v0.1 net --------------------------------------------
 log "STEP4 browser A/B via run_stageb_ab.sh (RUN_TAG=v01)"
-RUN_TAG=v01 STEER_NPZ_SRC=$VM_NET bash "$BC/run_stageb_ab.sh"
-grep -q "STAGEB_AB DONE" "$HOME/stageb_ab_v01.log" || fail "ab-run"
-[ -f "$HOME/stageb_ab_v01_result.json" ] || fail "no-ab-result"
+RUN_TAG=$VER STEER_NPZ_SRC=$VM_NET bash "$BC/run_stageb_ab.sh"
+grep -q "STAGEB_AB DONE" "$HOME/stageb_ab_${VER}.log" || fail "ab-run"
+[ -f "$HOME/stageb_ab_${VER}_result.json" ] || fail "no-ab-result"
 
 # ---- 5. aggregate -----------------------------------------------------------------
 log "STEP5 aggregate"
-"$PYUR5E" - <<'PY' || fail "aggregate"
-import json
+"$PYUR5E" - "$VER" "$RESULT" <<'PY' || fail "aggregate"
+import json, sys
+ver, result = sys.argv[1], sys.argv[2]
 out = {
-    "pipeline": "steering-v0.1",
-    "train": json.load(open("/home/daniel/steering_v01_train.json")),
-    "offline_gate": json.load(open("/home/daniel/steering_v01_gate.json")),
-    "browser_ab": json.load(open("/home/daniel/stageb_ab_v01_result.json")),
-    "v0_reference": {
-        "steered": "0/15 (13 home-freezes, 2 sub-cm approaches 0.2/0.7cm)",
-        "stock": "0/15 (4 home-freezes, 11 approaches 4.4-11.6cm)",
+    "pipeline": f"steering-{ver}",
+    "train": json.load(open(f"/home/daniel/steering_{ver}_train.json")),
+    "offline_gate": json.load(open(f"/home/daniel/steering_{ver}_gate.json")),
+    "browser_ab": json.load(open(f"/home/daniel/stageb_ab_{ver}_result.json")),
+    "history": {
+        "v0": "steered 0/15 (13 home-freezes, 2 sub-cm approaches 0.2/0.7cm); stock 0/15",
+        "v01": "steered 0/15 (0 freezes, 15/15 approaches, median pad 7.6cm, grip <=0.04 everywhere)",
     },
     "status": "DONE",
 }
-json.dump(out, open("/home/daniel/v01_result.json", "w"), indent=2)
-print("[v01] headline:", json.dumps({
+json.dump(out, open(result, "w"), indent=2)
+print(f"[{ver}] headline:", json.dumps({
     "steered": out["browser_ab"]["run_A_steered"]["success"],
     "stock": out["browser_ab"]["run_B_stock"]["success"],
     "verdict": out["browser_ab"]["verdict"],
 }))
 PY
 log "DONE — results in $RESULT"
-echo "V01_PIPELINE DONE"
+echo "${VER^^}_PIPELINE DONE"

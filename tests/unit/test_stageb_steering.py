@@ -156,3 +156,15 @@ def test_home_reset_clears_promotion():
     tgt = [-1.5708, -1.5708, 0.25]   # stub FK: home pinch xy = (q0, q1) = home
     # promoted at the (contrived) target right at home xy...
     assert pi.infer("s", _state(-1.5708, -1.5708, 0.0), tgt) == pi.REACH  # home reset wins
+
+
+def test_v02_promotion_requires_z_proximity():
+    # xy aligned but hovering 20cm above the target -> must NOT promote
+    pi = cond.PhaseInference(_linear_fk, HOME_Q, promote_radius=0.035, dwell_n=2)
+    tgt_high = [0.45, 0.15, 0.10]   # stub FK z = 0.3 -> dz = 0.2
+    for _ in range(5):
+        assert pi.infer("s", _state(0.45, 0.15, 0.0), tgt_high) == pi.REACH
+    # target z near the stub FK z -> promotes after dwell
+    tgt_near = [0.45, 0.15, 0.28]   # dz = 0.02
+    assert pi.infer("s2", _state(0.45, 0.15, 0.0), tgt_near) == pi.REACH
+    assert pi.infer("s2", _state(0.45, 0.15, 0.0), tgt_near) == pi.GRASP

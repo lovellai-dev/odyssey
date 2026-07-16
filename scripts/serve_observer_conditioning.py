@@ -143,6 +143,7 @@ class PhaseInference:
         home_tol: float = 0.15,
         open_thresh: float = 0.30,
         promote_radius: float = 0.035,
+        promote_dz: float = 0.05,
         dwell_n: int = 2,
     ) -> None:
         self._pinch = pinch_fn
@@ -152,6 +153,7 @@ class PhaseInference:
         self._home_tol = float(home_tol)
         self._open = float(open_thresh)
         self._promote_rad = float(promote_radius)
+        self._promote_dz = float(promote_dz)
         self._dwell_n = int(dwell_n)
         self._sess: dict[str, dict[str, Any]] = {}
 
@@ -186,24 +188,26 @@ class PhaseInference:
         st["was_closed"] = False
         if st["has_closed"]:
             return self.PLACE
-        # v0.1 DWELL PROMOTION — breaks the grasp deadlock found in the Stage-B
-        # A/B (steered arm reached 0.2-0.7 cm but never closed): the phase used
-        # to advance only on the policy's OWN grip command, while REACH-phase
-        # noise never commands closure. Now, hovering with the pinch xy within
-        # promote_radius of the Observer target for dwell_n consecutive queries
-        # promotes REACH -> GRASP on geometry + dwell alone, so the net (trained
-        # on close/lift windows at GRASP) can emit the closing action. Hysteresis
-        # at 1.5x the radius demotes if the arm drifts away while still open.
+        # v0.1/v0.2 DWELL PROMOTION — breaks the grasp deadlock found in the
+        # Stage-B A/B (steered arm reached 0.2-0.7 cm but never closed): the
+        # phase used to advance only on the policy's OWN grip command, while
+        # REACH-phase noise never commands closure. v0.2 promotes on FULL 3D
+        # proximity (the v0.1 xy-only check fired while the pinch was still
+        # 5-10 cm ABOVE the vial -> 81% of ticks spent hovering in a
+        # (GRASP, early-t, high-z) input combo that never occurs in training).
+        # Hysteresis at 1.5x the radius demotes if the arm drifts while open.
         if tgt3 is not None:
             tgt = np.asarray(tgt3, dtype=np.float64).reshape(3)
             pinch = np.asarray(self._pinch(q6), dtype=np.float64).reshape(3)
             xy = float(np.linalg.norm(pinch[:2] - tgt[:2]))
+            dz = abs(float(pinch[2] - tgt[2]))
+            near = xy <= self._promote_rad and dz <= self._promote_dz
             if st["promoted"]:
-                if xy <= 1.5 * self._promote_rad:
+                if xy <= 1.5 * self._promote_rad and dz <= 1.5 * self._promote_dz:
                     return self.GRASP
                 st.update(promoted=False, dwell=0)
                 return self.REACH
-            st["dwell"] = st["dwell"] + 1 if xy <= self._promote_rad else 0
+            st["dwell"] = st["dwell"] + 1 if near else 0
             if st["dwell"] >= self._dwell_n:
                 st["promoted"] = True
                 return self.GRASP

@@ -117,11 +117,18 @@ def chunk_motion_from_dataset(arrays: dict[str, np.ndarray], dataset_dir: str | 
             f = dataset_dir / "data" / "chunk-000" / f"episode_{e:06d}.parquet"
             cache[e] = np.stack(
                 pq.read_table(f, columns=["action"]).column("action").to_pylist()
-            )[:, :6]
+            )[:, :7]
         a = cache[e]
         s = int(fi[i])
         end = min(s + REAL_STEPS - 1, len(a) - 1)
-        out[i] = float(np.abs(a[end] - a[s]).max())
+        # v0.2: motion INCLUDES the grip dim. The v0.1 arm-only definition
+        # down-weighted the (arm-static) closing windows to the floor and
+        # suppressed the learned grip closure entirely (grip-authority probe:
+        # oracle closes at 100% of windows, v0.1-steered at 8%). A 0->1 grip
+        # transition now counts as full motion.
+        arm_m = float(np.abs(a[end, :6] - a[s, :6]).max())
+        grip_m = float(np.abs(a[s:end + 1, 6] - a[s, 6]).max())
+        out[i] = max(arm_m, grip_m)
     return out
 
 
