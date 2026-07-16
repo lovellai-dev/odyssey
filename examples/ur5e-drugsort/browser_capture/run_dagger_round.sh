@@ -184,6 +184,10 @@ SD=$("$PYUR5E" -c "import json;print(json.load(open('$WORK/relabel_cond/meta/inf
 # ---- 5. rsync + invert on VM ---------------------------------------------------------
 log "STEP5 rsync relabel_cond -> VM:$VM_DS_DAG + invert -> $VM_SHARDS_DAG"
 rsync -a --delete -e "$SSH" "$WORK/relabel_cond/" "$VM:$VM_DS_DAG/" || fail "rsync-dagger-ds"
+# Fresh shard dir: rollouts are stochastic, so a re-run's episode NNN differs
+# from a prior run's — the inverter's resume manifest would otherwise keep
+# STALE targets for same-numbered episodes.
+$SSH "$VM" "rm -rf $VM_SHARDS_DAG" || true
 MAXH=2.0; [ "$MINI" = "1" ] && MAXH=0.3
 $SSH "$VM" "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 timeout 10800 \
   $GPY flow_inverter_groot.py invert-dataset --dataset $VM_DS_DAG \

@@ -167,6 +167,23 @@ def cmd_relabel(args) -> int:
 
         # ExpertRelabeler is stateful/latching — step ONCE per frame, in order.
         gt = meta.get("gt", [])
+        # Vial-displacement TRUNCATION (Stage-C mini finding): once the policy
+        # bats the vial away (>15cm xy from spawn, or below tray height while
+        # ungrasped), the GT grasp target chases a runaway object far outside
+        # the training workspace and the relabel becomes noise. Keep only the
+        # pre-displacement prefix — the hover-band data we actually want.
+        if gt:
+            vx0, vy0 = float(gt[0]["vial"][0]), float(gt[0]["vial"][1])
+            cut = len(gt)
+            for fi, f in enumerate(gt):
+                v = f["vial"]
+                disp = ((float(v[0]) - vx0) ** 2 + (float(v[1]) - vy0) ** 2) ** 0.5
+                if (disp > 0.15 and float(f["grip"]) < 0.5) or float(v[2]) < 0.15:
+                    cut = fi
+                    break
+            if cut < len(gt):
+                print(f"[relabel] {d.name}: vial displaced at frame {cut}/{len(gt)} — truncating")
+                gt = gt[:cut]
         actions = []
         for f in gt:
             tq, tg = relab.step(f["pinch"], f["vial"], float(f["grip"]))
