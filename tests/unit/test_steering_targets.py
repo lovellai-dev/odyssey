@@ -155,3 +155,36 @@ def test_motion_weights_floor_and_saturation():
     assert np.isclose(w[1], 0.6)          # halfway
     assert np.isclose(w[2], 1.0)          # at ref -> full
     assert np.isclose(w[3], 1.0)          # saturates
+
+
+# ---------------------------------------------------------------------------
+# Stage C: multi-source shard loading (base + DAgger rounds)
+# ---------------------------------------------------------------------------
+
+def test_load_shards_multi_offsets_episodes(tmp_path):
+    import numpy as np
+    for si, name in enumerate(("base", "dagger")):
+        d = tmp_path / name
+        d.mkdir()
+        arr = _fake_arrays(n=40, n_eps=4, seed=si)
+        np.savez(d / "shard_000.npz", **arr)
+    arrays, source = ts.load_shards_multi([tmp_path / "base", tmp_path / "dagger"])
+    assert len(arrays["episode"]) == 80 and len(source) == 80
+    assert set(np.unique(source)) == {0, 1}
+    base_eps = arrays["episode"][source == 0]
+    dag_eps = arrays["episode"][source == 1]
+    assert base_eps.max() < ts.SOURCE_EP_OFFSET
+    assert dag_eps.min() >= ts.SOURCE_EP_OFFSET
+    # episode-level split never mixes sources within an episode id
+    assert len(set(base_eps.tolist()) & set(dag_eps.tolist())) == 0
+
+
+def test_load_shards_multi_single_dir_is_backward_compatible(tmp_path):
+    import numpy as np
+    d = tmp_path / "only"
+    d.mkdir()
+    arr = _fake_arrays(n=30, n_eps=3, seed=7)
+    np.savez(d / "shard_000.npz", **arr)
+    arrays, source = ts.load_shards_multi([d])
+    assert np.array_equal(arrays["episode"], arr["episode"])  # offset 0
+    assert np.all(source == 0)

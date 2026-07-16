@@ -45,6 +45,30 @@ PAD_SEED = 20260716                         # fixed seed for deploy pad noise
 # ---------------------------------------------------------------------------
 # Pure data pipeline (numpy only — unit-tested)
 # ---------------------------------------------------------------------------
+SOURCE_EP_OFFSET = 100_000   # keeps episode ids disjoint across shard sources
+
+
+def load_shards_multi(shard_dirs: list[str | Path]) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Load + concatenate several shard dirs (Stage C: base + DAgger rounds).
+
+    Returns (arrays, source) where source[i] is the index of the dir sample i
+    came from. Episode ids are offset per source (source * SOURCE_EP_OFFSET) so
+    episode-level splitting and t_norm grouping never mix sources.
+    """
+    accs: list[dict[str, np.ndarray]] = []
+    sources: list[np.ndarray] = []
+    for si, d in enumerate(shard_dirs):
+        a = load_shards(d)
+        a["episode"] = np.asarray(a["episode"], dtype=np.int64) + si * SOURCE_EP_OFFSET
+        accs.append(a)
+        sources.append(np.full(len(a["episode"]), si, dtype=np.int64))
+    keys = set(accs[0])
+    for a in accs[1:]:
+        keys &= set(a)
+    arrays = {k: np.concatenate([a[k] for a in accs], axis=0) for k in sorted(keys)}
+    return arrays, np.concatenate(sources)
+
+
 def load_shards(shard_dir: str | Path) -> dict[str, np.ndarray]:
     """Concatenate all ``shard_*.npz`` in a directory into flat arrays."""
     shard_dir = Path(shard_dir)
@@ -207,24 +231,46 @@ def build_mlp(in_dim: int, out_dim: int, hidden: int = 256):
 def mode_train(args) -> dict:
     import torch
 
-    arrays = load_shards(args.shards)
+    shard_dirs = [s for s in str(args.shards).split(",") if s]
+    arrays, source = load_shards_multi(shard_dirs)
     design = args.output_design
     X, Y, episodes = build_xy(arrays, design, features=args.features)
     train_idx, val_idx = episode_split(episodes, val_frac=args.val_frac, seed=args.seed)
     n_train, n_val = len(train_idx), len(val_idx)
     print(f"[train] N={len(X)} in={X.shape[1]} out={Y.shape[1]} design={design} "
-          f"features={args.features} | train={n_train} val={n_val} | "
+          f"features={args.features} sources={len(shard_dirs)} "
+          f"per_source={np.bincount(source).tolist()} | train={n_train} val={n_val} | "
           f"val_eps={len(np.unique(episodes[val_idx]))}", flush=True)
 
-    # v0.1: motion-weighted loss (needs the dataset for expert chunk motion).
+    # v0.1: motion-weighted loss (needs the per-source dataset for chunk motion).
+    # Stage C: per-source datasets ('' or 'none' to skip a source) + per-source
+    # boost so a small DAgger round is not drowned by the 17k base samples.
     motion = None
     W = np.ones(len(X), dtype=np.float32)
     if args.dataset:
-        motion = chunk_motion_from_dataset(arrays, args.dataset)
+        datasets = [d for d in str(args.dataset).split(",")]
+        if len(datasets) == 1 and len(shard_dirs) > 1:
+            datasets = datasets * len(shard_dirs)
+        motion = np.zeros(len(X), dtype=np.float32)
+        for si in range(len(shard_dirs)):
+            m = source == si
+            ds = datasets[si] if si < len(datasets) else "none"
+            if not np.any(m) or ds in ("", "none"):
+                motion[m] = 1.0   # unknown motion -> full weight
+                continue
+            sub = {k: (np.asarray(v)[m] if len(np.asarray(v)) == len(X) else v)
+                   for k, v in arrays.items()}
+            sub["episode"] = np.asarray(sub["episode"]) % SOURCE_EP_OFFSET
+            motion[m] = chunk_motion_from_dataset(sub, ds)
         W = motion_weights(motion, floor=args.weight_floor, ref=args.weight_ref)
-        W = W / W.mean()   # keep the loss scale comparable to unweighted MSE
-        print(f"[train] motion weights: static(<0.02rad)={float(np.mean(motion < 0.02)):.1%} "
-              f"w_mean=1.0 w_min={W.min():.3f} w_max={W.max():.3f}", flush=True)
+        print(f"[train] motion weights: static(<0.02rad)={float(np.mean(motion < 0.02)):.1%} ",
+              flush=True)
+    boosts = [float(b) for b in str(args.source_boost).split(",")]
+    while len(boosts) < len(shard_dirs):
+        boosts.append(boosts[-1])
+    W = W * np.array([boosts[s] for s in source], dtype=np.float32)
+    W = W / W.mean()   # keep the loss scale comparable to unweighted MSE
+    print(f"[train] boosts={boosts} w_min={W.min():.3f} w_max={W.max():.3f}", flush=True)
 
     dev = args.device
     Xt = torch.as_tensor(X, dtype=torch.float32, device=dev)
@@ -299,6 +345,11 @@ def mode_train(args) -> dict:
                 val_mse_moving = float(((vpred[vm] - Yt[va][vm]) ** 2).mean())
             if bool((~vm).any()):
                 val_mse_static = float(((vpred[~vm] - Yt[va][~vm]) ** 2).mean())
+        val_mse_by_source = {}
+        for si in range(len(shard_dirs)):
+            sm = torch.as_tensor(source[val_idx] == si, device=dev)
+            if bool(sm.any()):
+                val_mse_by_source[f"src{si}"] = float(((vpred[sm] - Yt[va][sm]) ** 2).mean())
 
     ckpt = {
         "state_dict": {k: v.cpu().numpy() for k, v in net.state_dict().items()},
@@ -316,6 +367,8 @@ def mode_train(args) -> dict:
         "features": args.features,
         "train_mse": final_train, "val_mse": final_val,
         "val_mse_moving": val_mse_moving, "val_mse_static": val_mse_static,
+        "val_mse_by_source": val_mse_by_source,
+        "sources": [str(s) for s in shard_dirs], "source_boost": boosts,
         "p99_pred": final_p99,
         "best_epoch": best_epoch, "n_train": n_train, "n_val": n_val,
         "val_episodes": np.unique(episodes[val_idx]).tolist(),
@@ -406,6 +459,8 @@ def main() -> int:
                     help="LeRobot dataset dir; enables motion-weighted loss + stratified val")
     pt.add_argument("--weight-floor", type=float, default=0.2)
     pt.add_argument("--weight-ref", type=float, default=0.05)
+    pt.add_argument("--source-boost", default="1.0",
+                    help="comma-separated per-shard-dir loss-weight multipliers (Stage C dagger boost)")
 
     pc = sub.add_parser("pad-check")
     pc.add_argument("--model-path", default="/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000")

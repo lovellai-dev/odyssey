@@ -188,6 +188,14 @@ def cmd_relabel(args) -> int:
 
         writer.add_episode(states=states, actions=actions,
                            frames={"exterior": ext, "wrist": wrist}, task=args.instruction)
+        # GT sidecar in the augment_state_grasp_target.py schema (meta/gt/
+        # episode_NNNNNN.json with per-frame vial_pose) so the 7-D relabel
+        # dataset can be lifted to the 10-D conditioned state (Stage C).
+        gt_dir = out / "meta" / "gt"
+        gt_dir.mkdir(parents=True, exist_ok=True)
+        (gt_dir / f"episode_{n_used:06d}.json").write_text(json.dumps({
+            "frames": [{"vial_pose": list(map(float, f["vial"]))} for f in gt[:n]],
+        }))
         n_used += 1
         roll_succ += int(bool(meta.get("success")))
         roll_lift += int(bool(meta.get("lifted")))

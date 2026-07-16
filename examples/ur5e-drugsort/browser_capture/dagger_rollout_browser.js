@@ -116,6 +116,9 @@ const RUN_ROLLOUT = async (plan, cfg) => {
   const z0 = vialXYZ[2];
   let zMax = z0, ticks = 0, queries = 0, gripCmd = 0, gripMax = 0, err = null;
   const states = [], gt = [];
+  // Fresh per-episode session id: the steering sidecar keys its per-session
+  // state (phase machine, t_norm tick counter, hold-last target) by sid.
+  const sid = 'dg-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
   let chunkQ = null, chunkG = null, ci = 0, chunkLen = 0;
 
   while (ticks < cfg.maxTicks) {
@@ -135,7 +138,7 @@ const RUN_ROLLOUT = async (plan, cfg) => {
     // --- query the SERVED policy per chunk (obs grip = COMMANDED, deploy convention) ---
     if (chunkQ === null || ci >= chunkLen) {
       const obsState = [measured[0], measured[1], measured[2], measured[3], measured[4], measured[5], Math.max(0, Math.min(1, gripCmd))];
-      const body = { image_b64: ext, state: obsState, instruction: cfg.instruction, image_b64_wrist: wr };
+      const body = { image_b64: ext, state: obsState, instruction: cfg.instruction, image_b64_wrist: wr, sid };
       let res;
       try {
         const resp = await fetch('/api/groot/get_action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
