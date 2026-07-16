@@ -1,0 +1,84 @@
+# LIBERO eval (MULTI-AGENT, DELEGATION-DRIVEN, EVAL-ONLY):
+#   OpenVLA-LIBERO pilot + Gemma 4 SPECIALIST as an on-demand grounding tool.
+#
+# The delegation counterpart to mission-multiagent.yaml. There, the SPECIALIST is
+# the *planner*: it authors the full task decomposition up front and the pilot
+# marches through that fixed list (PlannedEvalRuntime, coordination: planning).
+#
+# HERE, no agent owns the sequence. A deterministic orchestrator runs a generic
+# pick -> place skill template and, per phase, DELEGATES target grounding to the
+# SPECIALIST ("where is the object to pick up in this scene?"); the returned
+# scene-grounded phrase conditions the pilot's instruction. The phase HANDS
+# CONTROL BACK when the SPECIALIST confirms the sub-task is done (reusing the same
+# completion check as the planner arm). The SPECIALIST authors no plan — it is a
+# perception tool the orchestrator invokes (the open-weight analogue of GR-ER's
+# spatial grounding). This is the "delegation" arm of the planner-vs-delegation
+# comparison; run it against mission-multiagent.yaml on identical tasks/metrics.
+#
+# Prereqs (two venvs): identical to mission-multiagent.yaml —
+#   examples/multiagent-openvla-gemma/setup.sh
+#   source examples/multiagent-openvla-gemma/.env   # sets ODYSSEY_SPECIALIST_PYTHON
+# Plus the `libero` package in env_pilot (examples/franka-libero/setup.sh).
+# Hardware: 24 GB GPU — int4 E2B-it SPECIALIST (~5 GB) + ~14 GB bf16 pilot ≈ 19 GB
+# peak (grounding + completion checks reuse the one loaded Gemma; no extra VRAM).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-object-multiagent-delegation
+  description: Eval-only delegation-driven — OpenVLA LIBERO-object pilot + Gemma 4 grounding SPECIALIST on the LIBERO object suite.
+  tags: [openvla, gemma, multiagent, delegation, libero, franka, eval-only]
+
+objective: |
+  Evaluate the published OpenVLA-7B LIBERO-object checkpoint under a
+  delegation-driven orchestrator that delegates per-phase target grounding to an
+  out-of-process multimodal Gemma 4 SPECIALIST, on the LIBERO object suite.
+
+acceptance_criteria: |
+  Non-trivial success_rate across the evaluation episodes, with phase_advance
+  telemetry showing per-phase grounding delegations and completion-driven
+  hand-backs (not just cap hand-backs).
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: openvla/openvla-7b-finetuned-libero-object
+
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        # Vision-language SPECIALIST, runs out-of-process in env_specialist. Gemma
+        # 4 E2B-it is multimodal and ungated; here it is invoked as a grounding
+        # tool (and completion detector), not as a planner.
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal
+
+tasks:
+  - name: eval-libero-object-delegation
+    kind: evaluation
+    evaluation_type: libero
+    description: Pick-and-place of the task_id=0 object into the basket (LIBERO object suite).
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      checkpoint: openvla/openvla-7b-finetuned-libero-object   # HF repo id (eval-only)
+      unnorm_key: libero_object
+      task_id: 0
+      capture_video: true
+      # Select the delegation-driven arm. Default is `planning` (PlannedEvalRuntime,
+      # the SPECIALIST authors the plan). `delegation` runs the orchestrator that
+      # delegates grounding per phase and hands back on completion.
+      coordination: delegation
+      # Hand-back cadence (shared with the planner arm's completion gating): every
+      # phase_check_every steps the SPECIALIST is asked "is this sub-task done?" and
+      # the phase hands back only on yes; phase_max_steps is the safety cap. Each
+      # check/grounding call adds ~1-2s, so keep the cadence >= 10.
+      phase_check_every: 10
+      phase_max_steps: 100

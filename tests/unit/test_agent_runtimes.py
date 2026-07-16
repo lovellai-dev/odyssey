@@ -14,15 +14,26 @@ from numpy.typing import NDArray
 
 # Import engine first to avoid circular import (same pattern as test_engine.py).
 import odyssey.engine  # noqa: F401
+from odyssey.runners.agents.delegated import (
+    PICK_PLACE_TEMPLATE,
+    DelegatedEvalRuntime,
+    DelegationConfig,
+)
 from odyssey.runners.agents.planned import (
     PhaseConfig,
     PhaseStrategy,
     PlannedEvalRuntime,
     _PhaseState,
 )
-from odyssey.runners.agents.planner import LLMPlanner, _parse_plan, _parse_yes_no
+from odyssey.runners.agents.planner import (
+    LLMPlanner,
+    _parse_grounding,
+    _parse_plan,
+    _parse_yes_no,
+)
 from odyssey.runners.agents.runtime import (
     CompletionDetector,
+    GroundingProvider,
     PilotRuntime,
     PlannerRuntime,
     TextGenerator,
@@ -518,3 +529,238 @@ def test_llm_planner_check_done_false_for_text_only_generator() -> None:
 
 def test_llm_planner_satisfies_completion_detector() -> None:
     assert isinstance(LLMPlanner(FakeVisionGenerator("YES")), CompletionDetector)
+
+
+# ---------------------------------------------------------------------------
+# Grounding — LLMPlanner.ground() + _parse_grounding
+# ---------------------------------------------------------------------------
+
+def test_parse_grounding_first_nonempty_line() -> None:
+    assert _parse_grounding("the red mug on the left") == "the red mug on the left"
+
+
+def test_parse_grounding_strips_markers_and_quotes() -> None:
+    assert _parse_grounding('- "the top drawer".') == "the top drawer"
+    assert _parse_grounding("1. **the black bowl**") == "the black bowl"
+
+
+def test_parse_grounding_skips_blank_lines() -> None:
+    assert _parse_grounding("\n\n  the blue plate\nextra") == "the blue plate"
+
+
+def test_parse_grounding_empty() -> None:
+    assert _parse_grounding("") == ""
+    assert _parse_grounding("   \n  ") == ""
+
+
+def test_llm_planner_ground_returns_parsed_phrase() -> None:
+    gen = FakeVisionGenerator("the red cube near the plate")
+    planner = LLMPlanner(gen)
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert planner.ground("the object to pick up", img) == "the red cube near the plate"
+    # The scene image is forwarded to the multimodal generator.
+    assert gen.calls[-1][1] is img
+
+
+def test_llm_planner_ground_echoes_query_without_image() -> None:
+    planner = LLMPlanner(FakeVisionGenerator("ignored"))
+    assert planner.ground("the target", None) == "the target"
+
+
+def test_llm_planner_ground_echoes_query_for_text_only_generator() -> None:
+    planner = LLMPlanner(FakeTextGenerator("ignored"))
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert planner.ground("the target", img) == "the target"
+
+
+def test_llm_planner_ground_echoes_query_on_empty_output() -> None:
+    planner = LLMPlanner(FakeVisionGenerator("   "))
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert planner.ground("the target", img) == "the target"
+
+
+def test_llm_planner_satisfies_grounding_provider() -> None:
+    assert isinstance(LLMPlanner(FakeVisionGenerator("x")), GroundingProvider)
+
+
+# ---------------------------------------------------------------------------
+# DelegatedEvalRuntime — delegation-driven orchestrator
+# ---------------------------------------------------------------------------
+
+class FakeGrounder:
+    """Grounding provider stub. Records queries; returns a fixed target.
+
+    No ``check_done`` — models a grounder that only grounds (hand-back then
+    falls back to the step cap).
+    """
+
+    def __init__(self, target: str = "the red cube", *, raises: bool = False) -> None:
+        self.target = target
+        self.ground_calls: list[tuple[str, Any]] = []
+        self._raises = raises
+
+    def ground(self, target_query: str, image: Any) -> str:
+        self.ground_calls.append((target_query, image))
+        if self._raises:
+            raise RuntimeError("grounding boom")
+        return self.target
+
+
+class FakeGrounderWithCheck(FakeGrounder):
+    """Grounder that also satisfies CompletionDetector (like RemotePlanner).
+
+    ``check_done`` returns True from the ``done_after``-th call onward.
+    """
+
+    def __init__(
+        self, target: str = "the red cube", *, done_after: int | None = None
+    ) -> None:
+        super().__init__(target)
+        self._done_after = done_after
+        self.check_calls: list[tuple[str, Any]] = []
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        self.check_calls.append((instruction, image))
+        return self._done_after is not None and len(self.check_calls) >= self._done_after
+
+
+_IMG = np.zeros((4, 4, 3), dtype=np.uint8)
+
+
+def test_fake_grounder_satisfies_protocol() -> None:
+    assert isinstance(FakeGrounder(), GroundingProvider)
+
+
+def test_delegated_begin_episode_returns_phase_labels() -> None:
+    rt = DelegatedEvalRuntime(FakePilot(), FakeGrounder())
+    assert rt.begin_episode("task") == ["pick", "place"]
+    assert rt.total_phases == 2
+    assert rt.current_phase_index == 0
+
+
+def test_delegated_grounds_and_composes_pick_instruction() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounder(target="the blue mug")
+    rt = DelegatedEvalRuntime(pilot, grounder)
+    rt.begin_episode("put the mug on the plate")
+    rt.get_action(_IMG)
+    # First phase (pick) grounded once, spliced into the pilot instruction.
+    assert len(grounder.ground_calls) == 1
+    assert pilot.calls[0][1] == "pick up the blue mug"
+
+
+def test_delegated_hand_back_on_completion_and_regrounds() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounderWithCheck(target="the mug", done_after=1)
+    rt = DelegatedEvalRuntime(
+        pilot, grounder, config=DelegationConfig(check_every=2, max_steps_per_phase=100)
+    )
+    rt.begin_episode("put the mug on the plate")
+
+    rt.get_action(_IMG)  # step 1: ground pick, act; no check yet (n=1)
+    assert rt.current_phase_index == 0
+    rt.get_action(_IMG)  # step 2: n=2 -> check fires -> hand-back to place
+    assert rt.current_phase_index == 1
+    rt.get_action(_IMG)  # step 3: re-ground place, act
+    assert pilot.calls[-1][1] == "place it at the mug"
+    assert len(grounder.ground_calls) == 2  # exactly one grounding per phase
+
+
+def test_delegated_cap_hand_back_without_detector() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounder(target="the cube")  # no check_done
+    rt = DelegatedEvalRuntime(
+        pilot, grounder, config=DelegationConfig(check_every=10, max_steps_per_phase=3)
+    )
+    rt.begin_episode("task")
+    for _ in range(3):
+        rt.get_action(_IMG)
+    # Cap reached at step 3 -> hand-back even without a detector.
+    assert rt.current_phase_index == 1
+
+
+def test_delegated_auto_adopts_grounder_as_detector() -> None:
+    # No detector passed; the grounder exposes check_done -> semantic hand-back
+    # works (proves auto-adoption).
+    pilot = FakePilot()
+    grounder = FakeGrounderWithCheck(target="x", done_after=1)
+    rt = DelegatedEvalRuntime(
+        pilot, grounder, config=DelegationConfig(check_every=1, max_steps_per_phase=100)
+    )
+    rt.begin_episode("task")
+    rt.get_action(_IMG)  # n=1 -> check -> hand-back
+    assert rt.current_phase_index == 1
+    assert grounder.check_calls  # detector was consulted
+
+
+def test_delegated_phase_events_schema() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounderWithCheck(target="the cube", done_after=1)
+    rt = DelegatedEvalRuntime(
+        pilot, grounder, config=DelegationConfig(check_every=1, max_steps_per_phase=100)
+    )
+    rt.begin_episode("task")
+    rt.get_action(_IMG)  # grounding event, then completion hand-back event
+    events = rt.drain_phase_events()
+
+    assert [e["reason"] for e in events] == ["grounding", "completion"]
+    assert events[0]["capability"] == "grounding"
+    assert events[0]["instruction"] == "pick up the cube"
+    assert events[0]["skill"] == "pick"
+    assert events[1]["capability"] == "handback"
+    assert events[1]["from"] == 0 and events[1]["to"] == 1
+    # Drain clears the buffer.
+    assert rt.drain_phase_events() == []
+
+
+def test_delegated_grounding_failure_falls_back_to_query() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounder(raises=True)
+    rt = DelegatedEvalRuntime(pilot, grounder, task_fallback="do it")
+    rt.begin_episode("stack the blocks")
+    rt.get_action(_IMG)  # grounder raises -> falls back to the query, never crashes
+    instr = pilot.calls[0][1]
+    assert instr.startswith("pick up ")
+    assert "stack the blocks" in instr
+
+
+def test_delegated_holds_after_all_phases() -> None:
+    pilot = FakePilot()
+    grounder = FakeGrounderWithCheck(target="the cube", done_after=1)
+    rt = DelegatedEvalRuntime(
+        pilot, grounder, config=DelegationConfig(check_every=1, max_steps_per_phase=100)
+    )
+    rt.begin_episode("task")
+    for _ in range(5):
+        action = rt.get_action(_IMG)
+    # Both phases handed back; runtime keeps returning valid actions.
+    assert rt.current_phase_index >= rt.total_phases
+    assert action.shape == (7,)
+
+
+def test_delegation_config_from_config_reads_keys() -> None:
+    cfg = DelegationConfig.from_config({"phase_check_every": 5, "phase_max_steps": 20})
+    assert cfg.check_every == 5
+    assert cfg.max_steps_per_phase == 20
+    assert cfg.skills == PICK_PLACE_TEMPLATE
+
+
+def test_delegation_config_defaults() -> None:
+    cfg = DelegationConfig.from_config({})
+    assert cfg.check_every == 10
+    assert cfg.max_steps_per_phase == 100
+
+
+def test_delegated_close_calls_grounder_close() -> None:
+    class ClosableGrounder(FakeGrounder):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    grounder = ClosableGrounder()
+    rt = DelegatedEvalRuntime(FakePilot(), grounder)
+    rt.close()
+    assert grounder.closed is True

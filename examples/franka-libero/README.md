@@ -13,10 +13,13 @@ HuggingFace, so you do **not** need a dataset on disk (the 10.2 GB
 | Mission | Agents | What it adds |
 |---|---|---|
 | `mission.yaml` | 1 — OpenVLA **pilot** | Baseline single-agent eval on the LIBERO `object` suite. |
-| `mission-multiagent.yaml` | 2 — pilot + Gemma **specialist** | Adds an out-of-process multimodal Gemma 4 planner that decomposes the instruction into phases (`PlannedEvalRuntime`). |
+| `mission-multiagent.yaml` | 2 — pilot + Gemma **specialist** | **Planner-driven.** An out-of-process multimodal Gemma 4 planner decomposes the instruction into phases the pilot executes (`PlannedEvalRuntime`, `coordination: planning`). |
+| `mission-multiagent-delegation.yaml` | 2 — pilot + Gemma **specialist** | **Delegation-driven.** A deterministic orchestrator delegates per-phase target *grounding* to the specialist and hands control back on completion (`DelegatedEvalRuntime`, `coordination: delegation`). |
 
-> Both are eval-only — the multi-agent one is **not** a training mission, it just
-> adds a planner. See the top of each YAML for the config knobs.
+> All three are eval-only — the multi-agent ones are **not** training missions,
+> they just add a specialist. See the top of each YAML for the config knobs, and
+> [Planner vs delegation](#planner-vs-delegation-two-multi-agent-arms) below for
+> what actually differs between the two multi-agent arms.
 
 > **No `task_instruction` — that's intentional.** LIBERO is a *language-conditioned*
 > benchmark: every task in a suite ships its own natural-language instruction (keyed
@@ -78,9 +81,14 @@ export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 odyssey validate examples/franka-libero/mission.yaml
 odyssey run      examples/franka-libero/mission.yaml
 
-# multi-agent (Gemma planner) — load the specialist venv first
-source examples/multiagent-openvla-gemma/.env       # sets ODYSSEY_SPECIALIST_PYTHON
+# multi-agent — load the specialist venv first (sets ODYSSEY_SPECIALIST_PYTHON)
+source examples/multiagent-openvla-gemma/.env
+
+# planner-driven arm: specialist authors the plan, pilot executes it
 odyssey run examples/franka-libero/mission-multiagent.yaml
+
+# delegation-driven arm: orchestrator delegates grounding to the specialist
+odyssey run examples/franka-libero/mission-multiagent-delegation.yaml
 
 # per-episode videos
 find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;
@@ -96,6 +104,54 @@ Change `benchmark_name`, `config.checkpoint`, and `config.unnorm_key` **together
 | `libero_spatial` | `openvla/openvla-7b-finetuned-libero-spatial` | `libero_spatial` |
 | `libero_goal`    | `openvla/openvla-7b-finetuned-libero-goal`    | `libero_goal`    |
 | `libero_10`      | `openvla/openvla-7b-finetuned-libero-10`      | `libero_10`      |
+
+---
+
+## Planner vs delegation (two multi-agent arms)
+
+Both multi-agent missions pair the same OpenVLA **pilot** with the same Gemma 4
+**specialist** and share the same completion check — the *only* difference is the
+specialist's **role**, selected by the `coordination` key in the task `config:`.
+This is the "planner vs delegation" comparison: run both on identical suites and
+compare `success_rate`, wasted steps, and time-to-completion.
+
+| | Planner-driven (`coordination: planning`) | Delegation-driven (`coordination: delegation`) |
+|---|---|---|
+| Who owns the sequence | The **specialist** — it authors the full plan once per episode | The **orchestrator** — a generic `pick → place` skill template |
+| Specialist's job | `plan()`: decompose the task into ordered sub-instructions | `ground()`: locate the current phase's target in the scene, on demand |
+| Phase transition | Pilot marches the fixed plan; advance on completion check / step cap | Orchestrator hands control back when the specialist confirms the sub-task is done |
+| Runtime | `PlannedEvalRuntime` | `DelegatedEvalRuntime` |
+| Mission | `mission-multiagent.yaml` | `mission-multiagent-delegation.yaml` |
+
+**How delegation works per phase:** the orchestrator asks the specialist *"where
+is the object to pick up in this scene?"* (`ground`), splices the returned phrase
+into the pilot's instruction (e.g. `pick up the red mug on the left`), lets the
+pilot act, and every `phase_check_every` steps asks *"is this sub-task done?"*
+(`check_done`) — advancing to `place` only on a confirmed yes, with
+`phase_max_steps` as a safety cap. The specialist **authors no plan**; it is an
+on-demand perception tool.
+
+**Zero extra VRAM either way:** the one loaded Gemma answers `plan`, `check_done`
+*and* `ground` from the same out-of-process server. Grounding/check calls add
+~1–2 s each, so keep `phase_check_every >= 10`.
+
+**Reading the telemetry:** both arms emit `phase_advance` progress events. In the
+delegation arm each event carries a `capability` (`grounding` when a new target
+is grounded, `handback` when a phase completes) and a `reason` (`grounding` /
+`completion` / `cap`). A healthy delegation run shows `completion` hand-backs, not
+just `cap` ones — `cap`-only means the completion check never fired (check the
+specialist server logs).
+
+```bash
+# same suite, both arms — compare the reported success_rate
+odyssey run examples/franka-libero/mission-multiagent.yaml             # planning
+odyssey run examples/franka-libero/mission-multiagent-delegation.yaml  # delegation
+```
+
+> Scope: the delegation orchestrator's routing is a fixed `pick → place` template
+> and completion-gated hand-back — a deliberate skeleton. Capability advertising /
+> an LLM router that *chooses* which agent to invoke (full delegation-driven
+> regime) is not yet wired.
 
 ---
 

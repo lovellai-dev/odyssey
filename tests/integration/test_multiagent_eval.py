@@ -399,3 +399,59 @@ async def test_completion_gated_drains_phase_advance_telemetry() -> None:
     assert advances[0]["from"] == 0
     assert advances[0]["to"] == 1
     assert detector.calls == 1
+
+
+class MockGrounder:
+    """Grounding provider + completion detector stub (like RemotePlanner).
+
+    ``ground`` returns a fixed target; ``check_done`` confirms from the Nth poll.
+    """
+
+    def __init__(self, target: str = "the red cube", *, done_after: int | None = None) -> None:
+        self._target = target
+        self._done_after = done_after
+        self.ground_calls = 0
+        self.check_calls = 0
+
+    def ground(self, target_query: str, image: object) -> str:
+        self.ground_calls += 1
+        return self._target
+
+    def check_done(self, instruction: str, image: object) -> bool:
+        self.check_calls += 1
+        return self._done_after is not None and self.check_calls >= self._done_after
+
+
+async def test_delegated_runtime_drains_delegation_telemetry() -> None:
+    """The DelegatedEvalRuntime emits grounding + hand-back records through the
+    same sync-runtime / async-drain pattern the eval runners use."""
+    from odyssey.runners.agents.delegated import DelegatedEvalRuntime, DelegationConfig
+
+    pilot = MockPilot()
+    grounder = MockGrounder(target="the mug", done_after=1)  # confirms on first poll
+    runtime = DelegatedEvalRuntime(
+        pilot,
+        grounder,
+        config=DelegationConfig(check_every=1, max_steps_per_phase=50),
+    )
+    runtime.begin_episode("put the mug on the plate")
+
+    pub = CapturingPublisher()
+    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    for _ in range(2):
+        runtime.get_action(img)
+        for ev in runtime.drain_phase_events():
+            await pub.publish("task.progress", {"step": "phase_advance", **ev})
+
+    records = [p for _, p in pub.events if p.get("step") == "phase_advance"]
+    reasons = [r["reason"] for r in records]
+    # Step 1: ground pick -> completion hand-back. Step 2: ground place ->
+    # completion hand-back (detector confirms on every poll here).
+    assert reasons == ["grounding", "completion", "grounding", "completion"]
+    assert records[0]["capability"] == "grounding"
+    assert records[0]["instruction"] == "pick up the mug"
+    assert records[1]["capability"] == "handback"
+    assert records[1]["from"] == 0 and records[1]["to"] == 1
+    assert records[2]["capability"] == "grounding"
+    assert records[2]["instruction"] == "place it at the mug"
+    assert grounder.ground_calls == 2  # one grounding per phase

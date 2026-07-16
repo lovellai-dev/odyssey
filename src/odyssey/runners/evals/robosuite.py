@@ -218,11 +218,22 @@ class RobosuiteRunner(Runner):
         )
 
         if use_planned:
-            runtime = _build_planned_runtime(context, checkpoint, spec)
+            coordination = str((spec.config or {}).get("coordination", "planning")).lower()
+            if coordination == "delegation":
+                runtime = _build_delegated_runtime(context, checkpoint, spec)
+                step_label = "DelegatedEvalRuntime (PILOT + SPECIALIST)"
+            elif coordination == "planning":
+                runtime = _build_planned_runtime(context, checkpoint, spec)
+                step_label = "PlannedEvalRuntime (PILOT + SPECIALIST)"
+            else:
+                raise ValueError(
+                    f"unknown coordination {coordination!r}; "
+                    "allowed: planning, delegation"
+                )
             await context.emit_progress(
                 "model_loading",
                 step="load_specialist",
-                step_label="PlannedEvalRuntime (PILOT + SPECIALIST)",
+                step_label=step_label,
             )
             policy = None
         elif self._policy_factory is _default_policy_factory:
@@ -478,21 +489,22 @@ def _resolve_task_instruction(spec: EvaluationTask) -> str:
     )
 
 
-def _build_planned_runtime(
+def _build_pilot_and_specialist(
     context: TaskContext,
     checkpoint: Path,
     spec: EvaluationTask,
-) -> Any:
-    """Build a PlannedEvalRuntime from the mission's PILOT + SPECIALIST.
+) -> tuple[Any, Any]:
+    """Build the PILOT (OpenVLA) + out-of-process SPECIALIST (Gemma).
 
-    The SPECIALIST is a multimodal Gemma 4 task planner that runs **out of
-    process**: ``ODYSSEY_SPECIALIST_PYTHON`` must point at a separate venv's
-    python whose modern ``transformers`` + ``torchvision`` can host Gemma 4,
-    free of OpenVLA's pinned ``transformers==4.40.1`` in this venv. The
-    SPECIALIST is inference-only (it runs its base checkpoint to plan); only the
-    PILOT is trained.
+    Shared by the planner-driven and delegation-driven builders. The SPECIALIST
+    is a multimodal Gemma 4 model that runs **out of process**:
+    ``ODYSSEY_SPECIALIST_PYTHON`` must point at a separate venv's python whose
+    modern ``transformers`` + ``torchvision`` can host Gemma 4, free of OpenVLA's
+    pinned ``transformers==4.40.1`` in this venv. It is inference-only (runs its
+    base checkpoint); only the PILOT is trained. The returned ``RemotePlanner``
+    satisfies ``PlannerRuntime``, ``CompletionDetector`` and ``GroundingProvider``
+    from one loaded model, so both runtimes reuse it.
     """
-    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
     from odyssey.runners.agents.remote_planner import RemotePlanner
     from odyssey.runners.models.openvla import VLARuntime
 
@@ -502,7 +514,7 @@ def _build_planned_runtime(
     # Load the PILOT as a VLARuntime (per-call instruction)
     pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
 
-    # The SPECIALIST planner runs out-of-process: Gemma 4 needs a modern
+    # The SPECIALIST runs out-of-process: Gemma 4 needs a modern
     # transformers/torchvision incompatible with OpenVLA's pin in this venv.
     model_base, quantization = _find_specialist_model(context)
     specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
@@ -511,28 +523,59 @@ def _build_planned_runtime(
             "Multi-agent eval requires the out-of-process SPECIALIST: set "
             "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (see the "
             "README 'Multi-agent evaluation' section). The multimodal Gemma 4 "
-            "planner cannot load in this venv, which pins transformers==4.40.1 "
+            "model cannot load in this venv, which pins transformers==4.40.1 "
             "for OpenVLA."
         )
 
     logger.info(
         "SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python
     )
-    planner = RemotePlanner(
+    specialist = RemotePlanner(
         model_base,
         quantization,
         python_path=specialist_python,
     )
+    return pilot, specialist
 
+
+def _build_planned_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    spec: EvaluationTask,
+) -> Any:
+    """Planner-driven arm: SPECIALIST authors the plan, PILOT executes it."""
+    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+
+    pilot, specialist = _build_pilot_and_specialist(context, checkpoint, spec)
     # Phase config from mission config (opt-in completion-gating; default
     # stays fixed_steps so existing missions are unchanged).
-    phase_config = PhaseConfig.from_config(cfg)
-
-    task_instruction = _resolve_task_instruction(spec)
-
+    phase_config = PhaseConfig.from_config(spec.config or {})
     return PlannedEvalRuntime(
         pilot=pilot,
-        planner=planner,
+        planner=specialist,
         phase_config=phase_config,
-        fallback_instruction=task_instruction,
+        fallback_instruction=_resolve_task_instruction(spec),
+    )
+
+
+def _build_delegated_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    spec: EvaluationTask,
+) -> Any:
+    """Delegation-driven arm: orchestrator delegates grounding to the SPECIALIST.
+
+    The SPECIALIST authors no plan; the orchestrator runs a generic pick -> place
+    template and delegates per-phase target grounding (``ground``) to it, with
+    completion-gated hand-back (``check_done``). Contrast with
+    ``_build_planned_runtime``.
+    """
+    from odyssey.runners.agents.delegated import DelegatedEvalRuntime, DelegationConfig
+
+    pilot, specialist = _build_pilot_and_specialist(context, checkpoint, spec)
+    return DelegatedEvalRuntime(
+        pilot=pilot,
+        grounder=specialist,
+        config=DelegationConfig.from_config(spec.config or {}),
+        task_fallback=_resolve_task_instruction(spec),
     )

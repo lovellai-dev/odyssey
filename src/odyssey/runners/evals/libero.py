@@ -245,11 +245,22 @@ class LiberoRunner(Runner):
         # Single-agent (OpenVLA policy) vs multi-agent (PlannedEvalRuntime + Gemma).
         use_planned = _has_specialist(context)
         if use_planned:
-            runtime = _build_planned_runtime(context, checkpoint, cfg, instruction)
+            coordination = str(cfg.get("coordination", "planning")).lower()
+            if coordination == "delegation":
+                runtime = _build_delegated_runtime(context, checkpoint, cfg, instruction)
+                step_label = "DelegatedEvalRuntime (PILOT + SPECIALIST)"
+            elif coordination == "planning":
+                runtime = _build_planned_runtime(context, checkpoint, cfg, instruction)
+                step_label = "PlannedEvalRuntime (PILOT + SPECIALIST)"
+            else:
+                raise ValueError(
+                    f"unknown coordination {coordination!r}; "
+                    "allowed: planning, delegation"
+                )
             await context.emit_progress(
                 "model_loading",
                 step="load_specialist",
-                step_label="PlannedEvalRuntime (PILOT + SPECIALIST)",
+                step_label=step_label,
             )
             policy = None
         else:
@@ -413,14 +424,15 @@ def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
     raise ValueError("No SPECIALIST agent found in the loadout")
 
 
-def _build_planned_runtime(
-    context: TaskContext,
-    checkpoint: Path,
-    cfg: dict[str, Any],
-    instruction: str,
-) -> Any:
-    """Compose the PILOT (OpenVLA) + out-of-process SPECIALIST (Gemma) planner."""
-    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+def _build_pilot_and_specialist(
+    context: TaskContext, checkpoint: Path, cfg: dict[str, Any]
+) -> tuple[Any, Any]:
+    """Build the PILOT (OpenVLA) + out-of-process SPECIALIST (Gemma).
+
+    Shared by the planner-driven and delegation-driven builders. The returned
+    ``RemotePlanner`` satisfies ``PlannerRuntime``, ``CompletionDetector`` and
+    ``GroundingProvider`` from one loaded model, so both runtimes reuse it.
+    """
     from odyssey.runners.agents.remote_planner import RemotePlanner
     from odyssey.runners.models.openvla import VLARuntime
 
@@ -436,12 +448,48 @@ def _build_planned_runtime(
             "Gemma 4 planner cannot load in the OpenVLA-pinned env)."
         )
     logger.info("SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python)
-    planner = RemotePlanner(model_base, quantization, python_path=specialist_python)
+    specialist = RemotePlanner(model_base, quantization, python_path=specialist_python)
+    return pilot, specialist
 
+
+def _build_planned_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    cfg: dict[str, Any],
+    instruction: str,
+) -> Any:
+    """Planner-driven arm: SPECIALIST authors the plan, PILOT executes it."""
+    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+
+    pilot, specialist = _build_pilot_and_specialist(context, checkpoint, cfg)
     phase_config = PhaseConfig.from_config(cfg)
     return PlannedEvalRuntime(
         pilot=pilot,
-        planner=planner,
+        planner=specialist,
         phase_config=phase_config,
         fallback_instruction=instruction,
+    )
+
+
+def _build_delegated_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    cfg: dict[str, Any],
+    instruction: str,
+) -> Any:
+    """Delegation-driven arm: orchestrator delegates grounding to the SPECIALIST.
+
+    The SPECIALIST authors no plan; the orchestrator runs a generic pick -> place
+    template and delegates per-phase target grounding (``ground``) to it, with
+    completion-gated hand-back (``check_done``). Contrast with
+    ``_build_planned_runtime``.
+    """
+    from odyssey.runners.agents.delegated import DelegatedEvalRuntime, DelegationConfig
+
+    pilot, specialist = _build_pilot_and_specialist(context, checkpoint, cfg)
+    return DelegatedEvalRuntime(
+        pilot=pilot,
+        grounder=specialist,
+        config=DelegationConfig.from_config(cfg),
+        task_fallback=instruction,
     )
