@@ -10,6 +10,11 @@
       "id": "nvidia/GR00T-N1.7-LIBERO",
       "sha": "2ea293aa20ba7cf5bbf3ba17a5fbcb1a01cbfe21",
       "note": "Isaac-native GR00T-N1.7 fine-tuned on LIBERO (4 suites). Eval pilot target."
+    },
+    {
+      "id": "openvla/openvla-7b",
+      "sha": "47a0ec7fc4ec123775a391911046cf33cf9ed83f",
+      "note": "OpenVLA-7B pilot base — training/eval base in examples/quickstart-openvla, franka-pickplace, multiagent-openvla-gemma."
     }
   ]
 }

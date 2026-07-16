@@ -1,6 +1,6 @@
 name: Watch HF models
 
-# Watches pinned Hugging Face model revisions (see .github/model-pins/gr00t.json)
+# Watches pinned Hugging Face model revisions (see .github/model-pins/models.json)
 # and opens a tracking issue when upstream publishes a new revision, so a silent
 # model bump can't quietly change eval/training behaviour.
 #
@@ -28,7 +28,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          PIN_FILE=".github/model-pins/gr00t.json"
+          PIN_FILE=".github/model-pins/models.json"
 
           # Iterate over each pinned model as a compact JSON object per line.
           jq -c '.models[]' "$PIN_FILE" | while read -r entry; do
