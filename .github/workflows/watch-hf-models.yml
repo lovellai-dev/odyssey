@@ -80,5 +80,7 @@ jobs:
 
             gh issue create \
               --title "${marker}: new revision ${latest:0:12}" \
-              --body "$body"
+              --body "$body" \
+              --assignee SoyGema \
+              --label dependencies
           done
