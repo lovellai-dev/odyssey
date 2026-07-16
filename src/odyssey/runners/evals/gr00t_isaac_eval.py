@@ -46,18 +46,31 @@ its argv + protocol surface stay unit-testable on a CPU box without Isaac.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import logging
 import os
-import sys
 
 log = logging.getLogger("gr00t_isaac_eval")
 
 _EPISODE_PREFIX = "ODYSSEY_EPISODE "
 _RESULT_PREFIX = "ODYSSEY_RESULT "
-# The upstream GR00T policy-server entry point (closed-loop auto-serve).
-_SERVER_ENTRY = "gr00t.eval.run_gr00t_server"
+
+
+def _server():
+    """Import the shared ``_gr00t_server`` helper whether this file is launched
+    as a script (sibling on ``sys.path[0]``) or imported as a package module."""
+    try:
+        import _gr00t_server as s  # script launch: isaaclab.sh -p <path>
+    except ImportError:
+        from odyssey.runners.evals import _gr00t_server as s  # package import
+    return s
+
+
+# Re-export the server lifecycle from the shared module so this recipe (and its
+# tests: E.build_server_command / E._wait_for_server) keep the same surface after
+# the extraction. Stdlib-only at import — the heavy gr00t import stays deferred.
+build_server_command = _server().build_server_command
+_wait_for_server = _server().wait_for_server
 
 
 def _bool(value: str) -> bool:
@@ -159,127 +172,27 @@ def _emit(line: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Closed-loop auto-serve: deploy the finetuned checkpoint as a policy server
-# (pure argv builder + a socket-based readiness wait — unit-testable on CPU).
+# Closed-loop auto-serve: deploy the finetuned checkpoint as a policy server.
+# The lifecycle (argv builder, readiness wait, deadlock-safe teardown) lives in
+# the shared ``_gr00t_server`` module; this thin wrapper adapts the recipe's
+# argparse Namespace onto it.
 # ---------------------------------------------------------------------------
 
-def build_server_command(
-    *,
-    checkpoint: str,
-    embodiment_tag: str,
-    port: int,
-    server_python: str | None = None,
-    device: str = "cuda:0",
-    modality_config_path: str | None = None,
-    denoising_steps: int = 0,
-) -> list[str]:
-    """argv to serve a (finetuned) GR00T checkpoint as a policy server.
-
-    Mirrors the manual ``run_gr00t_server`` launch documented in
-    ``isaac_eval_mission.yaml`` but points ``--model-path`` at the *trained*
-    checkpoint so the eval scores the finetuned policy. Deliberately omits
-    ``--use-sim-policy-wrapper``: this recipe builds raw nested observations
-    (``_build_obs``), which is exactly what the un-wrapped server expects.
-    """
-    py = server_python or sys.executable
-    argv = [
-        py, "-m", _SERVER_ENTRY,
-        "--model-path", str(checkpoint),
-        "--embodiment-tag", str(embodiment_tag),
-        "--port", str(int(port)),
-        "--device", str(device),
-    ]
-    if modality_config_path:
-        argv += ["--modality-config-path", str(modality_config_path)]
-    if denoising_steps and int(denoising_steps) > 0:
-        argv += ["--denoising-steps", str(int(denoising_steps))]
-    return argv
-
-
-def _wait_for_server(host: str, port: int, timeout_s: int, proc=None) -> bool:
-    """Block until ``(host, port)`` accepts a TCP connection (server ready).
-
-    Returns ``True`` once reachable, ``False`` on timeout. Fails fast if the
-    server ``proc`` exits during startup (so we surface its error instead of
-    waiting out the whole timeout).
-    """
-    import socket
-    import time
-
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if proc is not None and proc.poll() is not None:
-            return False  # server died during startup
-        try:
-            with socket.create_connection((host, port), timeout=2.0):
-                return True
-        except OSError:
-            time.sleep(2.0)
-    return False
-
-
-@contextlib.contextmanager
 def serve_checkpoint(args: argparse.Namespace):
     """Start a GR00T policy server on ``args.checkpoint``, wait until ready,
     yield, then tear it down. The body runs the eval against ``args.host:port``.
     """
-    import ctypes
-    import signal
-    import subprocess
-    import tempfile
-
-    argv = build_server_command(
+    return _server().serve_checkpoint(
         checkpoint=(args.served_model_path or args.checkpoint),
         embodiment_tag=args.embodiment_tag,
+        host=args.host,
         port=args.port,
         server_python=args.server_python or None,
         device=args.server_device,
         modality_config_path=args.modality_config_path or None,
         denoising_steps=args.server_denoising_steps,
+        ready_timeout=args.server_ready_timeout,
     )
-    env = dict(os.environ)
-    env.setdefault("HF_HUB_OFFLINE", "1")       # gated Cosmos backbone -> offline cache
-    env.setdefault("TRANSFORMERS_OFFLINE", "1")
-    log.info("auto-serve: launching GR00T server: %s", " ".join(argv))
-
-    # DEADLOCK FIX: the server MUST NOT inherit this recipe's stdout/stderr — those are the
-    # pipe the Odyssey runner (and Command Center) read. run_eval()'s finally calls
-    # simulation_app.close(), which HARD-EXITS this recipe (so the teardown `finally` below
-    # never runs and the server is orphaned). If the orphan still held the stdout pipe's write
-    # end, the runner's read would never see EOF and the eval would wedge until CC's timeout
-    # (observed live: server idle at 0% GPU, ~40-min hang, ODYSSEY_RESULT never consumed).
-    # (1) redirect the server's output to a log file so it never holds the orchestrator pipe;
-    # (2) PR_SET_PDEATHSIG so the kernel SIGKILLs the server if we hard-exit (no GPU leak).
-    server_log_path = os.path.join(tempfile.gettempdir(), f"gr00t_server_{args.port}.log")
-    server_log = open(server_log_path, "wb")  # noqa: SIM115  handle outlives this scope (Popen + finally)
-
-    def _die_with_parent():  # Linux: reap this server when the recipe process dies
-        with contextlib.suppress(Exception):
-            ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0)
-
-    proc = subprocess.Popen(
-        argv, env=env,
-        stdout=server_log, stderr=subprocess.STDOUT,
-        preexec_fn=_die_with_parent,
-    )
-    log.info("auto-serve: GR00T server pid=%s (log: %s)", proc.pid, server_log_path)
-    try:
-        if not _wait_for_server(args.host, args.port, args.server_ready_timeout, proc):
-            raise RuntimeError(
-                f"GR00T server failed to become ready on {args.host}:{args.port} "
-                f"within {args.server_ready_timeout}s (server rc={proc.poll()}; see {server_log_path})"
-            )
-        log.info("auto-serve: GR00T server ready on %s:%d", args.host, args.port)
-        yield
-    finally:
-        log.info("auto-serve: tearing down GR00T server (pid=%s)", proc.pid)
-        proc.terminate()
-        try:
-            proc.wait(timeout=20)
-        except Exception:
-            proc.kill()
-        with contextlib.suppress(Exception):
-            server_log.close()
 
 
 # ---------------------------------------------------------------------------
@@ -409,15 +322,12 @@ def run_eval(args: argparse.Namespace) -> dict:
     import torch
     from isaaclab_tasks.utils import parse_env_cfg
 
-    # GR00T client — light deps (msgpack/pyzmq); add Isaac-GR00T to path.
-    g = os.environ.get("ISAAC_GR00T_DIR", os.path.expanduser("~/Isaac-GR00T"))
-    if g not in sys.path:
-        sys.path.insert(0, g)
-    from gr00t.policy.server_client import PolicyClient
-
+    # GR00T client — light deps (msgpack/pyzmq); connector adds Isaac-GR00T to path.
     if args.checkpoint:
         log.info("checkpoint (informational; weights on server): %s", args.checkpoint)
-    client = PolicyClient(host=args.host, port=args.port, timeout_ms=args.timeout_ms)
+    client = _server().connect_policy_client(
+        host=args.host, port=args.port, timeout_ms=args.timeout_ms
+    )
     # This recipe drives a SINGLE-env rollout — it reads env 0 only
     # (_np(reward).reshape(-1)[0]) and steps one action (.unsqueeze(0)).
     # num_envs > 1 would run but silently grade just one env, giving misleading

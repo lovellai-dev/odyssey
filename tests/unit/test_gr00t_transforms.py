@@ -76,3 +76,43 @@ def test_gr00t_action_to_isaac_shape_scale_gripper():
     assert np.allclose(a[0:3], [0.2, 0.4, 0.6], atol=1e-6)   # pos_scale applied
     assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)         # identity rot -> 0 axis-angle
     assert a[6] == 1.0                                       # grip 0 < 0.5 -> open
+
+
+def test_quat_xyzw_to_wxyz_rolls_scalar_to_front():
+    # robosuite exposes eef_quat as xyzw; GR00T wants wxyz.
+    assert np.allclose(T.quat_xyzw_to_wxyz([0, 0, 0, 1]), [1, 0, 0, 0])       # identity
+    assert np.allclose(T.quat_xyzw_to_wxyz([0.1, 0.2, 0.3, 0.4]), [0.4, 0.1, 0.2, 0.3])
+
+
+def _libero_chunk(*, grip: float):
+    eef = np.array([0.1, 0.2, 0.3, 1, 0, 0, 0, 1, 0], np.float32)  # identity rot6d
+    return {
+        "eef_9d": np.tile(eef, (T.ACTION_HORIZON, 1))[None],
+        "gripper_position": np.full((1, T.ACTION_HORIZON, 1), grip, np.float32),
+        "joint_position": np.zeros((1, T.ACTION_HORIZON, 7), np.float32),
+    }
+
+
+def test_gr00t_action_to_libero_shape_scale_gripper():
+    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.0), 0, pos_scale=2.0)
+    assert a.shape == (7,)
+    assert np.allclose(a[0:3], [0.2, 0.4, 0.6], atol=1e-6)   # pos_scale applied
+    assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)         # identity rot -> 0 axis-angle
+    assert a[6] == 1.0                                       # grip 0 < 0.5 -> LIBERO open (+1)
+
+
+def test_gr00t_action_to_libero_gripper_close():
+    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.9), 0)
+    assert a[6] == -1.0                                      # grip 0.9 >= 0.5 -> close (-1)
+
+
+def test_gr00t_action_to_libero_translation_only_zeros_rot_and_opens_gripper():
+    # A non-identity rot6d that WOULD produce rotation is zeroed; gripper forced open
+    # even though grip=0.9 would otherwise close.
+    chunk = _libero_chunk(grip=0.9)
+    chunk["eef_9d"] = np.tile(
+        np.array([0.1, 0.2, 0.3, 0, 1, 0, -1, 0, 0], np.float32), (T.ACTION_HORIZON, 1)
+    )[None]
+    a = T.gr00t_action_to_libero(chunk, 0, translation_only=True)
+    assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)
+    assert a[6] == 1.0

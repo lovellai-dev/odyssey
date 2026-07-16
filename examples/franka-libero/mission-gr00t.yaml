@@ -1,0 +1,57 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t
+  description: >-
+    Eval-only — score the NVIDIA GR00T-N1.7 LIBERO checkpoint on the LIBERO object
+    suite (Franka, sim), driven out-of-process via a GR00T policy server. GR00T
+    emits an action chunk executed open-loop, so the pilot is queried ~an order of
+    magnitude fewer times per episode than the single-step OpenVLA pilot.
+  tags: [gr00t, nvidia, libero, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate the published GR00T-N1.7 LIBERO checkpoint on the LIBERO object suite
+  and confirm a real (non-zero) success rate in simulation, using the closed-loop
+  auto-served policy server (train -> deploy -> grade path, eval half only).
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, action chunks execute in LIBERO, and the
+  run reports a non-trivial success_rate across the evaluation episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-object-gr00t
+    kind: evaluation
+    evaluation_type: libero
+    description: Pick-and-place of the task_id=0 object (LIBERO object suite), GR00T pilot.
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t                      # -> gr00t_libero_eval.py subprocess + policy server
+      checkpoint: nvidia/GR00T-N1.7-LIBERO   # server loads the <suite> subdir (libero_object/)
+      task_id: 0
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      # embodiment_tag MUST match the checkpoint (the server can't infer it).
+      # Confirm against the checkpoint's embodiment_id.json on the first GPU run.
+      embodiment_tag: new_embodiment
+      port: 5555
+      # server_python: /path/to/isaac-gr00t-venv/bin/python   # if gr00t isn't in this env
+      # server_denoising_steps: 4                              # fewer = faster, less accurate
+
+      # --- action chunk + mapping (validate on the first live rollout) ---
+      n_action_steps: 16
+      pos_scale: 1.0
+      rot_scale: 1.0
+
+      capture_video: true

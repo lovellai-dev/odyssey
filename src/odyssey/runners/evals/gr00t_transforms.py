@@ -67,6 +67,16 @@ def quat_wxyz_to_rot6d(q) -> np.ndarray:
     return matrix_to_rot6d(quat_wxyz_to_matrix(q))
 
 
+def quat_xyzw_to_wxyz(q) -> np.ndarray:
+    """robosuite/LIBERO quaternion order (xyzw) -> GR00T's wxyz.
+
+    robosuite exposes ``robot0_eef_quat`` as xyzw; ``build_gr00t_obs`` /
+    ``quat_wxyz_to_rot6d`` expect wxyz. Roll the scalar term to the front.
+    """
+    q = np.asarray(q, dtype=np.float64).reshape(4)
+    return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
+
+
 def rot6d_to_axis_angle(r6) -> np.ndarray:
     return matrix_to_axis_angle(rot6d_to_matrix(r6))
 
@@ -95,22 +105,64 @@ def build_gr00t_obs(*, exterior_seq, wrist_seq, eef_pos, eef_quat_wxyz,
     }
 
 
+def _gr00t_eef_delta(chunk, k, *, pos_scale, rot_scale):
+    """Step k of a GR00T chunk -> (dpos[3], drot_axis_angle[3]) relative EEF delta.
+
+    Uses eef_9d (relative xyz + rot6d); ignores joint_position (envs are EEF/IK).
+    Shared by the Isaac and LIBERO action maps — both consume the same 6-D delta.
+    """
+    eef = np.asarray(chunk["eef_9d"]).reshape(-1, 9)[k]
+    dpos = eef[0:3].astype(np.float64) * pos_scale
+    drot = rot6d_to_axis_angle(eef[3:9]).astype(np.float64) * rot_scale
+    return dpos, drot
+
+
+def _gr00t_gripper_bit(chunk, k, *, threshold, open_val, close_val):
+    """GR00T ``gripper_position`` in [0,1] -> a binary open/close command.
+
+    Polarity (justified + configurable): a LOW value means "open", so
+    grip < threshold ⇒ open_val, else close_val. If a checkpoint's gripper
+    convention is inverted, flip it with no code change via the kwargs. NOTE:
+    confirm the direction against the GR00T server on the first live rollout
+    (silent-failure footgun if reversed — the arm moves but never grasps).
+    """
+    grip = float(np.asarray(chunk["gripper_position"]).reshape(-1, 1)[k, 0])
+    return open_val if grip < threshold else close_val
+
+
 def gr00t_action_to_isaac(chunk, k, *, pos_scale=1.0, rot_scale=1.0,
                           gripper_threshold=0.5, gripper_open=1.0,
                           gripper_close=-1.0) -> np.ndarray:
     """Map step k of GR00T's action chunk to the env's 7-D IK-rel + gripper action.
-    Uses eef_9d (relative xyz + rot6d) + gripper; ignores joint_position (env is EEF/IK)."""
-    eef = np.asarray(chunk["eef_9d"]).reshape(-1, 9)[k]
-    grip = float(np.asarray(chunk["gripper_position"]).reshape(-1, 1)[k, 0])
-    dpos = eef[0:3].astype(np.float64) * pos_scale
-    drot = rot6d_to_axis_angle(eef[3:9]).astype(np.float64) * rot_scale
-    # Gripper polarity (justified + configurable): GR00T emits `gripper_position`
-    # in [0, 1]; this recipe assumes a LOW value means "open", so
-    # grip < gripper_threshold ⇒ command the env's binary gripper OPEN
-    # (gripper_open = +1.0), else CLOSE (-1.0) — matching Isaac's IK-rel
-    # visuomotor convention (+1 open / -1 close). If a checkpoint's gripper
-    # convention is inverted, flip it with no code change via the gripper_open /
-    # gripper_close kwargs. NOTE: confirm the direction against the GR00T server
-    # on the first live Cosmos rollout (silent-failure footgun if reversed).
-    g = gripper_open if grip < gripper_threshold else gripper_close
+
+    Isaac IK-rel visuomotor convention: +1 open / -1 close.
+    """
+    dpos, drot = _gr00t_eef_delta(chunk, k, pos_scale=pos_scale, rot_scale=rot_scale)
+    g = _gr00t_gripper_bit(
+        chunk, k, threshold=gripper_threshold,
+        open_val=gripper_open, close_val=gripper_close,
+    )
+    return np.concatenate([dpos, drot, [g]]).astype(np.float32)
+
+
+def gr00t_action_to_libero(chunk, k, *, pos_scale=1.0, rot_scale=1.0,
+                           gripper_threshold=0.5, gripper_open=1.0,
+                           gripper_close=-1.0, translation_only=False) -> np.ndarray:
+    """Map step k of a GR00T chunk to LIBERO's 7-DoF OSC_POSE action.
+
+    LIBERO's action is ``[dpos(3), drot axis-angle(3), gripper]`` — the same shape
+    as Isaac's IK-rel action. The gripper default mirrors OpenVLA's LIBERO
+    reference convention (``libero._libero_action``): **+1 = open, -1 = close**,
+    and GR00T emits ``gripper_position`` in [0,1] with LOW = open. ``translation_only``
+    zeroes rotation and forces the gripper open (a de-risking / debug knob).
+    ⚠ Validate gripper direction + pos/rot scale on the first live LIBERO rollout.
+    """
+    dpos, drot = _gr00t_eef_delta(
+        chunk, k, pos_scale=pos_scale,
+        rot_scale=0.0 if translation_only else rot_scale,
+    )
+    g = gripper_open if translation_only else _gr00t_gripper_bit(
+        chunk, k, threshold=gripper_threshold,
+        open_val=gripper_open, close_val=gripper_close,
+    )
     return np.concatenate([dpos, drot, [g]]).astype(np.float32)
