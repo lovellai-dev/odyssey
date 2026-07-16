@@ -13,5 +13,6 @@ eval_new/
 eval_new_observer/
 eval_out/
 eval_validate*/
+env_fidelity_out/
 plans*.json
 *.log
