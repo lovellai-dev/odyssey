@@ -219,6 +219,22 @@ render-OOD in the MuJoCo cell — the steering net must key on the Observer
 grasp-target + proprio (not sim pixels), consistent with the Phase-1
 attention-collapse finding. Result JSON: `flowdagger_probe_result.json`.
 
+**2026-07-16 (evening) — steering v0→v0.2 iteration arc + Stage C launched.**
+Stage-B v0 A/B: steered 0/15 (13 home-freezes; 2 sub-cm approaches) — root cause
+68%-static expert chunks → time-free net collapsed to "stay" (absorbing fixed
+point). v0.1 (t_norm + arm-motion weights): freezes 0/15, all approaches,
+median pad 7.6 cm — but grip ≤0.04 everywhere; grip-authority probe: oracle
+noise closes at 100% of windows, random seeds 96%, v0.1-steered 8% → v0.1's
+ARM-only motion weights had floored the (arm-static) closing windows. v0.2
+(grip-inclusive motion + 3D dwell promotion): **STEERED_PROGRESS_NO_SUCCESS —
+0/15 but median pad 4.4 cm (stock 8.1), zero freezes, first steered full grip
+closures (2, mistimed at 4–6 cm)**; 76% of ticks hover in promoted-GRASP at
+~4 cm — a state band only the steered policy visits (the expert descends
+through it). Textbook DAgger condition → **Stage C (noise-space DAgger)
+launched**: steered rollouts (fresh seed-4242 plans) → IK-expert relabel →
+invert → aggregate (dagger-boosted) → retrain → gate → A/B, mini-round smoke
+first.
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
