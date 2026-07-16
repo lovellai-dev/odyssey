@@ -179,6 +179,46 @@ full port (~2–3 weeks). Either fails → exactly ONE Phase-3 DAgger finetune
 round to put corrective descent on-manifold, then port steering on the new
 frozen checkpoint.
 
+**2026-07-16 — Step 0/1 probe executed on the H100 (checkpoint-12000,
+`scripts/probe_flow_inversion_groot.py`): verdict PORT_GO — both gates PASS.**
+The `perstep_fp` inverter (per-step fixed point over the frozen 4-step forward-Euler
+flow sampler; buckets {0,250,500,750}; backbone bf16 cached once, action-head chain
+run fp32; recon scored on the real dims `[:16,:7]` of the padded `40×132` chunk) is
+TDD'd against synthetic constant/contractive-affine fields
+(`tests/unit/test_flow_inversion_math.py`, 5/5 green in the GR00T venv).
+
+- **STEP 0 (inversion round-trip) — PASS.** 16 expert chunks sampled across
+  episodes and phases (reach/descent/grasp/transport). Reconstruction MSE on real
+  dims: **mean 9.1e-5, p95 2.2e-4, worst 2.3e-4** (gate < 1e-3, ~10× margin).
+  Recovered noise `|w*|` (pooled real dims): mean 0.88, **p99 2.79** (gate < ~3),
+  max 4.67. `fp_per_step=16`; per-step FP residuals `[2e-8, 2e-8, 4e-5, 1.8e-3]`
+  (only the t=0 step is loose, well inside tolerance); Adam fallback never needed.
+  → The frozen sampler is invertible and expert chunks sit on its manifold at
+  in-distribution noise. Latent-noise steering is mechanically viable.
+- **STEP 1 (steering authority at near-grasp states) — PASS.** The obscond
+  checkpoint is visually OUT-OF-DISTRIBUTION in the MuJoCo aseptipack render (a
+  fresh sim rollout base-joint-runs-away; a discriminator confirmed the served
+  policy reproduces recorded expert actions to <0.1 rad on real dataset frames but
+  diverges on sim frames), so the 18 miss states were harvested from the
+  IN-DISTRIBUTION dataset in the 4–15 cm near-grasp band (grip open, mean needed
+  correction 11.7 cm); MuJoCo is used only for gr_pinch FK. (a) Inverting the
+  recorded expert corrective chunk: **recon MSE mean 1.1e-4, 100% below 1e-3** —
+  every corrective chunk is on-manifold. (b) 64 random-noise seeds decoded per
+  state give an end-effector spread **mean 10.2 cm** (median 4.9; per-state
+  1.7–24.5 cm — the envelope scales with the needed correction: 18–24 cm at the
+  14 cm states, 2–5 cm at the 6.6 cm states) and the corrective EE point lies
+  inside the reachable noise cloud (within 2 cm) at **100% of states**.
+  → Latent noise has real actuator authority over the EE across the 6–12 cm
+  correction band, and the corrective action is reachable from noise.
+
+Decision: STEP0 pass + STEP1 pass → **PORT_GO** — proceed to the full FlowDAgger
+port; no Phase-3 finetune-first detour required. Honest caveat: deploy inference is
+bf16 (the probe ran the action-head chain in fp32 for clean inversion), and Step 1
+authority was measured on in-distribution dataset states because the checkpoint is
+render-OOD in the MuJoCo cell — the steering net must key on the Observer
+grasp-target + proprio (not sim pixels), consistent with the Phase-1
+attention-collapse finding. Result JSON: `flowdagger_probe_result.json`.
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
