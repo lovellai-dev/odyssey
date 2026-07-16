@@ -37,7 +37,7 @@ uv pip install --python "$ODYSSEY_VENV/bin/python" -e ".[dev,huggingface]"
 # GR00T server venv location — overridable; defaults inside the checkout.
 GR00T_VENV_DIR="${GR00T_VENV_DIR:-$ISAAC_GR00T_DIR/.venv}"
 
-echo "==> [2/4] GR00T policy-server venv (uv) — py3.12, torch 2.7.1+cu128, separate ABI"
+echo "==> [2/4] GR00T policy-server venv (uv) — py3.12, torch 2.9.0+cu128, separate ABI"
 if [ -d "$ISAAC_GR00T_DIR" ]; then
   # If the venv would land inside a non-writable checkout (e.g. a root-owned
   # /srv clone) and the caller didn't override GR00T_VENV_DIR, relocate it to a
@@ -49,10 +49,14 @@ if [ -d "$ISAAC_GR00T_DIR" ]; then
   # Isaac-GR00T's pyproject requires ==3.12.* (see requires-python); uv fetches a
   # managed CPython 3.12 if the host only has 3.10.
   uv venv --python 3.12 "$GR00T_VENV_DIR"
+  # --index-strategy unsafe-best-match: the pytorch cu128 index has a stale
+  # `requests`, but gr00t's datasets needs a newer one from PyPI — let uv pick
+  # the best across both indexes (torch still comes from the cu128 index).
   uv pip install --python "$GR00T_VENV_DIR/bin/python" \
       --extra-index-url https://download.pytorch.org/whl/cu128 \
+      --index-strategy unsafe-best-match \
       -c "$C/gr00t-server-known-good.txt" -e "$ISAAC_GR00T_DIR"
-  echo "    NOTE: install flash-attn (cu128 x86_64 wheel) per Isaac-GR00T's pyproject."
+  echo "    NOTE: flash-attn comes from Isaac-GR00T's pyproject (prebuilt cu12/torch2.9 wheel)."
   "$GR00T_VENV_DIR/bin/python" -c "import gr00t; print('    gr00t OK')" 2>/dev/null || echo "    (gr00t import deferred — finish flash-attn install)"
 else
   echo "    SKIP: \$ISAAC_GR00T_DIR ($ISAAC_GR00T_DIR) not found — clone NVIDIA/Isaac-GR00T first."
