@@ -1,0 +1,101 @@
+# FlowDAgger init_noise patch for NVIDIA Isaac-GR00T (GR00T N1.7 action head)
+# ============================================================================
+# Adds an OPTIONAL latent-noise-steering hook to the flow-matching action head so
+# a caller can supply the flow sampler's initial noise x0 (t=0, pure noise) via
+# options["init_noise"] instead of the stock torch.randn. This is the model-side
+# half of the FlowDAgger "noise steering" port for the UR5e drug-sort pilot.
+#
+# WHAT IT CHANGES (two files, additive, fully backward compatible):
+#   1. gr00t/model/gr00t_n1d7/gr00t_n1d7.py :: GrootActionHead.get_action_with_features
+#        If options["init_noise"] is present, use it (torch.as_tensor to the
+#        model device/dtype; shape MUST equal (B, action_horizon, action_dim) or a
+#        ValueError is raised) as the sampler's x0 instead of torch.randn. The RTC
+#        inpainting path and vel_strength are UNTOUCHED (RTC still overwrites its
+#        overlap region on top of the supplied seed). options absent/empty/no
+#        init_noise key => byte-for-byte identical to stock behaviour.
+#   2. gr00t/policy/gr00t_policy.py :: Gr00tPolicy._get_action
+#        Forward `options` into self.model.get_action(...) (previously dropped;
+#        the docstring said "currently unused"). options=None => identical.
+#
+# The full client path already carries options over the wire:
+#   PolicyClient.get_action -> {"observation","options"} -> PolicyServer handler
+#   -> BasePolicy.get_action(obs, options) -> Gr00tPolicy._get_action(obs, options)
+#   -> model.get_action(..., options) -> action_head.get_action_with_features(options)
+# so no server/client change is needed.
+#
+# HOW TO (RE)APPLY  (from the Isaac-GR00T checkout root, e.g. /home/ubuntu/Isaac-GR00T):
+#     git apply --check scripts/patches/isaac_groot_init_noise.patch   # dry run
+#     git apply         scripts/patches/isaac_groot_init_noise.patch
+#   or, without git:
+#     patch -p1 < scripts/patches/isaac_groot_init_noise.patch
+#   Verify: python -m gr00t.eval.run_gr00t_server ... then the determinism test
+#     scripts/test_init_noise_determinism.py (same init_noise -> byte-identical
+#     chunks; different init_noise -> different chunks; no options -> still works).
+#
+# Base: Isaac-GR00T @ 49d40d2 (gr00t_n1d7.py md5 709d0144..., gr00t_policy.py md5 79227ca6...).
+# The Isaac-GR00T checkouts are NOT part of odyssey-ur5e; this patch file is the record.
+# ============================================================================
+--- a/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
++++ b/gr00t/model/gr00t_n1d7/gr00t_n1d7.py
+@@ -332,11 +332,31 @@
+         # Set initial actions as the sampled noise.
+         batch_size = vl_embeds.shape[0]
+         device = vl_embeds.device
+-        actions = torch.randn(
+-            size=(batch_size, self.config.action_horizon, self.action_dim),
+-            dtype=vl_embeds.dtype,
+-            device=device,
+-        )
++        # FlowDAgger latent-noise steering hook: if the caller supplies
++        # ``options["init_noise"]`` use it verbatim as the flow sampler's starting
++        # point instead of ``torch.randn``. This changes ONLY the initial noise; the
++        # RTC inpainting path below (and ``vel_strength``) are untouched — RTC still
++        # overwrites its overlap region on top of whatever seed we start from. When
++        # ``options`` is absent/empty or has no ``init_noise`` key, behaviour is
++        # byte-for-byte identical to the stock ``torch.randn`` sampler.
++        init_noise = options.get("init_noise") if options is not None else None
++        if init_noise is not None:
++            expected_shape = (batch_size, self.config.action_horizon, self.action_dim)
++            actions = torch.as_tensor(init_noise, dtype=vl_embeds.dtype, device=device)
++            if tuple(actions.shape) != expected_shape:
++                raise ValueError(
++                    "options['init_noise'] must have shape (B, action_horizon, "
++                    f"action_dim)={expected_shape}; got {tuple(actions.shape)}"
++                )
++            # Clone so the in-place RTC assignment below cannot mutate a
++            # caller-owned tensor, and so a non-contiguous view is materialised.
++            actions = actions.clone()
++        else:
++            actions = torch.randn(
++                size=(batch_size, self.config.action_horizon, self.action_dim),
++                dtype=vl_embeds.dtype,
++                device=device,
++            )
+ 
+         dt = 1.0 / self.num_inference_timesteps
+         vel_strength = torch.ones_like(actions)
+--- a/gr00t/policy/gr00t_policy.py
++++ b/gr00t/policy/gr00t_policy.py
+@@ -382,7 +382,8 @@
+ 
+         Args:
+             observation: Batched observation dictionary
+-            options: Optional parameters (currently unused)
++            options: Optional parameters forwarded to the model's flow sampler
++                (e.g. ``init_noise`` latent steering, RTC inpainting controls).
+ 
+         Returns:
+             Tuple of (actions_dict, info_dict)
+@@ -404,8 +405,11 @@
+         collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
+ 
+         # Step 4: Run model inference to predict actions
++        # Forward ``options`` through to the model so caller-supplied controls
++        # (e.g. FlowDAgger ``init_noise`` latent steering, or RTC inpainting) reach
++        # the flow sampler. ``options`` may be ``None``/empty -> identical behaviour.
+         with torch.inference_mode():
+-            model_pred = self.model.get_action(**collated_inputs)
++            model_pred = self.model.get_action(**collated_inputs, options=options)
+         normalized_action = model_pred["action_pred"].float()
+ 
+         # Step 5: Decode actions from normalized space back to physical units
