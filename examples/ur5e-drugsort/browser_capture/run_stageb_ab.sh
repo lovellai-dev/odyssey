@@ -226,8 +226,8 @@ PY
 }
 smoke_post "$OUTDIR/smoke_steered.json" || fail "smoke-steered-post"
 grep -q '"ok": true' "$OUTDIR/smoke_steered.json" || fail "smoke-steered-bad-response"
-grep -q '\[steer\]' "$WORK/conditioner_smoke_on.log" || fail "smoke-no-steer-log"
-SMOKE_ATTACH=$(grep -c '\[steer\]' "$WORK/conditioner_smoke_on.log" || true)
+grep -q '^\[steer\] n=' "$WORK/conditioner_smoke_on.log" || fail "smoke-no-steer-log"
+SMOKE_ATTACH=$(grep -c '^\[steer\] n=' "$WORK/conditioner_smoke_on.log" || true)
 log "smoke: steered POSTs ok, sidecar attached noise x$SMOKE_ATTACH"
 
 log "STEP3 smoke gate: stock arm (sidecar restart WITHOUT weights)"
