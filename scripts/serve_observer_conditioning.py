@@ -32,6 +32,27 @@ Run (torch+transformers interpreter; odyssey src on the path)::
       CONDITION_BRIDGE_URL=http://127.0.0.1:5596 \
       PYTHONPATH=/home/daniel/LovellAI/odyssey-ur5e/src \
       /home/daniel/Isaac-GR00T/.venv/bin/python scripts/serve_observer_conditioning.py --port 5604
+
+FlowDAgger Stage B — latent-noise STEERING (optional, env-toggled)
+------------------------------------------------------------------
+When ``STEERING_WEIGHTS`` points at the A4 steering-net ``.npz``, the sidecar
+additionally computes, per tick, the flow sampler's initial noise from the
+low-dim obs ``[proprio7, observer target xyz3, inferred phase_onehot4]`` and
+attaches it to the forwarded JSON as ``init_noise_b64`` (base64 of the float32
+``(40, 132)`` tensor) + ``init_noise_shape``. The patched GR00T bridge decodes
+it and passes ``options={"init_noise": ...}`` into the ZMQ ``get_action`` (see
+``scripts/patches/isaac_groot_init_noise.patch``). ``STEERING_WEIGHTS`` unset
+-> byte-identical to the pre-Stage-B conditioner (the stock arm of the A/B).
+
+The phase input was GT-sidecar-derived at training (A3 ``PHASE_TO_BUCKET``);
+at deploy it is INFERRED by :class:`PhaseInference` — a per-session state
+machine over the grip command + the FK'd ``gr_pinch`` xy relative to the xy
+locked at the open->close transition, matching the A3 bucket semantics
+(0 REACH = home/approach/descend; 1 GRASP = close/lift, gripper closed at the
+grasp column; 2 TRANSPORT = transport/lower, gripper closed and departed the
+grasp column; 3 PLACE = release/retract/home2, gripper reopened after a close).
+Known tail mismatch: the GT labels the post-place return home as bucket 3
+while the episode-boundary reset here re-labels near-home+open as bucket 0.
 """
 from __future__ import annotations
 
@@ -47,12 +68,13 @@ import traceback
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("MUJOCO_GL", "egl")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling scripts (steering helpers)
 
 import numpy as np
 from PIL import Image
@@ -72,10 +94,181 @@ def _decode_frame(data_url: str) -> np.ndarray:
     return np.array(img, dtype=np.uint8)
 
 
+# ---------------------------------------------------------------------------
+# FlowDAgger Stage B — deploy-time steering (pure helpers, unit-testable)
+# ---------------------------------------------------------------------------
+ACTION_HORIZON = 40
+ACTION_DIM = 132
+N_PHASES = 4
+PHASE_NAMES = ("reach", "grasp", "transport", "place")
+DEFAULT_HOME_Q = (-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0)
+DEFAULT_FK_XML = (
+    "/home/daniel/LovellAI/lai-agent-multiagent/src/embodiments/urdf/"
+    "aseptipack_description/aseptipack.xml"
+)
+
+
+def encode_init_noise(noise: np.ndarray) -> tuple[str, list[int]]:
+    """(H, D) float32 -> (base64 payload, shape list) for the forwarded JSON."""
+    arr = np.ascontiguousarray(np.asarray(noise, dtype=np.float32))
+    return base64.b64encode(arr.tobytes()).decode("ascii"), list(arr.shape)
+
+
+class PhaseInference:
+    """Per-session 4-bucket phase state machine matching the A3 label semantics.
+
+    Inputs per tick: the request's 7-D proprio (arm6 + grip command 0..1) and a
+    ``pinch_fn(q6) -> xyz`` FK callable (injected, so the logic is testable
+    without mujoco). Transitions:
+
+    * grip < close_thresh, never closed          -> 0 REACH
+    * near home_q with gripper open              -> episode-boundary RESET -> 0
+    * grip >= close_thresh: lock the pinch xy at the open->close transition;
+      while closed, xy-dist(pinch, locked) <= xy_lock_radius -> 1 GRASP
+      (close + straight-up lift), else -> 2 TRANSPORT (carry/lower departed
+      the grasp column; the scripted vial->pocket carry is ~33 cm)
+    * grip < close_thresh after a close          -> 3 PLACE (release/retract)
+      (a later re-close re-locks and returns to 1/2)
+    """
+
+    REACH, GRASP, TRANSPORT, PLACE = 0, 1, 2, 3
+
+    def __init__(
+        self,
+        pinch_fn: Callable[[np.ndarray], np.ndarray],
+        home_q: Any = DEFAULT_HOME_Q,
+        *,
+        close_thresh: float = 0.5,
+        xy_lock_radius: float = 0.10,
+        home_tol: float = 0.15,
+        open_thresh: float = 0.30,
+    ) -> None:
+        self._pinch = pinch_fn
+        self._home_q = np.asarray(home_q, dtype=np.float64).reshape(6)
+        self._close = float(close_thresh)
+        self._rad = float(xy_lock_radius)
+        self._home_tol = float(home_tol)
+        self._open = float(open_thresh)
+        self._sess: dict[str, dict[str, Any]] = {}
+
+    def reset(self, sid: str) -> None:
+        self._sess.pop(sid, None)
+
+    def infer(self, sid: str, state7: Any) -> int:
+        s7 = np.asarray(state7, dtype=np.float64).reshape(-1)[:7]
+        q6, grip = s7[:6], float(s7[6])
+        st = self._sess.setdefault(
+            sid, {"has_closed": False, "was_closed": False, "locked_xy": None})
+        closed = grip >= self._close
+        # Episode-boundary reset: back at (or still at) home with the gripper
+        # open. Clears has_closed so a new episode starts in REACH. (Known GT
+        # mismatch: the post-place home2 frames are bucket 3 in training.)
+        if (not closed and grip < self._open
+                and float(np.max(np.abs(q6 - self._home_q))) < self._home_tol):
+            st.update(has_closed=False, was_closed=False, locked_xy=None)
+            return self.REACH
+        if closed:
+            pinch = np.asarray(self._pinch(q6), dtype=np.float64).reshape(3)
+            if not st["was_closed"]:      # open -> close: lock the grasp column xy
+                st["locked_xy"] = pinch[:2].copy()
+                st["has_closed"] = True
+                st["was_closed"] = True
+            xy = float(np.linalg.norm(pinch[:2] - st["locked_xy"]))
+            return self.GRASP if xy <= self._rad else self.TRANSPORT
+        st["was_closed"] = False
+        return self.PLACE if st["has_closed"] else self.REACH
+
+
+class MjPinchFK:
+    """``gr_pinch`` site FK (robot base frame) from the 6 arm joint angles.
+
+    Loads the aseptipack MJCF once on a private MjData; mujoco is imported
+    lazily so the module stays importable in a mujoco-less venv.
+    """
+
+    _ARM_JOINTS = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
+                   "wrist_1_joint", "wrist_2_joint", "wrist_3_joint")
+
+    def __init__(self, xml_path: str = DEFAULT_FK_XML) -> None:
+        import mujoco as mj
+
+        self._mj = mj
+        self._model = mj.MjModel.from_xml_path(xml_path)
+        self._data = mj.MjData(self._model)
+        self._qadr = []
+        for name in self._ARM_JOINTS:
+            j = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_JOINT, name)
+            if j < 0:
+                raise RuntimeError(f"arm joint {name!r} not found in {xml_path}")
+            self._qadr.append(int(self._model.jnt_qposadr[j]))
+        self._site = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_SITE, "gr_pinch")
+        if self._site < 0:
+            raise RuntimeError(f"gr_pinch site not found in {xml_path}")
+        hk = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_KEY, "home")
+        if hk >= 0:
+            mj.mj_resetDataKeyframe(self._model, self._data, hk)
+        mj.mj_forward(self._model, self._data)
+        base = mj.mj_name2id(self._model, mj.mjtObj.mjOBJ_BODY, "base")
+        self._bpos = np.array(self._data.xpos[base], dtype=np.float64)
+        self._bmat = np.array(self._data.xmat[base], dtype=np.float64).reshape(3, 3)
+
+    def __call__(self, q6: Any) -> np.ndarray:
+        q = np.asarray(q6, dtype=np.float64).reshape(6)
+        for a, v in zip(self._qadr, q):
+            self._data.qpos[a] = float(v)
+        self._mj.mj_kinematics(self._model, self._data)
+        p = np.array(self._data.site_xpos[self._site], dtype=np.float64)
+        return self._bmat.T @ (p - self._bpos)
+
+
+class SteeringEngine:
+    """Loads the A4 steering-net npz; produces one (40,132) init_noise per tick.
+
+    The MLP forward is the SAME numpy implementation that passed the A5 offline
+    gate (``flowdagger_offline_gate_ur5e.load_steering_net``) — deterministic,
+    CPU, ~1 ms/tick for the 14->5280 net (no GPU contention with the Observer).
+    """
+
+    def __init__(self, weights: str, pinch_fn: Callable[[np.ndarray], np.ndarray],
+                 home_q: Any = DEFAULT_HOME_Q) -> None:
+        from flowdagger_offline_gate_ur5e import load_steering_net
+        import train_steering_ur5e as ts
+
+        self._forward, meta = load_steering_net(weights)
+        self.design = str(meta.get("output_design", "full5280"))
+        self._ts = ts
+        self._fixed_pads = None if self.design == "full5280" else ts.deploy_pads(1)[0]
+        self.phase_inf = PhaseInference(pinch_fn, home_q)
+        self.n_attached = 0
+        self.phase_ticks = [0, 0, 0, 0]
+        print(f"[steer] ready | weights={weights} design={self.design} "
+              f"in_dim={meta.get('in_dim')} out_dim={meta.get('out_dim')}", flush=True)
+
+    def init_noise(self, sid: str, state7: Any, tgt3: Any) -> tuple[np.ndarray, int]:
+        phase = self.phase_inf.infer(sid, state7)
+        oh = np.zeros(N_PHASES, dtype=np.float32)
+        oh[phase] = 1.0
+        x = np.concatenate([
+            np.asarray(state7, dtype=np.float32).reshape(-1)[:7],
+            np.asarray(tgt3, dtype=np.float32).reshape(3), oh,
+        ]).astype(np.float32)[None]                                   # (1, 14)
+        pred = self._forward(x)
+        if self.design == "full5280":
+            noise = pred.reshape(ACTION_HORIZON, ACTION_DIM).astype(np.float32)
+        else:  # real112 + fixed-seed pads (deploy convention)
+            noise = self._ts.assemble_init_noise(
+                pred.reshape(1, self._ts.REAL_STEPS, self._ts.REAL_DIMS),
+                pads=self._fixed_pads[None])[0].astype(np.float32)
+        self.n_attached += 1
+        self.phase_ticks[phase] += 1
+        return noise, phase
+
+
 class ConditioningService:
     """Loads the Observer grasp-target head once; conditions one request per call."""
 
-    def __init__(self, *, weights: str, bridge_url: str, device: str) -> None:
+    def __init__(self, *, weights: str, bridge_url: str, device: str,
+                 steering_weights: str = "") -> None:
         from odyssey.embodiments.ur5e_drugsort.observer import GraspTargetObserver
 
         self.bridge_url = bridge_url.rstrip("/")
@@ -88,13 +281,25 @@ class ConditioningService:
         # Observer-conditioned success collapses to the nominal-target success, the
         # per-frame Observer localisation is what carries the policy.
         self._freeze_nominal = os.environ.get("CONDITIONER_FREEZE_NOMINAL", "").strip() in ("1", "true", "True")
+        # FlowDAgger Stage B: latent-noise steering (None => stock behaviour).
+        self._steering: SteeringEngine | None = None
+        if steering_weights:
+            fk = MjPinchFK(os.environ.get("STEERING_FK_XML", DEFAULT_FK_XML))
+            home_q = np.array(
+                [float(x) for x in os.environ.get(
+                    "STEERING_HOME_Q",
+                    ",".join(str(v) for v in DEFAULT_HOME_Q)).split(",")],
+                dtype=np.float64,
+            )
+            self._steering = SteeringEngine(steering_weights, fk, home_q)
         self._observer = GraspTargetObserver(device=device)
         self._observer.load_head(str(Path(weights) / "observer_head.pt"))
         warm = np.zeros((256, 256, 3), np.uint8)
         self._observer.predict(warm, warm)         # warm the CUDA graphs
         print(
             f"[conditioner] ready | backbone={self._observer.backbone_id} device={device} "
-            f"bridge={self.bridge_url} nominal_target={NOMINAL_TARGET.tolist()}",
+            f"bridge={self.bridge_url} nominal_target={NOMINAL_TARGET.tolist()} "
+            f"steering={'ON' if self._steering else 'OFF'}",
             flush=True,
         )
 
@@ -136,6 +341,12 @@ class ConditioningService:
         tgt, mode = self._target(payload, sid)
         payload["state"] = [float(x) for x in state] + [float(x) for x in tgt]   # 7 -> 10
         self._n += 1
+        phase = None
+        if self._steering is not None:
+            noise, phase = self._steering.init_noise(sid, state, tgt)
+            payload["init_noise_b64"], payload["init_noise_shape"] = encode_init_noise(noise)
+            print(f"[steer] n={self._steering.n_attached} sid={sid} "
+                  f"phase={phase}({PHASE_NAMES[phase]}) grip={state[6]:.3f}", flush=True)
         if self._n <= 3 or self._n % 200 == 0:
             print(f"[conditioner] tick={self._n} sid={sid} mode={mode} "
                   f"target={np.round(tgt, 4).tolist()} fallbacks={self._n_fallback}", flush=True)
@@ -143,6 +354,8 @@ class ConditioningService:
         if isinstance(out, dict):
             out["grasp_target"] = [float(x) for x in tgt]
             out["conditioner"] = {"mode": mode}
+            if phase is not None:
+                out["steering_phase"] = int(phase)
         return code, out
 
     def health(self) -> dict[str, Any]:
@@ -154,8 +367,19 @@ class ConditioningService:
             ok = False
         # `ok` mirrors the downstream bridge so the agent-service /api/groot/health
         # wraps it as {"bridge_health":{"ok":true}} exactly like the raw bridge.
-        return {"ok": ok, "observer_ready": True, "bridge": self.bridge_url,
-                "conditioned": True, "ticks": self._n, "fallbacks": self._n_fallback}
+        out: dict[str, Any] = {
+            "ok": ok, "observer_ready": True, "bridge": self.bridge_url,
+            "conditioned": True, "ticks": self._n, "fallbacks": self._n_fallback,
+            "steering_enabled": self._steering is not None,
+        }
+        if self._steering is not None:
+            out["steering"] = {
+                "design": self._steering.design,
+                "attached": self._steering.n_attached,
+                "phase_ticks": {PHASE_NAMES[i]: int(n)
+                                for i, n in enumerate(self._steering.phase_ticks)},
+            }
+        return out
 
 
 def _make_handler(service: ConditioningService) -> type[BaseHTTPRequestHandler]:
@@ -205,11 +429,14 @@ def main() -> None:
     ap.add_argument("--bridge", default=os.environ.get("CONDITION_BRIDGE_URL",
                                                         os.environ.get("GROOT_BRIDGE_URL", "http://127.0.0.1:5596")))
     ap.add_argument("--device", default=os.environ.get("OBSERVER_DEVICE", "cuda"))
+    ap.add_argument("--steering-weights", default=os.environ.get("STEERING_WEIGHTS", ""),
+                    help="A4 steering-net .npz; set => attach init_noise per tick (Stage B)")
     args = ap.parse_args()
     if not args.weights:
         raise SystemExit("--weights (or OBSERVER_WEIGHTS) is required: dir with observer_head.pt")
 
-    service = ConditioningService(weights=args.weights, bridge_url=args.bridge, device=args.device)
+    service = ConditioningService(weights=args.weights, bridge_url=args.bridge,
+                                  device=args.device, steering_weights=args.steering_weights)
     httpd = ThreadingHTTPServer((args.host, args.port), _make_handler(service))
     print(f"[conditioner] serving on http://{args.host}:{args.port} "
           f"(POST /get_action|/get_action_corrected, GET /health) -> {args.bridge}", flush=True)

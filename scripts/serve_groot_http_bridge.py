@@ -43,6 +43,29 @@ import numpy as np
 
 DEFAULT_INSTRUCTION = "pick up the vial and place it in the rack"
 
+# Padded flow-sampler noise geometry for this checkpoint family (FlowDAgger).
+ACTION_HORIZON = 40
+ACTION_DIM = 132
+
+
+def decode_init_noise(b64: str, shape=None) -> np.ndarray:
+    """FlowDAgger Stage B: decode a request's ``init_noise_b64`` payload.
+
+    ``b64`` is base64 of raw float32 bytes; ``shape`` is the sidecar-declared
+    shape (default ``(ACTION_HORIZON, ACTION_DIM)``). Returns a contiguous
+    ``(1, H, D)`` float32 array ready for ``options={"init_noise": ...}`` on the
+    patched GR00T server. Raises on a size/shape mismatch (surfaced as a 500 —
+    a malformed steering payload must fail loudly, not silently fall back).
+    """
+    flat = np.frombuffer(base64.b64decode(b64), dtype=np.float32)
+    shp = tuple(int(x) for x in (shape or (ACTION_HORIZON, ACTION_DIM)))
+    arr = flat.reshape(shp)
+    if arr.ndim == 2:
+        arr = arr[None]
+    if arr.ndim != 3:
+        raise ValueError(f"init_noise must be (H,D) or (B,H,D); got shape {shp}")
+    return np.ascontiguousarray(arr)
+
 
 class SafeClient:
     """Thread-safe, self-healing wrapper around the GR00T ZMQ ``PolicyClient``.
@@ -68,19 +91,24 @@ class SafeClient:
         with self._lock:
             return self._client.ping()
 
-    def get_action(self, obs):
+    def get_action(self, obs, options=None):
+        # ``options`` rides the existing PolicyClient wire field (msgpack packs
+        # the numpy init_noise via msgpack_numpy); options=None is byte-identical
+        # to the pre-Stage-B call.
         with self._lock:
             try:
-                return self._client.get_action(obs)
+                return self._client.get_action(obs, options)
             except Exception:  # noqa: BLE001 — socket may be wedged; heal and retry once
                 traceback.print_exc()
                 print("[bridge] get_action failed — reconnecting ZMQ client and retrying once",
                       flush=True)
                 self._client = self._factory()
-                return self._client.get_action(obs)
+                return self._client.get_action(obs, options)
 
 
 def make_handler(client, instruction_default: str):
+    steer_count = {"n": 0}   # init_noise attachments actually sent to ZMQ (audit)
+
     class Handler(BaseHTTPRequestHandler):
         def _cors(self):
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -103,7 +131,7 @@ def make_handler(client, instruction_default: str):
 
         def do_GET(self):
             if self.path.startswith("/health"):
-                self._json(200, {"ok": True})
+                self._json(200, {"ok": True, "init_noise_attached": steer_count["n"]})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -153,15 +181,30 @@ def make_handler(client, instruction_default: str):
                     "state": state_dict,
                     "language": {"annotation.human.task_description": [[instr]]},
                 }
-                action, _info = client.get_action(obs)
+                # FlowDAgger Stage B: an ``init_noise_b64`` payload steers the flow
+                # sampler's initial noise via options (patched GR00T; see
+                # scripts/patches/isaac_groot_init_noise.patch). Absent => exactly
+                # the pre-Stage-B behaviour (options=None, stock torch.randn).
+                options = None
+                noise_b64 = req.get("init_noise_b64")
+                if noise_b64:
+                    init_noise = decode_init_noise(noise_b64, req.get("init_noise_shape"))
+                    options = {"init_noise": init_noise}
+                    steer_count["n"] += 1
+                    print(f"[bridge] init_noise attached #{steer_count['n']} "
+                          f"shape={init_noise.shape}", flush=True)
+                action, _info = client.get_action(obs, options)
                 arm = np.asarray(action["single_arm"], dtype=np.float32).reshape(-1, 6)
                 grip = np.asarray(action["gripper"], dtype=np.float32).reshape(-1, 1)
-                self._json(200, {
+                out = {
                     "q": [float(x) for x in arm[0]],
                     "grip": float(np.clip(grip[0, 0], 0.0, 1.0)),
                     "chunk_q": [[float(x) for x in row] for row in arm],
                     "chunk_grip": [float(np.clip(g[0], 0.0, 1.0)) for g in grip],
-                })
+                }
+                if options is not None:
+                    out["steered"] = True
+                self._json(200, out)
             except Exception as exc:  # noqa: BLE001  — surface to the browser
                 traceback.print_exc()
                 self._json(500, {"error": repr(exc)})

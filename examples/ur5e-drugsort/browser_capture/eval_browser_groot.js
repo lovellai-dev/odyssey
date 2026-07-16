@@ -50,6 +50,7 @@ const SETUP = () => {
   let vialQ = -1, vialDof = -1;
   for (let j = 0; j < m.njnt; j++) { if (m.jnt_bodyid[j] === vialBody && m.jnt_type[j] === 0) { vialQ = m.jnt_qposadr[j]; vialDof = m.jnt_dofadr[j]; break; } }
   const pocketSite = mj.mj_name2id(m, OBJ_SITE, 'pocket_0');
+  const pinchSite = mj.mj_name2id(m, OBJ_SITE, 'gr_pinch');   // near-miss telemetry (as probe_browser_groot.js)
   const homeKey = mj.mj_name2id(m, OBJ_KEY, 'home');
   const ARM_BODIES = new Set(['base', 'shoulder_link', 'upper_arm_link', 'forearm_link', 'wrist_1_link', 'wrist_2_link', 'wrist_3_link']);
   for (let g = 0; g < m.ngeom; g++) {
@@ -61,8 +62,8 @@ const SETUP = () => {
   const camExt = G.makeMjCamera(pm, mj, 'room');
   const camWrist = G.makeMjCamera(pm, mj, 'wrist');
   const cap = G.makeCapture(v.renderer);
-  window.__ev = { armAct, gripAct, armQadr, gripQadr, vialBody, vialQ, vialDof, pocketSite, homeKey, camExt, camWrist, cap };
-  return { armAct, gripAct, vialBody, vialQ, pocketSite, homeKey };
+  window.__ev = { armAct, gripAct, armQadr, gripQadr, vialBody, vialQ, vialDof, pocketSite, pinchSite, homeKey, camExt, camWrist, cap };
+  return { armAct, gripAct, vialBody, vialQ, pocketSite, pinchSite, homeKey };
 };
 
 // One in-browser GR00T attempt: randomized start -> closed-loop query/act -> score.
@@ -74,6 +75,9 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   const readArm = () => H.armQadr.map(a => a >= 0 ? pm.mjData.qpos[a] : 0);
   const vialPose = () => { const b = H.vialBody, x = pm.mjData.xpos, q = pm.mjData.xquat; return [x[b * 3], x[b * 3 + 1], x[b * 3 + 2], q ? q[b * 4] : 1, q ? q[b * 4 + 1] : 0, q ? q[b * 4 + 2] : 0, q ? q[b * 4 + 3] : 0]; };
   const pocketPose = () => { const s = H.pocketSite, sp = pm.mjData.site_xpos; return [sp[s * 3], sp[s * 3 + 1], sp[s * 3 + 2]]; };
+  // Telemetry-only (same as probe_browser_groot.js): closest gr_pinch approach to the vial.
+  const pinchPos = () => { const s = H.pinchSite, sp = pm.mjData.site_xpos; return s >= 0 ? [sp[s * 3], sp[s * 3 + 1], sp[s * 3 + 2]] : null; };
+  const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const decim = Math.max(1, Math.round((1 / 20) / (m.opt.timestep || 0.002)));
 
   // Randomized reset (same override the data-gen harness uses).
@@ -85,7 +89,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   for (let k = 0; k < SETTLE; k++) { setArm(homeQ); setGrip(0); mj.mj_step(m, pm.mjData); }
 
   const z0 = vialPose()[2];
-  let zMax = z0, ticks = 0, queries = 0, gripCmd = 0, gripMax = 0, err = null;
+  let zMax = z0, ticks = 0, queries = 0, gripCmd = 0, gripMax = 0, err = null, minPad = Infinity;
   const url = cfg.agents === 'groot-observer' ? '/api/groot/get_action_observer' : '/api/groot/get_action';
   const sid = cfg.agents === 'groot-observer' ? ('obs-' + Date.now() + '-' + Math.floor(Math.random() * 1e6)) : null;
 
@@ -117,6 +121,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
       // browser_harness + the deploy bridge.step(decim)).
       for (let s = 0; s < decim; s++) mj.mj_step(m, pm.mjData);
       const vz = vialPose()[2]; if (vz > zMax) zMax = vz;
+      const pinch = pinchPos(); if (pinch) { const d = dist3(pinch, vialPose()); if (d < minPad) minPad = d; }
       ticks++;
       if (ticks >= cfg.maxTicks) break;
     }
@@ -125,7 +130,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   const placeDist = Math.hypot(vp[0] - pp[0], vp[1] - pp[1]);
   const lifted = (zMax - z0) > 0.02;
   const seated = placeDist < 0.05 && vp[2] > 0.20;
-  return { success: (lifted && seated), lifted, seated, lift_height: zMax - z0, place_dist: placeDist, gripMax, queries, ticks, error: err };
+  return { success: (lifted && seated), lifted, seated, lift_height: zMax - z0, place_dist: placeDist, gripMax, queries, ticks, min_pad_to_vial: (minPad === Infinity ? null : minPad), error: err };
 };
 
 (async () => {
@@ -165,7 +170,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
     const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS });
     const secs = (Date.now() - t0) / 1000;
     results.push({ episode: plan.episode, ...r, seconds: +secs.toFixed(1) });
-    console.log(`ATT ep${String(plan.episode).padStart(3, '0')}: ${r.success ? 'SUCCESS' : (r.error ? 'ERROR:' + r.error : 'fail')} lifted=${r.lifted} seated=${r.seated} lift=${(r.lift_height * 100).toFixed(1)}cm place=${(r.place_dist * 100).toFixed(1)}cm grip=${r.gripMax.toFixed(2)} q=${r.queries} ${secs.toFixed(1)}s`);
+    console.log(`ATT ep${String(plan.episode).padStart(3, '0')}: ${r.success ? 'SUCCESS' : (r.error ? 'ERROR:' + r.error : 'fail')} lifted=${r.lifted} seated=${r.seated} lift=${(r.lift_height * 100).toFixed(1)}cm place=${(r.place_dist * 100).toFixed(1)}cm pad=${r.min_pad_to_vial == null ? 'n/a' : (r.min_pad_to_vial * 100).toFixed(1) + 'cm'} grip=${r.gripMax.toFixed(2)} q=${r.queries} ${secs.toFixed(1)}s`);
   }
   const nSucc = results.filter(r => r.success).length;
   const nLift = results.filter(r => r.lifted).length;
