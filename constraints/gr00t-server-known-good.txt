@@ -5,14 +5,16 @@
 # GR00T_VENV_PYTHON. NEVER co-install these into the odyssey core env or the
 # Isaac env (torch/transformers/numpy ABIs all clash). See examples/quickstart-gr00t/README.md.
 #
-# Built (py3.10, CUDA 12.8, x86_64) by examples/quickstart-gr00t/setup.sh, equivalent to:
+# Built (py3.12, CUDA 12.8, x86_64) by examples/quickstart-gr00t/setup.sh, equivalent to:
 #   cd "$ISAAC_GR00T_DIR"
-#   uv venv --python 3.10 .venv
+#   uv venv --python 3.12 .venv
 #   uv pip install --python .venv/bin/python \
 #       --extra-index-url https://download.pytorch.org/whl/cu128 \
 #       -c constraints/gr00t-server-known-good.txt -e .
 #
-# Verified live on the team H100 VM (Isaac-GR00T/.venv).
+# Isaac-GR00T now requires py3.12 (requires-python ==3.12.*). The pins below were
+# resolved on py3.10 but every version here ships a cp312 wheel; re-verify live on
+# the eval VM and refresh this file from `uv pip freeze` if anything drifts.
 
 torch==2.7.1+cu128
 torchvision==0.22.1+cu128

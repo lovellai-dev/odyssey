@@ -22,7 +22,7 @@ pins, and an interpreter selected by an env var.** We manage all of it with
 | Env | Interpreter (env var) | Python | Holds | Managed by |
 |---|---|---|---|---|
 | **Odyssey core** | `.venv` (this repo) | 3.10–3.12 | mission engine, CLI, training runner | `uv venv` + `.[dev,huggingface]` |
-| **GR00T server** | `GR00T_VENV_PYTHON` | 3.10 | GR00T model, `torch 2.7.1+cu128`, flash-attn | `uv venv` in `$ISAAC_GR00T_DIR`, `constraints/gr00t-server-known-good.txt` |
+| **GR00T server** | `GR00T_VENV_PYTHON` | 3.12 | GR00T model, `torch 2.7.1+cu128`, flash-attn | `uv venv` in `$ISAAC_GR00T_DIR`, `constraints/gr00t-server-known-good.txt` |
 | **Isaac Lab eval** | `ISAAC_PYTHON` | 3.11 | Isaac Sim 5.1.0, `isaaclab`, the GR00T **client** transport | Isaac's python + `constraints/isaac-eval-known-good.txt` (additive) |
 
 They talk over **ZMQ**: `IsaacLabRunner` (Odyssey core) spawns the eval recipe
