@@ -206,23 +206,26 @@ log "stack green (agent :$AGENT_PORT -> conditioner :$COND_PORT -> tunnel :$BRID
 log "STEP3 smoke gate: steered determinism through the FULL chain"
 smoke_post(){   # $1 = out json (two identical POSTs through agent :8032)
   "$PYUR5E" - "$AGENT_PORT" "$1" <<'PY'
-import base64, io, json, sys, urllib.request
+import base64, io, json, sys, time, urllib.request
 port, outp = sys.argv[1], sys.argv[2]
 from PIL import Image
 buf = io.BytesIO(); Image.new("RGB", (256, 256), (127, 127, 127)).save(buf, format="PNG")
 img = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
-body = json.dumps({
-    "image_b64": img, "image_b64_wrist": img,
-    "state": [-1.57, -1.56, 1.58, -1.57, -1.57, 0.0, 0.05],
-    "instruction": "pick up the vial and place it in the rack", "sid": "stageb-smoke",
-}).encode()
-def post():
+def post(sid):
+    # v0.1: steering is deliberately TIME-AWARE per session (t_norm tick counter),
+    # so determinism must be probed with a FRESH sid per request — same session
+    # would legitimately differ as the counter advances.
+    body = json.dumps({
+        "image_b64": img, "image_b64_wrist": img,
+        "state": [-1.57, -1.56, 1.58, -1.57, -1.57, 0.0, 0.05],
+        "instruction": "pick up the vial and place it in the rack", "sid": sid,
+    }).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/api/groot/get_action", data=body,
                                  headers={"content-type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=180) as r:
         return r.status, json.loads(r.read().decode())
-c1, r1 = post()
-c2, r2 = post()
+c1, r1 = post(f"smoke-a-{time.time_ns()}")
+c2, r2 = post(f"smoke-b-{time.time_ns()}")
 ok = (c1 == 200 and c2 == 200 and isinstance(r1.get("q"), list) and len(r1["q"]) == 6)
 json.dump({"ok": bool(ok), "status": [c1, c2],
            "steered_flag": [bool(r1.get("steered")), bool(r2.get("steered"))],
