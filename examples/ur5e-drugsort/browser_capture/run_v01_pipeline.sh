@@ -57,9 +57,11 @@ $SSH "$VM" "[ -d /home/ubuntu/steering_targets ] && [ -d /home/ubuntu/ur5e_drugs
 $SSH "$VM" "$GPY -c 'import pyarrow'" || fail "vm-pyarrow"
 
 # ---- 1. stage v0.1 scripts to VM -------------------------------------------------
-log "STEP1 scp v0.1 trainer + stratified gate to VM"
+log "STEP1 scp v0.1 trainer + stratified gate to VM (with the gate's import closure)"
 scp -q -o StrictHostKeyChecking=no "$ODY/scripts/train_steering_ur5e.py" \
-  "$ODY/scripts/flowdagger_offline_gate_ur5e.py" "$VM:/home/ubuntu/" || fail "scp-scripts"
+  "$ODY/scripts/flowdagger_offline_gate_ur5e.py" \
+  "$ODY/scripts/flow_inverter_groot.py" \
+  "$ODY/scripts/probe_flow_inversion_groot.py" "$VM:/home/ubuntu/" || fail "scp-scripts"
 
 # ---- 2. retrain (features v2 + motion-weighted loss) -----------------------------
 log "STEP2 VM retrain: features v2 (t_norm), motion-weighted (floor 0.2 ref 0.05), full5280"
