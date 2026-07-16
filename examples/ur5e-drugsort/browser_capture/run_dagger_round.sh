@@ -111,7 +111,11 @@ for port in $AGENT_PORT $COND_PORT; do
 done
 ss -tln 2>/dev/null | grep -q ":$BRIDGE_PORT " && { pkill -f "127.0.0.1:$BRIDGE_PORT:127.0.0.1:$BRIDGE_PORT" 2>/dev/null || true; sleep 2; }
 
-# ---- 1. VM serving + tunnel ------------------------------------------------------
+# ---- 1. stage current scripts + VM serving + tunnel --------------------------------
+log "STEP1 scp current trainer/inverter/gate to VM (Stage-C multi-source trainer)"
+scp -q -o StrictHostKeyChecking=no "$ODY/scripts/train_steering_ur5e.py" \
+  "$ODY/scripts/flow_inverter_groot.py" "$ODY/scripts/probe_flow_inversion_groot.py" \
+  "$ODY/scripts/flowdagger_offline_gate_ur5e.py" "$VM:/home/ubuntu/" || fail "scp-scripts"
 log "STEP1 deploy obscond ckpt (ZMQ :$ZMQ_PORT + bridge :$BRIDGE_PORT) + tunnel"
 $SSH "$VM" "bash /home/ubuntu/vm_deploy_obscond.sh $CKPT $ZMQ_PORT $BRIDGE_PORT" || fail "vm-deploy"
 $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$BRIDGE_PORT:127.0.0.1:$BRIDGE_PORT "$VM" || fail "tunnel"
