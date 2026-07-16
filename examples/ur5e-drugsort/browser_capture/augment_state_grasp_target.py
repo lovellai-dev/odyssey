@@ -197,7 +197,10 @@ def _verify(src: Path, xml: str, bpos, bmat, mj) -> None:
     vb, vq = idx["vial_body"], idx["vial_qadr"]
     gt = json.loads((src / "meta" / "gt" / "episode_000000.json").read_text())
     worst = 0.0
-    for fi in (0, 100, 400, 700, 947):
+    # Length-relative sample indices: episodes vary (base ~948 frames, DAgger
+    # rollouts 900) — hardcoded indices broke on the first Stage-C mini-round.
+    n_f = len(gt["frames"])
+    for fi in sorted({0, n_f // 8, n_f // 2, (3 * n_f) // 4, n_f - 1}):
         vp = gt["frames"][fi]["vial_pose"]
         mjm.mj_resetDataKeyframe(model, data, hk)
         for i in range(7):
