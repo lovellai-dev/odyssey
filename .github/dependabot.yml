@@ -1,0 +1,28 @@
+# Dependabot configuration.
+#
+# Scope (deliberately conservative — see the rationale below):
+#   * github-actions ......... routine version updates for the actions used by CI.
+#   * pip / constraints/ ..... NOT tracked here. The odyssey extras use loose
+#                              floors (>=) on purpose, and constraints/*.txt are
+#                              FROZEN known-good pins validated on specific GPUs
+#                              (torch/cu128, flash-attn, numpy<2, ...). Auto-bumping
+#                              those would break training/eval, so we leave them out.
+#
+# Security fixes for pip are handled by the repo-level "Dependabot security
+# updates" toggle (Settings -> Code security), which opens PRs only for real
+# CVEs and does NOT do routine version bumps. Note: those security PRs always
+# target the DEFAULT branch; the target-branch below only affects the routine
+# github-actions version updates.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
