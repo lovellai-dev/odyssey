@@ -135,6 +135,50 @@ proven headless-Chrome workers to ~6–8 h wall. Phases 1/1b/2 cost ~0 GPU and c
 delete Phase 3's 24–30 h outright if Phase 1 finds a wire/decode bug.
 TDD; Conventional Commits; DCO sign-off; no Co-Authored-By.
 
+## Status updates
+
+**2026-07-16 — Phase 1 executed (commit 753c55a): verdict CAPABILITY_CEILING,
+with the mechanism identified as input-attention collapse.** All plumbing clean:
+obs alive (hash uniqueness 1.0, target tracks scene), action scale 100% inside
+the expert range, bridge≡native (0.0008 rad), tracking OK. The sensitivity
+battery found the policy is **wrist-camera-only**: blacking the wrist view moves
+actions 1.47 rad (SNR 9.5) while blacking the exterior view (SNR 0.6), shifting
+proprio (SNR 0.4) and shifting the injected grasp target ±5 cm (SNR 0.4–1.1) all
+do nothing — mechanistic confirmation that the Step-2 conditioning was
+learned-ignored, not miswired. Behavior: approach to within 6.1–11.6 cm of the
+vial, blind grip fire, miss. Consequences: **near-miss base confirmed** (Phase-4
+precondition met); **Phase 1b closed** (grip skew 0.06 mean, below flag);
+**Phase 2 devalued** (exterior-renderer differences cannot drive a policy that
+ignores the exterior view). The probe battery is retained as a mandatory
+per-checkpoint attention test for every future retrain.
+
+**2026-07-16 — Phase 4 re-based on FlowDAgger (Microsoft, latent-space DAgger
+for flow-matching policies; deep-read + port assessment complete).** A small
+steering network predicts the flow sampler's INITIAL NOISE, trained by BC on
+expert corrections inverted through the sampling ODE; base weights frozen.
+Fit: steering inputs are OUR choice (Observer grasp-target xyz + proprio +
+phase one-hot) — bypasses the collapsed attention, render-gap-immune, no
+log-prob needed, and strictly stronger on authenticity than an action-space
+residual (GR00T's frozen flow head remains the sole emitter of actuator
+values). Verified Isaac-GR00T seams: `get_action_with_features` already takes
+`options` with an RTC noise-override precedent (~4-line `init_noise` patch),
+`Gr00tPolicy._get_action` needs 2 lines, ZMQ server kwarg-splats client data
+(zero server changes). Port cautions: GR00T's time convention is the reverse of
+pi0.5's; N=4 Euler steps with bucketized timesteps {0,250,500,750}; recon MSE
+scored on dims [:7] only (pad dims untrained). CEM survives as **noise-space
+CEM** (authority probe + optional deploy-time fallback). Action-space residual
+retired.
+
+**Gate before the port (Step 0/1, ~2 days, no upstream patch):**
+`probe_flow_inversion_groot.py` on the H100 — (a) perstep_fp inversion
+round-trip on expert chunks (pass: recon MSE < 1e-3 on dims [:7], p99|w*| < ~3);
+(b) steering-authority probe at recorded miss states: invert the IK-FSM
+corrective chunk (on/off-manifold verdict) + decoded end-effector spread over
+64 random noise seeds via FK (must cover the 6–12 cm correction). Both pass →
+full port (~2–3 weeks). Either fails → exactly ONE Phase-3 DAgger finetune
+round to put corrective descent on-manifold, then port steering on the new
+frozen checkpoint.
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
