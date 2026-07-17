@@ -92,6 +92,15 @@ def select(arm_trajs: np.ndarray, grip_trajs: np.ndarray,
 
     mask, cbf_reports = cbf.filter_candidates(cand_states, lim=lim, gamma=gamma,
                                               tol=tol)
+    # GRIP-HOLD guard (Move-3 transport safety): while carrying, a candidate
+    # that opens the gripper before the PLACE phase would DROP the vial —
+    # infeasible regardless of its progress score.
+    if grasped and int(phase) < clf.PLACE:
+        for k in range(K):
+            if mask[k] and bool((np.asarray(grip_trajs[k]) < 0.4).any()):
+                mask[k] = False
+                cbf_reports[k]["violated"] = sorted(
+                    set(cbf_reports[k]["violated"]) | {"grip_hold"})
     scores: list[dict[str, float] | None] = [None] * K
     best_idx, best_key = None, None
     for k in range(K):

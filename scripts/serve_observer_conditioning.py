@@ -427,6 +427,10 @@ class ConditioningService:
                     "grasped": bool(sess.get("was_closed", False)),
                     "vial": [float(x) for x in tgt],
                     "grasp_target": [float(x) for x in tgt],
+                    # Cell geometry (base frame) so the TRANSPORT/PLACE CLF aims
+                    # the held vial at the rack, not at its own pickup point.
+                    "pocket": [float(x) for x in os.environ.get(
+                        "STEER_POCKET", "-0.39,0.174,0.228").split(",")],
                 }
             print(f"[steer] n={self._steering.n_attached} sid={sid} "
                   f"phase={phase}({PHASE_NAMES[phase]}) grip={state[6]:.3f}", flush=True)

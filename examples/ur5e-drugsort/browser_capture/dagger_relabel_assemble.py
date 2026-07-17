@@ -116,6 +116,34 @@ class ExpertRelabeler:
         return self.q[name], g
 
 
+def stateless_corrective(pinch, vial, grip, targets, grasp_pt, place_pt, z0):
+    """Memoryless corrective: stage chosen from CURRENT geometry only.
+
+    The latching ExpertRelabeler makes the corrective a function of its internal
+    phase index (evolved from frame 0), so two near-identical states in
+    different episodes can carry DIFFERENT targets — the measured ~0.09
+    dagger-source val-MSE floor across six steering configs (irreducible target
+    noise, no per-state input can fit it). This function uses the SAME stage
+    thresholds but selects from the instantaneous (pinch, vial, grip) geometry:
+    identical states => identical targets => fittable regression. Dropped-vial
+    states fall through to the approach/descend branch = learned regrasp.
+    """
+    h = ExpertRelabeler._horiz
+    d = ExpertRelabeler._dist
+    if float(grip) > 0.4:                                  # holding (or closing)
+        if h(pinch, place_pt) < 0.05:                      # over the pocket
+            return (targets["lower"], 1.0) if d(pinch, place_pt) >= 0.03 \
+                else (targets["lower"], 0.0)               # seat, then release
+        if (float(vial[2]) - float(z0)) > 0.03:            # lifted -> carry
+            return targets["transport"], 1.0
+        return targets["lift"], 1.0                        # closed, not yet lifted
+    if d(pinch, grasp_pt) < 0.03:                          # at grasp depth, open
+        return targets["descend"], 1.0                     # close here
+    if h(pinch, grasp_pt) < 0.06:                          # above the vial column
+        return targets["descend"], 0.0                     # descend
+    return targets["approach"], 0.0                        # go align above
+
+
 def load_frames(d: Path):
     return [np.asarray(Image.open(p).convert("RGB"), dtype=np.uint8) for p in sorted(d.glob("f*.png"))]
 
@@ -186,7 +214,12 @@ def cmd_relabel(args) -> int:
                 gt = gt[:cut]
         actions = []
         for f in gt:
-            tq, tg = relab.step(f["pinch"], f["vial"], float(f["grip"]))
+            if getattr(args, "stateless", False):
+                tq, tg = stateless_corrective(
+                    f["pinch"], f["vial"], float(f["grip"]), targets,
+                    grasp_pt, place_pt, float(vial_xyz[2]))
+            else:
+                tq, tg = relab.step(f["pinch"], f["vial"], float(f["grip"]))
             actions.append([*tq, tg])
 
         states = np.asarray(meta["states"], dtype=np.float32)
@@ -360,6 +393,9 @@ def main() -> int:
     rl.add_argument("--out", required=True)
     rl.add_argument("--min-frames", type=int, default=10)
     rl.add_argument("--instruction", default=emb.DEFAULT_INSTRUCTION)
+    rl.add_argument("--stateless", action="store_true",
+                    help="memoryless corrective (stage from current geometry; "
+                         "fixes the latching-relabeler target-noise floor)")
     rl.set_defaults(func=cmd_relabel)
 
     mg = sub.add_parser("merge", help="aggregate a relabel dataset onto a base dataset")

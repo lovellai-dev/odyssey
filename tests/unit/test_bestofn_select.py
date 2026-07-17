@@ -81,3 +81,26 @@ def test_hold_chunk_shape_and_values():
     q, g = bon.hold_chunk(np.arange(6, dtype=float), 0.7, horizon=16)
     assert q.shape == (16, 6) and g.shape == (16,)
     assert np.allclose(q[5], np.arange(6)) and np.allclose(g, 0.7)
+
+
+def test_grip_hold_guard_blocks_mid_transport_release():
+    at = _traj_from_pinch(np.tile(TGT + [0, 0, 0.05], (16, 1)))
+    hold = np.ones(16)
+    # release INSIDE the executed prefix (steps 0-7) — a release at steps 8+
+    # never executes and correctly does not trigger the guard
+    release = np.concatenate([np.ones(3), np.zeros(13)])
+    idx, rep = bon.select(np.stack([at, at]), np.stack([release, hold]), _fk,
+                          vial=VIAL, grasp_target=TGT, pocket=[0.39, -0.18, 0.21],
+                          phase=2, grasped=True)
+    assert idx == 1
+    assert "grip_hold" in rep["cbf_rejections"]
+
+
+def test_grip_release_allowed_in_place_phase():
+    # in PLACE phase, releasing is legitimate (that's how the vial is seated)
+    at = _traj_from_pinch(np.tile(TGT + [0, 0, 0.05], (16, 1)))
+    release = np.concatenate([np.ones(3), np.zeros(13)])
+    idx, rep = bon.select(np.stack([at]), np.stack([release]), _fk,
+                          vial=VIAL, grasp_target=TGT, pocket=[0.39, -0.18, 0.21],
+                          phase=3, grasped=True)
+    assert idx == 0 and "grip_hold" not in (rep["cbf_rejections"] or {})
