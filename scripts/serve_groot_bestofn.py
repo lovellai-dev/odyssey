@@ -137,6 +137,7 @@ class BestOfNService:
                     pocket=cfg.get("pocket"),
                     phase=int(cfg.get("phase", 0)),
                     grasped=bool(cfg.get("grasped", False)),
+                    exec_horizon=int(cfg.get("exec_horizon", 8)),
                 )
                 for name, cnt in (report.get("cbf_rejections") or {}).items():
                     self.rejection_hist[name] = self.rejection_hist.get(name, 0) + int(cnt)

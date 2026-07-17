@@ -39,7 +39,7 @@ OBS_WEIGHTS=$BC/percep_weights_browser
 PLANS=$HOME/observer_cond/plans_eval.json
 EVAL_N=${EVAL_N:-15}
 BON_K=${BON_K:-16}
-BON_SIGMA=${BON_SIGMA:-0.35}
+BON_SIGMA=${BON_SIGMA:-0.25}
 
 export DISPLAY=${DISPLAY:-:1}
 cd "$BC"

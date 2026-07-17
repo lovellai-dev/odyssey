@@ -89,15 +89,23 @@ def barrier_values(s: dict[str, Any], s_prev: dict[str, Any] | None,
     return h
 
 
-def chunk_feasible(states: Sequence[dict[str, Any]], *, lim: Limits | None = None,
-                   gamma: float = 0.4, tol: float = 0.0) -> tuple[bool, dict[str, Any]]:
-    """CBF feasibility of one candidate chunk.
+DECAY_BARRIERS = frozenset({"workspace", "table_clear", "joint_margin"})
 
-    Feasible iff every barrier satisfies BOTH: h_i >= -tol at every step, AND
-    the decay condition h_i(k+1) >= (1-gamma)*h_i(k) - tol (no barrier eroded
-    faster than gamma allows). Returns (feasible, report) with the worst value
-    and worst decay-slack per barrier — the report is the explainability
-    artifact ("rejected: vial_protect -0.008").
+
+def chunk_feasible(states: Sequence[dict[str, Any]], *, lim: Limits | None = None,
+                   gamma: float = 0.4, tol: float = 0.0,
+                   decay_barriers: frozenset[str] = DECAY_BARRIERS
+                   ) -> tuple[bool, dict[str, Any]]:
+    """CBF feasibility of one candidate chunk (the EXECUTED steps only — callers
+    must slice to the execution horizon; steps that never run cannot be unsafe).
+
+    Feasible iff every barrier satisfies h_i >= -tol at every step, AND — for
+    STATE-DISTANCE barriers only (``decay_barriers``) — the decay condition
+    h_i(k+1) >= (1-gamma)*h_i(k) - tol. Input-type barriers (step_motion,
+    vial_protect) are per-step caps whose h fluctuates by nature; applying
+    decay to them criminalizes variability (first live run: 1030 spurious
+    step_motion:decay rejections). Returns (feasible, report); the report is
+    the per-decision explainability artifact.
     """
     lim = lim or Limits()
     worst_h: dict[str, float] = {}
@@ -107,7 +115,7 @@ def chunk_feasible(states: Sequence[dict[str, Any]], *, lim: Limits | None = Non
         hs = barrier_values(s, states[k - 1] if k > 0 else None, lim)
         for name, v in hs.items():
             worst_h[name] = min(worst_h.get(name, np.inf), v)
-            if name in prev_h:
+            if name in prev_h and name in decay_barriers:
                 slack = v - (1.0 - gamma) * prev_h[name]
                 worst_decay[name] = min(worst_decay.get(name, np.inf), slack)
             prev_h[name] = v

@@ -57,7 +57,8 @@ def select(arm_trajs: np.ndarray, grip_trajs: np.ndarray,
            vial: Sequence[float], grasp_target: Sequence[float],
            pocket: Sequence[float] | None, phase: int, grasped: bool,
            lim: cbf.Limits | None = None, gamma: float = 0.4,
-           tol: float = 0.0) -> tuple[int | None, dict[str, Any]]:
+           tol: float = 0.0, exec_horizon: int = 8
+           ) -> tuple[int | None, dict[str, Any]]:
     """Choose among K decoded candidates.
 
     arm_trajs (K,16,6) absolute joint targets; grip_trajs (K,16) in 0..1;
@@ -68,6 +69,13 @@ def select(arm_trajs: np.ndarray, grip_trajs: np.ndarray,
     of progress — safety is a filter, not a weight.
     """
     K = len(arm_trajs)
+    # Safety + progress are judged on the EXECUTED prefix only — chunk steps
+    # beyond the execution horizon are never applied, so a wild late-chunk
+    # excursion is not a safety event (first live run vetoed ~90% of real
+    # candidates on never-executed steps).
+    H = min(int(exec_horizon), arm_trajs.shape[1])
+    arm_trajs = arm_trajs[:, :H]
+    grip_trajs = grip_trajs[:, :H]
     vial = np.asarray(vial, float)
     grasp_target = np.asarray(grasp_target, float)
     pocket = np.asarray(pocket if pocket is not None else grasp_target, float)
