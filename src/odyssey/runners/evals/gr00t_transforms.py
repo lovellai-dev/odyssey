@@ -1,15 +1,24 @@
-"""Pure GR00T obs/action transforms for the Isaac Lab eval recipe (odyssey#17).
+"""Pure GR00T obs/action transforms for the Isaac Lab + LIBERO eval recipes.
 
 NO heavy deps (numpy only) so it imports and unit-tests without gr00t / isaaclab /
-torch. This is the design-agnostic core of the GR00T<->Isaac adapter — it carried
+torch. This is the design-agnostic core of the GR00T<->env adapters — it carried
 over unchanged when odyssey#17 moved from an in-process runner onto Jeanine's
 subprocess ``IsaacLabRunner`` contract; only the surrounding harness changed.
 
-Embodiment: ``oxe_droid_relative_eef_relative_joint`` (GR00T-N1.7 DROID-family).
-The GR00T policy server (``run_gr00t_server.py``) expects a NESTED obs dict and
-returns ``(action, info)`` with action keys ``eef_9d`` / ``gripper_position`` /
-``joint_position``. rot6d = first two columns of R (Zhou et al. 2019;
-identity rotation -> ``[1,0,0, 0,1,0]``).
+TWO embodiments live here, side by side:
+
+* **Isaac / DROID** (``oxe_droid_relative_eef_relative_joint``) — the original
+  odyssey#17 path. NESTED obs dict; the server returns action keys ``eef_9d`` /
+  ``gripper_position`` / ``joint_position`` as RELATIVE eef deltas (rot6d = first
+  two columns of R, Zhou et al. 2019; identity rotation -> ``[1,0,0, 0,1,0]``).
+  Everything above ``# --- LIBERO`` is this path and is UNCHANGED.
+
+* **LIBERO** (``LIBERO_PANDA``) — the GR00T-N1.7-LIBERO checkpoint. Its real
+  contract (``examples/LIBERO/modality.json`` in NVIDIA/Isaac-GR00T) is different:
+  FLAT dotted-key obs (``video.image`` / ``state.x`` / ...), single video frame,
+  state = eef pos + eef quat→axis-angle + 2 gripper finger qpos, and the action is
+  ALREADY in LIBERO's 7-DoF OSC_POSE space (ABSOLUTE) — so NO rot6d / eef-delta
+  step; only a gripper fix-up. Mirrors ``gr00t/eval/sim/LIBERO/libero_env.py``.
 """
 from __future__ import annotations
 
@@ -145,24 +154,111 @@ def gr00t_action_to_isaac(chunk, k, *, pos_scale=1.0, rot_scale=1.0,
     return np.concatenate([dpos, drot, [g]]).astype(np.float32)
 
 
-def gr00t_action_to_libero(chunk, k, *, pos_scale=1.0, rot_scale=1.0,
-                           gripper_threshold=0.5, gripper_open=1.0,
-                           gripper_close=-1.0, translation_only=False) -> np.ndarray:
-    """Map step k of a GR00T chunk to LIBERO's 7-DoF OSC_POSE action.
+# ---------------------------------------------------------------------------
+# --- LIBERO (embodiment LIBERO_PANDA) --------------------------------------
+# The GR00T-N1.7-LIBERO checkpoint's schema (examples/LIBERO/modality.json):
+#   state  : x,y,z (eef pos) + roll,pitch,yaw (eef quat -> axis-angle) + gripper(2 finger qpos)
+#   action : x,y,z,roll,pitch,yaw,gripper  (ABSOLUTE, LIBERO's own 7-DoF space)
+#   video  : image, wrist_image (single frame, T=1)
+#   lang   : annotation.human.action.task_description
+# No rot6d / eef-delta plumbing: the server returns the LIBERO action directly; we
+# only fix the gripper channel. Mirrors NVIDIA's gr00t/eval/sim/LIBERO/libero_env.py.
+# ---------------------------------------------------------------------------
 
-    LIBERO's action is ``[dpos(3), drot axis-angle(3), gripper]`` — the same shape
-    as Isaac's IK-rel action. The gripper default mirrors OpenVLA's LIBERO
-    reference convention (``libero._libero_action``): **+1 = open, -1 = close**,
-    and GR00T emits ``gripper_position`` in [0,1] with LOW = open. ``translation_only``
-    zeroes rotation and forces the gripper open (a de-risking / debug knob).
-    ⚠ Validate gripper direction + pos/rot scale on the first live LIBERO rollout.
+# The 6 pose axes of the LIBERO state/action (each a scalar); gripper is separate.
+LIBERO_POSE_AXES = ("x", "y", "z", "roll", "pitch", "yaw")
+
+
+def quat_xyzw_to_axis_angle(q) -> np.ndarray:
+    """robosuite eef quat (xyzw) -> axis-angle (3,), matching robosuite ``quat2axisangle``.
+
+    NVIDIA's ``libero_env`` builds state roll/pitch/yaw via ``quat2axisangle(eef_quat)``;
+    replicated here so the wire state matches what the checkpoint was trained on.
     """
-    dpos, drot = _gr00t_eef_delta(
-        chunk, k, pos_scale=pos_scale,
-        rot_scale=0.0 if translation_only else rot_scale,
+    q = np.asarray(q, dtype=np.float64).reshape(4)
+    q = q / (np.linalg.norm(q) + 1e-12)
+    w = np.clip(q[3], -1.0, 1.0)                 # xyzw -> scalar is last
+    den = np.sqrt(max(1.0 - w * w, 0.0))
+    if den < 1e-8:                               # ~identity rotation
+        return np.zeros(3, dtype=np.float32)
+    return (q[:3] * 2.0 * np.arccos(w) / den).astype(np.float32)
+
+
+def build_gr00t_libero_obs(*, image, wrist_image, eef_pos, eef_quat_xyzw,
+                           gripper_qpos, instruction) -> dict:
+    """FLAT dotted-key GR00T obs for the LIBERO_PANDA embodiment (modality.json).
+
+    Mirrors ``libero_env._process_observation``: images are already 180°-flipped by
+    the caller; state = eef_pos(3) + quat2axisangle(eef_quat)(3) + gripper_qpos(2).
+    Array shapes follow the working Isaac ``PolicyClient`` convention — a leading
+    ``(batch=1, time=1)`` pair on every tensor. ⚠ VERIFY the (batch,time) rank on
+    the first VM smoke: if the sim-policy-wrapped server rejects it, drop a dim.
+    """
+    img = np.asarray(image, dtype=np.uint8)
+    wrist = np.asarray(wrist_image, dtype=np.uint8)
+    pose = np.concatenate([
+        np.asarray(eef_pos, dtype=np.float32).reshape(3),
+        quat_xyzw_to_axis_angle(eef_quat_xyzw),
+    ]).astype(np.float32)                        # x,y,z,roll,pitch,yaw
+    grip = np.asarray(gripper_qpos, dtype=np.float32).reshape(-1)[:2]
+    obs = {
+        "video.image": img[None, None],          # (1,1,H,W,3) uint8
+        "video.wrist_image": wrist[None, None],  # (1,1,H,W,3) uint8
+        "annotation.human.action.task_description": [[str(instruction)]],
+        "state.gripper": grip.reshape(1, 1, 2),  # both finger joints
+    }
+    for i, axis in enumerate(LIBERO_POSE_AXES):
+        obs[f"state.{axis}"] = pose[i].reshape(1, 1, 1)
+    return obs
+
+
+def normalize_gripper_action(g, *, binarize: bool = True) -> float:
+    """GR00T gripper in [0,1] -> [-1,1] (NVIDIA ``normalize_gripper_action``)."""
+    v = 2.0 * float(g) - 1.0
+    if binarize:
+        v = 1.0 if v >= 0.0 else -1.0
+    return v
+
+
+def invert_gripper_action(g) -> float:
+    """Flip gripper sign (NVIDIA ``invert_gripper_action``) for LIBERO's convention."""
+    return -float(g)
+
+
+def _libero_action_vec(chunk, k) -> np.ndarray:
+    """Step k of a GR00T LIBERO action chunk as a raw 7-vec [x,y,z,roll,pitch,yaw,gripper].
+
+    Accepts either per-axis keys (mirrors the Isaac path's bare modality keys) or a
+    single composed ``action`` array. ⚠ VERIFY which the sim-policy-wrapped server
+    returns on the first smoke and drop the branch that doesn't apply.
+    """
+    if "action" in chunk:                        # composed (H,7) fallback
+        return np.asarray(chunk["action"], np.float64).reshape(-1, 7)[k]
+    axes = (*LIBERO_POSE_AXES, "gripper")
+    return np.array(
+        [float(np.asarray(chunk[a]).reshape(-1)[k]) for a in axes], np.float64
     )
-    g = gripper_open if translation_only else _gr00t_gripper_bit(
-        chunk, k, threshold=gripper_threshold,
-        open_val=gripper_open, close_val=gripper_close,
-    )
-    return np.concatenate([dpos, drot, [g]]).astype(np.float32)
+
+
+def gr00t_action_to_libero(chunk, k, *, translation_only=False,
+                           binarize_gripper=True, **_legacy) -> np.ndarray:
+    """Map step k of a GR00T LIBERO action chunk to LIBERO's 7-DoF OSC_POSE action.
+
+    The GR00T-N1.7-LIBERO checkpoint emits the action ALREADY in LIBERO's action
+    space ``[x,y,z,roll,pitch,yaw,gripper]`` (ABSOLUTE) — so there is NO eef-delta /
+    rot6d step (that path is the Isaac ``gr00t_action_to_isaac`` above). We only fix
+    the gripper channel to LIBERO's convention: normalize [0,1]->[-1,1] then invert
+    sign, exactly like NVIDIA's ``libero_env`` (``normalize_gripper_action`` +
+    ``invert_gripper_action``). ``translation_only`` zeroes rotation and forces the
+    gripper open (a de-risking knob). ``**_legacy`` swallows the retired
+    pos_scale/rot_scale/gripper_* kwargs so old configs/argv stay accepted.
+    ⚠ Validate the gripper polarity on the first live rollout (silent-failure footgun:
+    a reversed sign makes the arm move but never grasp).
+    """
+    vec = _libero_action_vec(chunk, k)
+    pose = vec[:6].astype(np.float64)
+    if translation_only:
+        pose[3:6] = 0.0
+        return np.concatenate([pose, [1.0]]).astype(np.float32)  # gripper forced open
+    g = invert_gripper_action(normalize_gripper_action(vec[6], binarize=binarize_gripper))
+    return np.concatenate([pose, [g]]).astype(np.float32)

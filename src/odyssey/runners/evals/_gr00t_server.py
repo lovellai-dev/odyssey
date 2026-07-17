@@ -35,12 +35,18 @@ def build_server_command(
     device: str = "cuda:0",
     modality_config_path: str | None = None,
     denoising_steps: int = 0,
+    sim_policy_wrapper: bool = False,
 ) -> list[str]:
     """argv to serve a (finetuned) GR00T checkpoint as a policy server.
 
-    Points ``--model-path`` at the checkpoint to serve. Deliberately omits
-    ``--use-sim-policy-wrapper``: the recipes build raw nested observations
-    (``build_gr00t_obs``), which is exactly what the un-wrapped server expects.
+    Points ``--model-path`` at the checkpoint to serve.
+
+    ``sim_policy_wrapper`` toggles ``--use-sim-policy-wrapper``. The Isaac/DROID
+    recipe leaves it OFF (default): it builds raw NESTED obs (``build_gr00t_obs``),
+    which the un-wrapped server expects. The LIBERO recipe turns it ON — the
+    GR00T-N1.7-LIBERO checkpoint is served through the sim policy wrapper (matching
+    NVIDIA's own ``gr00t/eval/sim/LIBERO`` eval), fed the flat ``video.*``/``state.*``
+    obs from ``build_gr00t_libero_obs``.
     """
     py = server_python or sys.executable
     argv = [
@@ -50,6 +56,8 @@ def build_server_command(
         "--port", str(int(port)),
         "--device", str(device),
     ]
+    if sim_policy_wrapper:
+        argv += ["--use-sim-policy-wrapper"]
     if modality_config_path:
         argv += ["--modality-config-path", str(modality_config_path)]
     if denoising_steps and int(denoising_steps) > 0:
@@ -91,6 +99,7 @@ def serve_checkpoint(
     modality_config_path: str | None = None,
     denoising_steps: int = 0,
     ready_timeout: int = 900,
+    sim_policy_wrapper: bool = False,
 ) -> Iterator[None]:
     """Start a GR00T policy server on ``checkpoint``, wait until ready, yield,
     then tear it down. The body runs the eval against ``host:port``.
@@ -108,6 +117,7 @@ def serve_checkpoint(
         device=device,
         modality_config_path=modality_config_path or None,
         denoising_steps=denoising_steps,
+        sim_policy_wrapper=sim_policy_wrapper,
     )
     env = dict(os.environ)
     env.setdefault("HF_HUB_OFFLINE", "1")       # gated Cosmos backbone -> offline cache

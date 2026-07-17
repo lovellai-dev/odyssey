@@ -82,7 +82,7 @@ def test_parser_accepts_passthrough_config() -> None:
         ["--task", "libero_object", "--num_episodes", "1", "--checkpoint", "/c",
          "--task_id", "3", "--host", "10.0.0.2", "--port", "6000",
          "--n_action_steps", "8", "--pos_scale", "0.5",
-         "--serve_checkpoint", "true", "--embodiment_tag", "new_embodiment"]
+         "--serve_checkpoint", "true", "--embodiment_tag", "LIBERO_PANDA"]
     )
     assert args.task_id == 3
     assert args.host == "10.0.0.2"
@@ -90,7 +90,7 @@ def test_parser_accepts_passthrough_config() -> None:
     assert args.n_action_steps == 8
     assert args.pos_scale == 0.5
     assert args.serve_checkpoint is True
-    assert args.embodiment_tag == "new_embodiment"
+    assert args.embodiment_tag == "LIBERO_PANDA"
 
 
 def test_parser_bool_flags_are_value_style() -> None:
@@ -105,6 +105,28 @@ def test_parser_bool_flags_are_value_style() -> None:
     assert args.translation_only is True
     assert E._bool("true") and E._bool("1") and E._bool("on")
     assert not E._bool("false") and not E._bool("")
+
+
+def test_sim_policy_wrapper_defaults_on_and_toggles() -> None:
+    # GR00T-N1.7-LIBERO is served through the sim policy wrapper (NVIDIA's recipe).
+    on = E.build_parser().parse_args(["--task", "x", "--num_episodes", "1", "--checkpoint", "/c"])
+    assert on.sim_policy_wrapper is True
+    off = E.build_parser().parse_args(
+        ["--task", "x", "--num_episodes", "1", "--checkpoint", "/c",
+         "--sim_policy_wrapper", "false"])
+    assert off.sim_policy_wrapper is False
+
+
+def test_build_server_command_wraps_sim_policy_for_libero() -> None:
+    from odyssey.runners.evals import _gr00t_server as S
+    on = S.build_server_command(
+        checkpoint="/c/libero_object", embodiment_tag="LIBERO_PANDA", port=5555,
+        sim_policy_wrapper=True)
+    assert "--use-sim-policy-wrapper" in on
+    assert on[on.index("--embodiment-tag") + 1] == "LIBERO_PANDA"
+    # Default stays off (the Isaac/DROID nested-obs path relies on this).
+    off = S.build_server_command(checkpoint="/c", embodiment_tag="LIBERO_PANDA", port=5555)
+    assert "--use-sim-policy-wrapper" not in off
 
 
 def test_serve_checkpoint_defaults_off_and_flip_on() -> None:
@@ -175,7 +197,7 @@ def test_build_argv_contract_and_passthrough() -> None:
             "capture_video": True,                # handled — video via --video_dir
             "task_id": 0,
             "serve_checkpoint": "true",
-            "embodiment_tag": "new_embodiment",
+            "embodiment_tag": "LIBERO_PANDA",
             "n_action_steps": 16,
         },
     )
@@ -190,7 +212,7 @@ def test_build_argv_contract_and_passthrough() -> None:
     assert "--video_dir" in argv and "/out/videos" in argv
     # Passthrough config forwarded verbatim (snake_case).
     assert "--task_id" in argv and "--serve_checkpoint" in argv
-    assert argv[argv.index("--embodiment_tag") + 1] == "new_embodiment"
+    assert argv[argv.index("--embodiment_tag") + 1] == "LIBERO_PANDA"
     assert argv[argv.index("--n_action_steps") + 1] == "16"
     # Handled keys NOT forwarded as flags.
     for handled in ("--pilot", "--runner", "--capture_video"):
@@ -212,7 +234,7 @@ def test_build_argv_omits_video_dir_when_none() -> None:
 def test_argv_parses_back_into_the_recipe() -> None:
     # End-to-end: what the runner builds, the script's parser accepts.
     task = _eval_task(config={"task_id": 2, "serve_checkpoint": "true",
-                              "embodiment_tag": "new_embodiment", "n_action_steps": 8})
+                              "embodiment_tag": "LIBERO_PANDA", "n_action_steps": 8})
     argv = build_gr00t_libero_argv(
         spec=task, checkpoint=Path("/ckpt"), video_dir=None,
     )

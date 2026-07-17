@@ -84,35 +84,76 @@ def test_quat_xyzw_to_wxyz_rolls_scalar_to_front():
     assert np.allclose(T.quat_xyzw_to_wxyz([0.1, 0.2, 0.3, 0.4]), [0.4, 0.1, 0.2, 0.3])
 
 
-def _libero_chunk(*, grip: float):
-    eef = np.array([0.1, 0.2, 0.3, 1, 0, 0, 0, 1, 0], np.float32)  # identity rot6d
-    return {
-        "eef_9d": np.tile(eef, (T.ACTION_HORIZON, 1))[None],
-        "gripper_position": np.full((1, T.ACTION_HORIZON, 1), grip, np.float32),
-        "joint_position": np.zeros((1, T.ACTION_HORIZON, 7), np.float32),
-    }
+# ---------------------------------------------------------------------------
+# LIBERO (embodiment LIBERO_PANDA). The checkpoint emits the action ALREADY in
+# LIBERO's 7-DoF space; per-axis chunk keys, no eef-delta / rot6d.
+# ---------------------------------------------------------------------------
+
+_H = 16  # a representative action horizon
 
 
-def test_gr00t_action_to_libero_shape_scale_gripper():
-    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.0), 0, pos_scale=2.0)
+def _libero_chunk(*, grip: float, pose=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6)):
+    chunk = {a: np.full((_H, 1), pose[i], np.float32)
+             for i, a in enumerate(T.LIBERO_POSE_AXES)}
+    chunk["gripper"] = np.full((_H, 1), grip, np.float32)
+    return chunk
+
+
+def test_quat_xyzw_to_axis_angle_identity_is_zero():
+    assert np.allclose(T.quat_xyzw_to_axis_angle([0, 0, 0, 1]), [0, 0, 0], atol=1e-6)
+
+
+def test_quat_xyzw_to_axis_angle_z90():
+    # 90° about +z: xyzw = [0, 0, sin(45°), cos(45°)] -> axis-angle [0,0,pi/2].
+    s = np.sqrt(0.5)
+    assert np.allclose(T.quat_xyzw_to_axis_angle([0, 0, s, s]), [0, 0, np.pi / 2], atol=1e-5)
+
+
+def test_build_gr00t_libero_obs_flat_keys_and_shapes():
+    img = np.zeros((256, 256, 3), np.uint8)
+    obs = T.build_gr00t_libero_obs(
+        image=img, wrist_image=img, eef_pos=[0.1, 0.2, 0.3],
+        eef_quat_xyzw=[0, 0, 0, 1], gripper_qpos=[0.02, -0.02], instruction="pick up the can",
+    )
+    assert obs["video.image"].shape == (1, 1, 256, 256, 3)
+    assert obs["video.image"].dtype == np.uint8
+    assert obs["state.x"].shape == (1, 1, 1) and obs["state.gripper"].shape == (1, 1, 2)
+    assert np.allclose(obs["state.x"].reshape(-1), [0.1])
+    assert np.allclose(obs["state.roll"].reshape(-1), [0.0])   # identity quat -> 0 axis-angle
+    assert obs["annotation.human.action.task_description"] == [["pick up the can"]]
+
+
+def test_gr00t_action_to_libero_passthrough_pose_and_gripper_open():
+    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.0), 0)
     assert a.shape == (7,)
-    assert np.allclose(a[0:3], [0.2, 0.4, 0.6], atol=1e-6)   # pos_scale applied
-    assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)         # identity rot -> 0 axis-angle
-    assert a[6] == 1.0                                       # grip 0 < 0.5 -> LIBERO open (+1)
+    assert np.allclose(a[0:6], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], atol=1e-6)  # absolute passthrough
+    # grip 0.0 -> normalize -1 -> invert +1
+    assert a[6] == 1.0
 
 
 def test_gr00t_action_to_libero_gripper_close():
-    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.9), 0)
-    assert a[6] == -1.0                                      # grip 0.9 >= 0.5 -> close (-1)
+    # grip ~1.0 -> normalize +1 -> invert -1
+    assert T.gr00t_action_to_libero(_libero_chunk(grip=0.9), 0)[6] == -1.0
+
+
+def test_gr00t_action_to_libero_accepts_composed_action_array():
+    chunk = {"action": np.tile(
+        np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.0], np.float32), (_H, 1))}
+    a = T.gr00t_action_to_libero(chunk, 0)
+    assert np.allclose(a[0:6], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], atol=1e-6)
+    assert a[6] == 1.0
 
 
 def test_gr00t_action_to_libero_translation_only_zeros_rot_and_opens_gripper():
-    # A non-identity rot6d that WOULD produce rotation is zeroed; gripper forced open
-    # even though grip=0.9 would otherwise close.
-    chunk = _libero_chunk(grip=0.9)
-    chunk["eef_9d"] = np.tile(
-        np.array([0.1, 0.2, 0.3, 0, 1, 0, -1, 0, 0], np.float32), (T.ACTION_HORIZON, 1)
-    )[None]
-    a = T.gr00t_action_to_libero(chunk, 0, translation_only=True)
-    assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)
-    assert a[6] == 1.0
+    a = T.gr00t_action_to_libero(_libero_chunk(grip=0.9), 0, translation_only=True)
+    assert np.allclose(a[3:6], [0, 0, 0], atol=1e-6)   # rotation zeroed
+    assert a[6] == 1.0                                 # gripper forced open despite grip=0.9
+
+
+def test_gr00t_action_to_libero_swallows_legacy_kwargs():
+    # Old configs/argv passed pos_scale/rot_scale/gripper_* — must not raise now.
+    a = T.gr00t_action_to_libero(
+        _libero_chunk(grip=0.0), 0, pos_scale=2.0, rot_scale=1.0,
+        gripper_threshold=0.5, gripper_open=1.0, gripper_close=-1.0,
+    )
+    assert np.allclose(a[0:6], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], atol=1e-6)

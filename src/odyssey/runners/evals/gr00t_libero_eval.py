@@ -99,7 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="explicit path to serve; overrides --checkpoint/<suite>.")
     ap.add_argument("--embodiment_tag", default="",
                     help="embodiment tag for the served checkpoint (required with "
-                         "--serve_checkpoint; the server can't infer it).")
+                         "--serve_checkpoint; the server can't infer it). "
+                         "GR00T-N1.7-LIBERO uses LIBERO_PANDA.")
+    ap.add_argument("--sim_policy_wrapper", type=_bool, default=True,
+                    help="serve with --use-sim-policy-wrapper (the GR00T LIBERO sim "
+                         "recipe; matches NVIDIA's own eval). Off = raw policy server.")
     ap.add_argument("--modality_config_path", default="")
     ap.add_argument("--server_python", default="",
                     help="interpreter that has gr00t installed (auto-served server).")
@@ -162,35 +166,24 @@ def _frame(obs, key: str, *, flip: bool):
     return np.ascontiguousarray(img).astype(np.uint8)
 
 
-def _libero_state(obs):
-    """Extract GR00T's proprioceptive state from a LIBERO/robosuite obs dict.
+def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
+    """Build the FLAT GR00T LIBERO obs (video.*/state.*/annotation.*) from a LIBERO obs.
 
-    robosuite keys: ``robot0_eef_pos`` (3), ``robot0_eef_quat`` (xyzw, 4),
-    ``robot0_gripper_qpos`` (2 finger joints — take one), ``robot0_joint_pos`` (7).
+    The GR00T-N1.7-LIBERO checkpoint (embodiment ``LIBERO_PANDA``) uses a single
+    video frame + a flat dotted-key schema — NOT the nested T=2 DROID layout. State
+    is eef_pos(3) + eef_quat(xyzw)->axis-angle(3) + the 2 gripper finger qpos, matching
+    NVIDIA's ``libero_env._process_observation``. robosuite obs keys: ``robot0_eef_pos``
+    (3), ``robot0_eef_quat`` (xyzw, 4), ``robot0_gripper_qpos`` (2 finger joints).
     """
     import numpy as np
     t = _transforms()
-    eef_pos = np.asarray(obs["robot0_eef_pos"], np.float64).reshape(-1)[:3]
-    eef_quat = t.quat_xyzw_to_wxyz(obs["robot0_eef_quat"])
-    grip_qpos = np.asarray(obs["robot0_gripper_qpos"], np.float64).reshape(-1)
-    gripper = float(grip_qpos[0]) if grip_qpos.size else 0.0
-    joints = np.asarray(obs["robot0_joint_pos"], np.float64).reshape(-1)[:7]
-    return eef_pos, eef_quat, gripper, joints
-
-
-def _build_obs(obs, hist, instruction, *, image_key, wrist_image_key, flip):
-    """Build the nested GR00T obs (video/state/language) from a LIBERO obs."""
-    import numpy as np
-    t = _transforms()
-    hist.append((_frame(obs, image_key, flip=flip), _frame(obs, wrist_image_key, flip=flip)))
-    cur = hist[-1]
-    past = hist[-16] if len(hist) >= 16 else hist[0]  # video delta_indices [-15, 0]
-    eef_pos, eef_quat, gripper, joints = _libero_state(obs)
-    return t.build_gr00t_obs(
-        exterior_seq=np.stack([past[0], cur[0]]),
-        wrist_seq=np.stack([past[1], cur[1]]),
-        eef_pos=eef_pos, eef_quat_wxyz=eef_quat,
-        gripper=gripper, arm_joints=joints, instruction=instruction,
+    return t.build_gr00t_libero_obs(
+        image=_frame(obs, image_key, flip=flip),
+        wrist_image=_frame(obs, wrist_image_key, flip=flip),
+        eef_pos=np.asarray(obs["robot0_eef_pos"], np.float64).reshape(-1)[:3],
+        eef_quat_xyzw=np.asarray(obs["robot0_eef_quat"], np.float64).reshape(-1)[:4],
+        gripper_qpos=np.asarray(obs["robot0_gripper_qpos"], np.float64).reshape(-1)[:2],
+        instruction=instruction,
     )
 
 
@@ -199,8 +192,6 @@ def _build_obs(obs, hist, instruction, *, image_key, wrist_image_key, flip):
 # ---------------------------------------------------------------------------
 
 def run_eval(args: argparse.Namespace) -> dict:
-    import collections
-
     from odyssey.runners.evals.libero import (
         _make_libero_env,
         _resolve_libero_instruction,
@@ -239,24 +230,22 @@ def run_eval(args: argparse.Namespace) -> dict:
 
         ep_return, success = 0.0, False
         frames: list = []
-        hist: collections.deque = collections.deque(maxlen=16)
         step = 0
         try:
             while step < args.max_steps_per_episode and not success:
-                nested = _build_obs(
-                    obs, hist, instruction,
+                observation = _build_obs(
+                    obs, instruction,
                     image_key=args.image_key,
                     wrist_image_key=args.wrist_image_key,
                     flip=args.flip_images,
                 )
-                result = client.get_action(nested)
+                result = client.get_action(observation)
                 chunk = result[0] if isinstance(result, tuple) else result
                 for k in range(args.n_action_steps):
                     if step >= args.max_steps_per_episode:
                         break
                     action = t.gr00t_action_to_libero(
-                        chunk, k, pos_scale=args.pos_scale, rot_scale=args.rot_scale,
-                        translation_only=args.translation_only,
+                        chunk, k, translation_only=args.translation_only,
                     )
                     obs, reward, done, _info = env.step(action.tolist())
                     ep_return += float(reward)
@@ -323,6 +312,7 @@ def main() -> None:
             modality_config_path=args.modality_config_path or None,
             denoising_steps=args.server_denoising_steps,
             ready_timeout=args.server_ready_timeout,
+            sim_policy_wrapper=args.sim_policy_wrapper,
         ):
             run_eval(args)
     else:
