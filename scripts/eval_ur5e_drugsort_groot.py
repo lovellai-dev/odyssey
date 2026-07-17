@@ -127,21 +127,54 @@ class GrootPolicyClient:
         return action
 
 
+# Vial-cap grasp target offset along the vial's local +z (metres). Mirrors
+# gen_ur5e_perception_data.VIAL_CAP_OFFSET_Z and the value the browser dataset was
+# augmented with (augment_state_grasp_target.py) — keep the three in sync.
+VIAL_CAP_OFFSET_Z = 0.024
+
+
 def build_obs(arm_qpos6: np.ndarray, grip_norm: float, frames: dict[str, np.ndarray],
-              instruction: str) -> dict:
+              instruction: str, grasp_target: np.ndarray | None = None) -> dict:
     """Assemble the nested GR00T observation for one tick (B=1, T=1).
 
     ``frames`` maps each video key (``exterior``, ``wrist``) to its HxWx3 uint8
-    frame; every key the fine-tune declared must be present.
+    frame; every key the fine-tune declared must be present. When ``grasp_target``
+    is given (base-fix / obscond 10-D config) the 3D vial-cap target (robot base
+    frame) is appended as the ``grasp_target`` state modality — the same channel
+    the browser deploy fills live from the Observer.
     """
+    state = {
+        "single_arm": arm_qpos6[None, None].astype(np.float32),             # (1,1,6)
+        "gripper": np.asarray([[[grip_norm]]], dtype=np.float32),           # (1,1,1)
+    }
+    if grasp_target is not None:
+        state["grasp_target"] = np.asarray(grasp_target, dtype=np.float32).reshape(1, 1, 3)
     return {
         "video": {k: f[None, None].astype(np.uint8) for k, f in frames.items()},  # (1,1,H,W,3)
-        "state": {
-            "single_arm": arm_qpos6[None, None].astype(np.float32),             # (1,1,6)
-            "gripper": np.asarray([[[grip_norm]]], dtype=np.float32),           # (1,1,1)
-        },
+        "state": state,
         "language": {"annotation.human.task_description": [[instruction]]},      # (1,1)
     }
+
+
+def _base_transform(mj, model, data, idx):
+    """Static robot-base pose (pos, 3x3 rot) at the home keyframe — for cap_base."""
+    base_body = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "base")
+    if base_body < 0:
+        raise RuntimeError("could not find the 'base' body for grasp_target transform")
+    key = mj.mj_name2id(model, mj.mjtObj.mjOBJ_KEY, "home")
+    mj.mj_resetDataKeyframe(model, data, key)
+    mj.mj_forward(model, data)
+    bpos = np.array(data.xpos[base_body], dtype=np.float64)
+    bmat = np.array(data.xmat[base_body], dtype=np.float64).reshape(3, 3)
+    return base_body, bpos, bmat
+
+
+def _cap_base_gt(data, vial_body, bpos, bmat) -> np.ndarray:
+    """Live vial cap in the robot base frame from the current MuJoCo state."""
+    vxyz = np.array(data.xpos[vial_body], dtype=np.float64)
+    vmat = np.array(data.xmat[vial_body], dtype=np.float64).reshape(3, 3)
+    cap_world = vxyz + vmat @ np.array([0.0, 0.0, VIAL_CAP_OFFSET_Z])
+    return bmat.T @ (cap_world - bpos)
 
 
 def _randomise_vial(mj, model, data, idx, *, area_x, area_y, yaw_jitter, rng):
@@ -162,7 +195,7 @@ def _randomise_vial(mj, model, data, idx, *, area_x, area_y, yaw_jitter, rng):
 
 def run_episode(mj, model, data, renderer, idx, client, *, fps, area_x, area_y,
                 yaw_jitter, rng, max_ticks, n_action_steps, instruction,
-                save_frames):
+                save_frames, grasp_target_from_gt=False, base_pose=None):
     """Roll out the served GR00T policy for one randomised episode."""
     key = mj.mj_name2id(model, mj.mjtObj.mjOBJ_KEY, "home")
     mj.mj_resetDataKeyframe(model, data, key)
@@ -203,7 +236,10 @@ def run_episode(mj, model, data, renderer, idx, client, *, fps, area_x, area_y,
             # Side-by-side (exterior | wrist) so the render shows the policy's view.
             frames.append(np.concatenate([view[k] for k in VIDEO_KEY_TO_CAMERA], axis=1))
 
-        obs = build_obs(measured, grip_meas, view, instruction)
+        cap_base = None
+        if grasp_target_from_gt and base_pose is not None:
+            cap_base = _cap_base_gt(data, idx["vial_body"], base_pose[0], base_pose[1])
+        obs = build_obs(measured, grip_meas, view, instruction, grasp_target=cap_base)
         t0 = time.time()
         action = client.get_action(obs)
         query_t += time.time() - t0
@@ -275,9 +311,16 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--instruction", default=emb.DEFAULT_INSTRUCTION)
     ap.add_argument("--video-dir", default="", help="if set, write one mp4 per saved episode.")
+    ap.add_argument("--out-json", default="", help="if set, write the run summary JSON here (independent of --video-dir).")
     ap.add_argument("--save-videos", type=int, default=3,
                     help="save renders for the first N episodes (0 disables).")
     ap.add_argument("--timeout-ms", type=int, default=180000)
+    ap.add_argument("--grasp-target-from-gt", action="store_true",
+                    help="append the GT vial-cap 3D target to the state (obscond / "
+                         "base-fix 10-D modality config: single_arm+gripper+grasp_target). "
+                         "Required to eval a checkpoint trained with the 10-D config; the "
+                         "target is the honest 'correct target' input, mirroring the "
+                         "sub-cm Observer signal the browser deploy supplies live.")
     args = ap.parse_args()
 
     import mujoco as mj
@@ -301,6 +344,13 @@ def main() -> int:
 
     renderer = mj.Renderer(model, args.height, args.width)
 
+    base_pose = None
+    if args.grasp_target_from_gt:
+        _bb, _bpos, _bmat = _base_transform(mj, model, data, idx)
+        base_pose = (_bpos, _bmat)
+        print(f"[eval] 10-D grasp_target ON: base_pos={np.round(_bpos, 4).tolist()} "
+              f"cap_offset_z={VIAL_CAP_OFFSET_Z}")
+
     client = GrootPolicyClient(args.host, args.port, timeout_ms=args.timeout_ms)
     if not client.ping():
         print(f"ERROR: GR00T server not reachable at {args.host}:{args.port}", file=sys.stderr)
@@ -322,7 +372,8 @@ def main() -> int:
                 fps=args.fps, area_x=args.area_x, area_y=args.area_y,
                 yaw_jitter=args.yaw_jitter, rng=rng, max_ticks=args.max_ticks,
                 n_action_steps=args.n_action_steps, instruction=args.instruction,
-                save_frames=save,
+                save_frames=save, grasp_target_from_gt=args.grasp_target_from_gt,
+                base_pose=base_pose,
             )
             n_success += int(r["success"])
             n_lifted += int(r["lifted"])
@@ -350,15 +401,19 @@ def main() -> int:
     print(f"[eval]   seated (placed in nest):     {n_seated}/{args.num_episodes}")
     print("=" * 72)
 
+    summary = {
+        "success_rate": rate, "n_success": n_success,
+        "n_episodes": args.num_episodes, "n_lifted": n_lifted,
+        "n_seated": n_seated, "n_action_steps": args.n_action_steps,
+        "max_ticks": args.max_ticks, "grasp_target_from_gt": bool(args.grasp_target_from_gt),
+        "results": results,
+    }
     if video_dir is not None:
-        summary = {
-            "success_rate": rate, "n_success": n_success,
-            "n_episodes": args.num_episodes, "n_lifted": n_lifted,
-            "n_seated": n_seated, "n_action_steps": args.n_action_steps,
-            "max_ticks": args.max_ticks, "results": results,
-        }
         (video_dir / "eval_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(f"[eval] wrote summary -> {video_dir / 'eval_summary.json'}")
+    if args.out_json:
+        Path(args.out_json).write_text(json.dumps(summary, indent=2) + "\n")
+        print(f"[eval] wrote summary -> {args.out_json}")
     return 0
 
 
