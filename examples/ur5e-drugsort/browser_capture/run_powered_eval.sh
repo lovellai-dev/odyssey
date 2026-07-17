@@ -27,7 +27,11 @@ NODE=/home/daniel/.nvm/versions/node/v22.22.0/bin/node
 WORK=$HOME/powered_eval
 LOG=$HOME/powered_eval.log
 RESULT=$HOME/powered_eval_result.json
-rm -rf "$WORK"; mkdir -p "$WORK"
+# RESUME=1 keeps completed blocks (out_<seed>/eval_groot.json = block marker) —
+# a mid-run infrastructure failure (e.g. a half-dead SSH tunnel) never costs
+# finished blocks.
+[ "${RESUME:-0}" = "1" ] || rm -rf "$WORK"
+mkdir -p "$WORK"
 
 AGENT_PORT=8032
 HTTP_PORT=5596
@@ -132,6 +136,11 @@ curl -s --max-time 8 "http://127.0.0.1:$AGENT_PORT/api/groot/health" | grep -q '
 
 # ---- 3 blocks ------------------------------------------------------------------
 for s in "${SEEDS[@]}"; do
+  if [ -f "$WORK/out_$s/eval_groot.json" ]; then
+    log "BLOCK seed=$s already complete — skip"
+    continue
+  fi
+  rm -rf "$WORK/out_$s"
   log "BLOCK seed=$s (15 episodes)"
   if [ "$s" = "7777" ] && [ -f "$HOME/observer_cond/plans_eval.json" ]; then
     cp -f "$HOME/observer_cond/plans_eval.json" "$WORK/plans_$s.json"
