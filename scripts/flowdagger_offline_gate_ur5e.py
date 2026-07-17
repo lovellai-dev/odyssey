@@ -74,6 +74,10 @@ def mode_decode(args) -> dict:
     forward, meta = load_steering_net(args.steering_net)
     design = meta.get("output_design", "real112")
     val_eps = set(meta.get("val_episodes", []))
+    if getattr(args, "val_episodes", None):
+        # Override for two-sided gating (e.g. DAgger-source states, whose meta
+        # ids carry the 100000*source offset while the raw dataset uses 0..N).
+        val_eps = {int(x) for x in str(args.val_episodes).split(",")}
     print(f"[gate] steering net design={design} val_eps={sorted(val_eps)}", flush=True)
 
     inv = FlowInverter(args.model_path, args.embodiment_tag, args.device, fp_iters=args.fp_iters)
@@ -297,6 +301,8 @@ def main() -> int:
     pd.add_argument("--fp-iters", type=int, default=16)
     pd.add_argument("--seed", type=int, default=0)
     pd.add_argument("--decoded-out", default="/home/ubuntu/flowdagger_gate_decoded.npz")
+    pd.add_argument("--val-episodes", default=None,
+                    help="comma-separated episode ids to evaluate (overrides the net meta's val split)")
     pd.add_argument("--out", default=None)
 
     pf = sub.add_parser("fk-gate")

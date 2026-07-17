@@ -281,6 +281,18 @@ def mode_train(args) -> dict:
 
     torch.manual_seed(args.seed)
     net = build_mlp(X.shape[1], Y.shape[1], args.hidden).to(dev)
+    # Warm start (interference mitigation): initialize from a prior net (e.g.
+    # v0.2) and fine-tune with a low LR so DAgger correctives adjust the
+    # mapping instead of re-carving it — the full-round retrain from scratch
+    # regressed base-state EE 0.74cm -> 3.64cm.
+    if getattr(args, "init_weights", None):
+        z = np.load(args.init_weights, allow_pickle=True)
+        prior_meta = json.loads(str(z["meta"]))
+        assert prior_meta["in_dim"] == X.shape[1] and prior_meta["out_dim"] == Y.shape[1], \
+            f"init-weights dims {prior_meta['in_dim']}->{prior_meta['out_dim']} vs data {X.shape[1]}->{Y.shape[1]}"
+        sd = {k[len("sd."):]: torch.as_tensor(z[k]) for k in z.files if k.startswith("sd.")}
+        net.load_state_dict(sd)
+        print(f"[train] warm-start from {args.init_weights} (lr={args.lr})", flush=True)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     lossfn = torch.nn.MSELoss()
 
@@ -461,6 +473,8 @@ def main() -> int:
     pt.add_argument("--weight-ref", type=float, default=0.05)
     pt.add_argument("--source-boost", default="1.0",
                     help="comma-separated per-shard-dir loss-weight multipliers (Stage C dagger boost)")
+    pt.add_argument("--init-weights", default=None,
+                    help="warm-start from a prior steering .npz (same dims); pair with a low --lr")
 
     pc = sub.add_parser("pad-check")
     pc.add_argument("--model-path", default="/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000")
