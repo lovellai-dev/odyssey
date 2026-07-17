@@ -152,9 +152,7 @@ class BestOfNService:
             # Per-request shaping config (powered runs pin these explicitly)
             import clf_reward_ur5e as clfmod
             clfmod.CENTERING_MODE = str(cfg.get("clf_centering", "graded"))
-            lim = self.cbf.Limits()
-            if bool(cfg.get("cbf_flat_vial_cap", False)):
-                lim.vial_step_floor = lim.vial_near_step_max   # flat (run-1) cap
+            lim = self.cbf.Limits()   # v4-calibrated tapered vial barrier (default)
 
             def _select(arm_c, grip_c):
                 Kc = len(arm_c)

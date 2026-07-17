@@ -48,14 +48,18 @@ class Limits:
     # 0.0138 m/tick. Caps = ~1.5x expert p99 — safety bounds AROUND demonstrated
     # behavior. (The first hand-guessed caps, 0.035/0.012, sat below the
     # expert's p99 and HOLD-rejected 86% of real best-of-N queries.)
-    step_motion_max: float = 0.16         # m per 50ms control tick
+    step_motion_max: float = 0.16         # m per 50ms control tick (global)
     vial_protect_r: float = 0.10          # protection radius around the ungrasped vial
-    vial_near_step_max: float = 0.022     # m/tick at the radius edge
-    # Capture refinement (post-first-lift): 6/15 episodes STRUCK the vial during
-    # the closing pass. The cap now GRADES with distance — full 0.022 at the
-    # radius edge, floored at ~the expert's near-contact p95 (0.68 cm/tick)
-    # at touch range — so approach automatically decelerates into contact.
-    vial_step_floor: float = 0.006        # m/tick floor at contact range
+    # Vial-approach speed barrier — DECELERATE INTO CONTACT. The cap tapers
+    # linearly from ``vial_edge_max`` at the 10 cm radius edge down to
+    # ``vial_step_floor`` at contact. Numbers CALIBRATED to the v4 candidate
+    # distribution (2026-07-17): v4 near-contact p95 0.009 / max 0.015, mid-zone
+    # (2-5 cm) max 0.032; the old FLAT 0.022 cap rejected ~30k v4 candidates
+    # (32% HOLD rate) because it throttled the whole zone to one slow speed
+    # instead of allowing the faster-then-decelerating v4 approach.
+    vial_edge_max: float = 0.16           # m/tick at the radius edge (= global)
+    vial_step_floor: float = 0.02         # m/tick at contact (>2x expert p95, admits v4 mean)
+    vial_near_step_max: float = 0.022     # (legacy; unused by the taper)
     joint_lo: np.ndarray = field(default_factory=lambda: np.array([-6.28, -3.14, -2.9, -6.28, -6.28, -6.28]))
     joint_hi: np.ndarray = field(default_factory=lambda: np.array([6.28, 0.0, 2.9, 6.28, 6.28, 6.28]))
     joint_margin: float = 0.05            # rad of required distance to a limit
@@ -95,13 +99,18 @@ def barrier_values(s: dict[str, Any], s_prev: dict[str, Any] | None,
         if not bool(s.get("grasped")):
             d_vial = float(np.linalg.norm(pinch - np.asarray(s["vial"], float)))
             if d_vial <= lim.vial_protect_r:
-                cap = max(lim.vial_step_floor,
-                          lim.vial_near_step_max * d_vial / lim.vial_protect_r)
+                frac = d_vial / lim.vial_protect_r          # 1 at edge, 0 at contact
+                cap = lim.vial_step_floor + (lim.vial_edge_max - lim.vial_step_floor) * frac
                 h["vial_protect"] = float(cap - step)
     return h
 
 
-DECAY_BARRIERS = frozenset({"workspace", "table_clear", "joint_margin"})
+# Decay condition applies only to barriers where APPROACHING the boundary fast
+# is genuinely bad (rushing a workspace wall or a joint limit). table_clear is
+# EXCLUDED: descent into the grasp cone legitimately reduces table clearance
+# fast, and the decay term wrongly criminalized it (16k v4 rejections). The
+# h>=0 floor + step_motion + vial_protect caps already bound the descent.
+DECAY_BARRIERS = frozenset({"workspace", "joint_margin"})
 
 
 def chunk_feasible(states: Sequence[dict[str, Any]], *, lim: Limits | None = None,

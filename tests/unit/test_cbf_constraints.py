@@ -62,19 +62,31 @@ def test_step_motion_cap_blocks_teleports():
     assert not ok and "step_motion" in rep["violated"]
 
 
-def test_vial_protection_blocks_fast_approach_near_ungrasped_vial():
-    # 3cm/tick INSIDE the 10cm protection radius of the ungrasped vial
-    near = VIAL + [0.0, 0.0, 0.05]
-    pts = [near, near + [0.03, 0, 0]]
-    ok, rep = cbf.chunk_feasible(_traj(pts))
-    assert not ok and "vial_protect" in rep["violated"]
-    # the same step is fine once GRASPED (carrying the vial fast is transport)
-    ok2, _ = cbf.chunk_feasible(_traj(pts, grasped=True))
-    assert ok2
-    # and a slow approach inside the radius is fine
-    slow = [near, near + [0.008, 0, 0]]
-    ok3, _ = cbf.chunk_feasible(_traj(slow))
-    assert ok3
+def _vial_h(pinch, prev, step_dist, grasped=False):
+    """vial_protect barrier at `pinch` (d from VIAL) after a `step_dist` move."""
+    lim = cbf.Limits()
+    prev_s = _s(prev, vial=VIAL, grasped=grasped)
+    # place prev at exactly step_dist from pinch along -x so the recorded step matches
+    hv = cbf.barrier_values(_s(pinch, vial=VIAL, grasped=grasped), prev_s, lim)
+    return hv
+
+
+def test_vial_protection_tapers_fast_approach_to_gentle_contact():
+    lim = cbf.Limits()
+    # contact (d=1cm): cap = 0.02 + 0.14*0.1 = 0.034
+    c = VIAL + [0.01, 0.0, 0.0]                      # 1cm from vial (in x)
+    h_slam = cbf.barrier_values(_s(c, vial=VIAL), _s(c + [0.04, 0, 0], vial=VIAL), lim)
+    assert h_slam["vial_protect"] < 0                # 4cm/tick > 0.034 -> reject
+    h_gentle = cbf.barrier_values(_s(c, vial=VIAL), _s(c + [0.015, 0, 0], vial=VIAL), lim)
+    assert h_gentle["vial_protect"] > 0              # 1.5cm/tick < 0.034 -> ok
+    # at 6cm (cap = 0.02+0.14*0.6 = 0.104) a 6cm/tick step is ADMITTED
+    mid = VIAL + [0.06, 0.0, 0.0]
+    h_mid = cbf.barrier_values(_s(mid, vial=VIAL), _s(mid + [0.06, 0, 0], vial=VIAL), lim)
+    assert h_mid["vial_protect"] > 0
+    # once GRASPED the vial barrier does not apply at all
+    h_grasp = cbf.barrier_values(_s(c, vial=VIAL, grasped=True),
+                                 _s(c + [0.04, 0, 0], vial=VIAL, grasped=True), lim)
+    assert "vial_protect" not in h_grasp
 
 
 def test_joint_margin_barrier():
@@ -108,20 +120,12 @@ def test_filter_candidates_mask_and_reports():
     assert reps[1]["violated"]
 
 
-def test_graded_vial_cap_decelerates_into_contact():
+def test_taper_cap_scales_with_distance():
     lim = cbf.Limits()
-    near = VIAL + [0.0, 0.0, 0.02]          # 2cm from the vial
-    # 1.5cm/tick at 2cm range: under the edge cap (0.022) but OVER the graded
-    # cap (max(0.006, 0.022*0.02/0.10)=0.006) -> must reject
-    fast = _traj([near, near + [0.015, 0, 0]])
-    ok, rep = cbf.chunk_feasible(fast, lim=lim)
-    assert not ok and "vial_protect" in rep["violated"]
-    # 0.5cm/tick at the same range -> under the floor -> feasible
-    slow = _traj([near, near + [0.005, 0, 0]])
-    ok2, _ = cbf.chunk_feasible(slow, lim=lim)
-    assert ok2
-    # and at the radius edge (9.5cm out) the full 0.022 still applies
-    far = VIAL + [0.0, 0.0, 0.095]
-    edge = _traj([far, far + [0.018, 0, 0]])
-    ok3, _ = cbf.chunk_feasible(edge, lim=lim)
-    assert ok3
+    # cap(d) = 0.02 + 0.14*(d/0.10); a 5cm/tick step: rejected at 2cm (cap 0.048),
+    # admitted at 5cm (cap 0.09).
+    d2 = VIAL + [0.02, 0.0, 0.0]
+    d5 = VIAL + [0.05, 0.0, 0.0]
+    h2 = cbf.barrier_values(_s(d2, vial=VIAL), _s(d2 + [0.05, 0, 0], vial=VIAL), lim)
+    h5 = cbf.barrier_values(_s(d5, vial=VIAL), _s(d5 + [0.05, 0, 0], vial=VIAL), lim)
+    assert h2["vial_protect"] < 0 < h5["vial_protect"]

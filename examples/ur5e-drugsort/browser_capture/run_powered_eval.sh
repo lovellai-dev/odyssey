@@ -6,7 +6,7 @@
 # Configuration PINNED to the best-evidenced selection setup (run-1 shaping,
 # which produced the first lift + 13/15 closures) + the CEM-at-grasp search
 # upgrade (orthogonal to shaping):
-#   STEER_CLF_CENTERING=off  STEER_CBF_FLAT=1  K=16 sigma=0.25  CEM_ROUNDS=2
+#   STEER_CLF_CENTERING=off  K=16 sigma=0.25  CEM_ROUNDS=2  (v4-tapered CBF)
 # Writes ~/powered_eval_result.json + marker POWERED_EVAL DONE|FAILED.
 # ============================================================================
 set -uo pipefail
@@ -80,7 +80,7 @@ fail(){
 }
 trap 'fail "signal"' TERM INT HUP
 
-log "START pid=$$ (3x15 blocks; config: centering=off flat-cap K=16 sigma=0.25 cem=2)"
+log "START pid=$$ (3x15 blocks; config: centering=off v4-tapered-CBF K=16 sigma=0.25 cem=2)"
 echo "POWERED_EVAL PID=$$"
 
 # wait (<=1h) for the stateless-dagger gates to release the GPU
@@ -121,7 +121,7 @@ env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OBSERVER_WEIGHTS="$OBS_WEIGHTS" \
   CONDITION_BRIDGE_URL="http://127.0.0.1:$HTTP_PORT" OBSERVER_DEVICE=cuda PYTHONPATH="$ODY/src" \
   "${SIDE_STEER[@]}" STEERING_FK_XML="$XML" \
   STEER_BESTOFN_K=16 STEER_BESTOFN_K_GRASP=16 STEER_BESTOFN_SIGMA=0.25 \
-  STEER_CLF_CENTERING=off STEER_CBF_FLAT=1 STEER_CEM_ROUNDS=2 \
+  STEER_CLF_CENTERING=off STEER_CEM_ROUNDS=2 \
   setsid "$OBSPY" "$ODY/scripts/serve_observer_conditioning.py" --port "$COND_PORT" \
   >"$WORK/conditioner.log" 2>&1 &
 echo $! > "$WORK/cond_pid.txt"
@@ -218,7 +218,7 @@ close = sum(1 for r in results if r.get("gripMax", 0) >= 0.5)
 pads = sorted((r.get("min_pad_to_vial") or 9) * 100 for r in results)
 out = {
     "eval": "powered-45", "status": "DONE",
-    "config": {"clf_centering": "off", "cbf_flat_vial_cap": True,
+    "config": {"clf_centering": "off", "cbf": "v4-tapered",
                "k": 16, "sigma": 0.25, "cem_rounds": 2,
                "steering": "v0.2 mean"},
     "n": n,
