@@ -24,9 +24,13 @@ PUP=/home/daniel/.npm/_npx/23232c69e5d221f3/node_modules/puppeteer-core
 CHROME=/usr/bin/google-chrome-stable
 NODE=/home/daniel/.nvm/versions/node/v22.22.0/bin/node
 
-WORK=$HOME/powered_eval
-LOG=$HOME/powered_eval.log
-RESULT=$HOME/powered_eval_result.json
+# V4=1 -> serve the image-conditioned steering head server-side (sidecar ships
+# its low15; the service computes the mean from pooled backbone features).
+V4=${V4:-0}
+SUF=""; [ "$V4" = "1" ] && SUF="_v4"
+WORK=$HOME/powered_eval$SUF
+LOG=$HOME/powered_eval$SUF.log
+RESULT=$HOME/powered_eval${SUF}_result.json
 # RESUME=1 keeps completed blocks (out_<seed>/eval_groot.json = block marker) —
 # a mid-run infrastructure failure (e.g. a half-dead SSH tunnel) never costs
 # finished blocks.
@@ -100,16 +104,22 @@ scp -q -o StrictHostKeyChecking=no "$ODY/scripts/serve_groot_bestofn.py" \
   "$ODY/scripts/clf_reward_ur5e.py" "$ODY/scripts/cbf_constraints_ur5e.py" \
   "$ODY/scripts/probe_flow_inversion_groot.py" \
   vm_deploy_bestofn.sh "$VM:/home/ubuntu/" || fail "scp"
-$SSH "$VM" "bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT" || fail "vm-deploy"
+V4NET=""; [ "$V4" = "1" ] && V4NET=/home/ubuntu/steering_net_v4.npz
+$SSH "$VM" "bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT $V4NET" || fail "vm-deploy"
 $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$HTTP_PORT:127.0.0.1:$HTTP_PORT "$VM" || fail "tunnel"
 for i in $(seq 1 30); do curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"ok": *true' && break; sleep 5; done
 curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"bestofn": *true' || fail "bestofn-health"
 
 log "STEP2 sidecar (PINNED config) + agent"
-scp -q -o StrictHostKeyChecking=no "$VM:$STEER_SRC" "$WORK/steering_net.npz" || fail "fetch-steer"
+if [ "$V4" = "1" ]; then
+  SIDE_STEER=(STEERING_WEIGHTS= STEER_SERVER_HEAD=1)
+else
+  scp -q -o StrictHostKeyChecking=no "$VM:$STEER_SRC" "$WORK/steering_net.npz" || fail "fetch-steer"
+  SIDE_STEER=(STEERING_WEIGHTS="$WORK/steering_net.npz")
+fi
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OBSERVER_WEIGHTS="$OBS_WEIGHTS" \
   CONDITION_BRIDGE_URL="http://127.0.0.1:$HTTP_PORT" OBSERVER_DEVICE=cuda PYTHONPATH="$ODY/src" \
-  STEERING_WEIGHTS="$WORK/steering_net.npz" STEERING_FK_XML="$XML" \
+  "${SIDE_STEER[@]}" STEERING_FK_XML="$XML" \
   STEER_BESTOFN_K=16 STEER_BESTOFN_K_GRASP=16 STEER_BESTOFN_SIGMA=0.25 \
   STEER_CLF_CENTERING=off STEER_CBF_FLAT=1 STEER_CEM_ROUNDS=2 \
   setsid "$OBSPY" "$ODY/scripts/serve_observer_conditioning.py" --port "$COND_PORT" \
@@ -133,6 +143,28 @@ for i in $(seq 1 20); do
   sleep 3
 done
 curl -s --max-time 8 "http://127.0.0.1:$AGENT_PORT/api/groot/health" | grep -q '"ok": *true' || fail "agent-health"
+
+# ---- v4 head-verification smoke -------------------------------------------------
+if [ "$V4" = "1" ]; then
+  log "SMOKE: response must carry steer_head=v4"
+  "$PYUR5E" - "$AGENT_PORT" <<'PY' || fail "v4-smoke"
+import base64, io, json, sys, time, urllib.request
+port = sys.argv[1]
+from PIL import Image
+buf = io.BytesIO(); Image.new("RGB", (256, 256), (127, 127, 127)).save(buf, format="PNG")
+img = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+body = json.dumps({"image_b64": img, "image_b64_wrist": img,
+                   "state": [-1.57, -1.56, 1.58, -1.57, -1.57, 0.0, 0.05],
+                   "instruction": "pick up the vial and place it in the rack",
+                   "sid": f"v4smoke-{time.time_ns()}"}).encode()
+req = urllib.request.Request(f"http://127.0.0.1:{port}/api/groot/get_action", data=body,
+                             headers={"content-type": "application/json"}, method="POST")
+res = json.loads(urllib.request.urlopen(req, timeout=300).read().decode())
+print("[v4smoke]", json.dumps({"steer_head": res.get("steer_head"),
+                               "k": (res.get("bestofn") or {}).get("k")}))
+assert res.get("steer_head") == "v4", res.get("steer_head")
+PY
+fi
 
 # ---- 3 blocks ------------------------------------------------------------------
 for s in "${SEEDS[@]}"; do

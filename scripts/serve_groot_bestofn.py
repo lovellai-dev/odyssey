@@ -49,16 +49,29 @@ REAL_STEPS, REAL_DIMS = 16, 7
 
 class BestOfNService:
     def __init__(self, model_path: str, embodiment_tag: str, device: str,
-                 fk_url: str) -> None:
+                 fk_url: str, steering_net: str | None = None) -> None:
         import torch  # noqa: F401  (ensures torch import errors surface early)
         from probe_flow_inversion_groot import GrootFlow, forward_euler_sample
+        from flow_inverter_groot import pool_backbone
         import bestofn_select as bon
         import cbf_constraints_ur5e as cbf
 
         self.flow = GrootFlow(model_path, embodiment_tag, device=device)
         self._sample = forward_euler_sample
+        self._pool = pool_backbone
         self.bon = bon
         self.cbf = cbf
+        # v4 image-conditioned steering head: mean = head(pooled feats + low15).
+        # Lives HERE because the pooled features exist per-query in-process —
+        # the exact pool_backbone used at training (any mismatch re-creates the
+        # target-noise floor).
+        self._steer_forward = None
+        self._steer_meta = {}
+        if steering_net:
+            from flowdagger_offline_gate_ur5e import load_steering_net
+            self._steer_forward, self._steer_meta = load_steering_net(steering_net)
+            print(f"[bestofn] v4 steering head loaded: in={self._steer_meta.get('in_dim')} "
+                  f"out={self._steer_meta.get('out_dim')}", flush=True)
         self.fk_url = fk_url.rstrip("/")
         self.device = device
         self._lock = threading.Lock()   # one query at a time (GPU + FK)
@@ -103,7 +116,20 @@ class BestOfNService:
             cache, _x, _m = self.flow.encode(ext, wrist, state10, instruction=instr)
 
             mean = None
-            if req.get("init_noise_b64"):
+            steer_head_used = False
+            if self._steer_forward is not None and req.get("steer_low15"):
+                low = np.asarray(req["steer_low15"], dtype=np.float32).reshape(-1)
+                pooled = self._pool(cache)[0].astype(np.float32)
+                x = np.concatenate([low, pooled])[None]
+                if x.shape[1] == int(self._steer_meta.get("in_dim", -1)):
+                    mean = self._steer_forward(x).reshape(
+                        self.flow.action_horizon, self.flow.action_dim
+                    ).astype(np.float32)
+                    steer_head_used = True
+                else:
+                    print(f"[bestofn] steer_low15 dim mismatch "
+                          f"{x.shape[1]} vs {self._steer_meta.get('in_dim')}", flush=True)
+            if mean is None and req.get("init_noise_b64"):
                 shape = tuple(req.get("init_noise_shape") or ())
                 mean = np.frombuffer(base64.b64decode(req["init_noise_b64"]),
                                      dtype=np.float32).reshape(shape)
@@ -198,6 +224,7 @@ class BestOfNService:
                 "chunk_q": [[float(v) for v in row] for row in arm[chosen]],
                 "chunk_grip": [float(np.clip(g, 0.0, 1.0)) for g in grip[chosen]],
                 "bestofn": report,
+                "steer_head": ("v4" if steer_head_used else None),
             }
 
 
@@ -209,10 +236,12 @@ def main() -> int:
     ap.add_argument("--http-host", default="127.0.0.1")
     ap.add_argument("--http-port", type=int, default=5596)
     ap.add_argument("--fk-url", default="http://127.0.0.1:5560")
+    ap.add_argument("--steering-net", default=None,
+                    help="v4 image-conditioned steering head .npz (server-side mean)")
     args = ap.parse_args()
 
     svc = BestOfNService(args.model_path, args.embodiment_tag, args.device,
-                         args.fk_url)
+                         args.fk_url, steering_net=args.steering_net)
 
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):  # quiet

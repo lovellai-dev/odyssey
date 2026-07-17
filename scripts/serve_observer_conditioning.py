@@ -266,10 +266,16 @@ class SteeringEngine:
 
     def __init__(self, weights: str, pinch_fn: Callable[[np.ndarray], np.ndarray],
                  home_q: Any = DEFAULT_HOME_Q) -> None:
-        from flowdagger_offline_gate_ur5e import load_steering_net
         import train_steering_ur5e as ts
 
-        self._forward, meta = load_steering_net(weights)
+        # weights == "" -> SERVER-HEAD mode (v4): this engine only builds the
+        # low-dim vector + phase; the best-of-N service computes the steering
+        # mean in-process where the pooled backbone features live.
+        if weights:
+            from flowdagger_offline_gate_ur5e import load_steering_net
+            self._forward, meta = load_steering_net(weights)
+        else:
+            self._forward, meta = None, {"output_design": "full5280", "in_dim": 15}
         self.design = str(meta.get("output_design", "full5280"))
         self.in_dim = int(meta.get("in_dim", 14))   # 14 = v1; 15 = v2 (+ t_norm)
         self._ts = ts
@@ -315,6 +321,11 @@ class SteeringEngine:
             self._prev_q[sid] = q_now.copy()
             cols.append(dq.astype(np.float32))
         x = np.concatenate(cols).astype(np.float32)[None]             # (1, 14|15|21)
+        self.last_lowdim = x[0].copy()   # shipped to the service for the v4 head
+        if self._forward is None:        # server-head mode: no local mean
+            self.n_attached += 1
+            self.phase_ticks[phase] += 1
+            return None, phase
         pred = self._forward(x)
         if self.design == "full5280":
             noise = pred.reshape(ACTION_HORIZON, ACTION_DIM).astype(np.float32)
@@ -345,8 +356,16 @@ class ConditioningService:
         # per-frame Observer localisation is what carries the policy.
         self._freeze_nominal = os.environ.get("CONDITIONER_FREEZE_NOMINAL", "").strip() in ("1", "true", "True")
         # FlowDAgger Stage B: latent-noise steering (None => stock behaviour).
+        # STEER_SERVER_HEAD=1 enables the v4 server-head mode: the engine runs
+        # WITHOUT local weights (phase machine + low-dim vector only) and the
+        # best-of-N service computes the mean from its own pooled features.
         self._steering: SteeringEngine | None = None
-        if steering_weights:
+        if not steering_weights and os.environ.get("STEER_SERVER_HEAD", "0") == "1":
+            steering_weights = ""
+            self._server_head = True
+        else:
+            self._server_head = False
+        if steering_weights or self._server_head:
             fk = MjPinchFK(os.environ.get("STEERING_FK_XML", DEFAULT_FK_XML))
             home_q = np.array(
                 [float(x) for x in os.environ.get(
@@ -407,7 +426,11 @@ class ConditioningService:
         phase = None
         if self._steering is not None:
             noise, phase = self._steering.init_noise(sid, state, tgt)
-            payload["init_noise_b64"], payload["init_noise_shape"] = encode_init_noise(noise)
+            if noise is not None:
+                payload["init_noise_b64"], payload["init_noise_shape"] = encode_init_noise(noise)
+            # v4 server-head: ship the low-dim vector; the service concatenates
+            # its own pooled backbone features and computes the mean.
+            payload["steer_low15"] = [float(v) for v in self._steering.last_lowdim]
             # R2 best-of-N passthrough: when STEER_BESTOFN_K > 1 the downstream
             # service samples K jittered candidates around this steering mean and
             # selects via CBF-filter + CLF-rank. grasped = the phase machine's
