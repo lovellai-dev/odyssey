@@ -1,0 +1,136 @@
+"""Control Barrier Function (CBF) constraints for the UR5e drug-sort pipeline.
+
+Discrete-time CBFs h(x) >= 0 defining the safe set, with the decay condition
+h(x_{k+1}) >= (1 - gamma) * h(x_k) limiting how fast a trajectory may approach
+the boundary. Together with the CLF module (clf_reward_ur5e) this yields the
+classic CLF-CBF split: **CBF filters** candidate chunks (hard feasibility),
+**CLF ranks** the survivors (progress) — one step of sampled, constrained MPC
+over the flow-sampler latent, with the frozen GR00T pilot as the actuator
+model and the Observer parameterizing both sides online.
+
+Barriers are locked to failures this program has actually produced:
+* ``vial_protect`` — approach-speed cap near the ungrasped vial: steered
+  rollouts batted the vial 1-3 m across the cell (v0.2 ep002/ep013, dagger
+  ep001). A candidate that moves the pinch fast inside the protection radius
+  is infeasible, period.
+* ``table_clear`` — pinch stays above the table EXCEPT inside a descend cone
+  around the Observer target (so the barrier never fights the grasp itself).
+* ``workspace`` / ``joint_margin`` / ``step_motion`` — box, limit and per-step
+  displacement invariants.
+
+Perception-aware safety: callers scale ``Limits.shrink(conf)`` with Observer
+confidence — degraded perception tightens the safe set toward hold-in-place.
+Pure numpy; positions in metres, robot base frame (Observer + FK frame).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Sequence
+
+import numpy as np
+
+
+@dataclass
+class Limits:
+    """Cell safety envelope (defaults sized for the aseptipack cell)."""
+    workspace_lo: np.ndarray = field(default_factory=lambda: np.array([-1.05, -0.65, 0.02]))
+    workspace_hi: np.ndarray = field(default_factory=lambda: np.array([0.25, 0.65, 0.90]))
+    table_z: float = 0.16                 # min pinch height outside the descend cone
+    descend_cone_xy: float = 0.06         # radius around the target where descent is allowed
+    descend_floor_z: float = 0.015        # min pinch height inside the cone
+    step_motion_max: float = 0.035        # m per 50ms control tick (~0.7 m/s)
+    vial_protect_r: float = 0.10          # protection radius around the ungrasped vial
+    vial_near_step_max: float = 0.012     # m/tick inside the radius (~0.24 m/s)
+    joint_lo: np.ndarray = field(default_factory=lambda: np.array([-6.28, -3.14, -2.9, -6.28, -6.28, -6.28]))
+    joint_hi: np.ndarray = field(default_factory=lambda: np.array([6.28, 0.0, 2.9, 6.28, 6.28, 6.28]))
+    joint_margin: float = 0.05            # rad of required distance to a limit
+
+    def shrink(self, confidence: float) -> "Limits":
+        """Perception-aware tightening: low Observer confidence shrinks motion
+        allowances toward hold-in-place (conf 1 -> unchanged; conf 0 -> ~frozen)."""
+        c = float(np.clip(confidence, 0.0, 1.0))
+        out = Limits(**{k: getattr(self, k) for k in self.__dataclass_fields__})
+        out.step_motion_max = self.step_motion_max * (0.1 + 0.9 * c)
+        out.vial_near_step_max = self.vial_near_step_max * (0.1 + 0.9 * c)
+        return out
+
+
+def barrier_values(s: dict[str, Any], s_prev: dict[str, Any] | None,
+                   lim: Limits) -> dict[str, float]:
+    """All h_i(s) (>= 0 means safe) for one step.
+
+    s keys: pinch (3,), q (6,) optional, vial (3,), grasp_target (3,),
+            grasped (bool). ``s_prev`` supplies the displacement for the
+            motion/vial barriers (None on the first step -> those pass).
+    """
+    pinch = np.asarray(s["pinch"], float)
+    h: dict[str, float] = {}
+    h["workspace"] = float(min(np.min(pinch - lim.workspace_lo),
+                               np.min(lim.workspace_hi - pinch)))
+    xy_to_tgt = float(np.linalg.norm(pinch[:2] - np.asarray(s["grasp_target"], float)[:2]))
+    floor = lim.descend_floor_z if xy_to_tgt <= lim.descend_cone_xy else lim.table_z
+    h["table_clear"] = float(pinch[2] - floor)
+    if "q" in s and s["q"] is not None:
+        q = np.asarray(s["q"], float)
+        h["joint_margin"] = float(min(np.min(q - lim.joint_lo),
+                                      np.min(lim.joint_hi - q)) - lim.joint_margin)
+    if s_prev is not None:
+        step = float(np.linalg.norm(pinch - np.asarray(s_prev["pinch"], float)))
+        h["step_motion"] = float(lim.step_motion_max - step)
+        if not bool(s.get("grasped")):
+            d_vial = float(np.linalg.norm(pinch - np.asarray(s["vial"], float)))
+            if d_vial <= lim.vial_protect_r:
+                h["vial_protect"] = float(lim.vial_near_step_max - step)
+    return h
+
+
+def chunk_feasible(states: Sequence[dict[str, Any]], *, lim: Limits | None = None,
+                   gamma: float = 0.4, tol: float = 0.0) -> tuple[bool, dict[str, Any]]:
+    """CBF feasibility of one candidate chunk.
+
+    Feasible iff every barrier satisfies BOTH: h_i >= -tol at every step, AND
+    the decay condition h_i(k+1) >= (1-gamma)*h_i(k) - tol (no barrier eroded
+    faster than gamma allows). Returns (feasible, report) with the worst value
+    and worst decay-slack per barrier — the report is the explainability
+    artifact ("rejected: vial_protect -0.008").
+    """
+    lim = lim or Limits()
+    worst_h: dict[str, float] = {}
+    worst_decay: dict[str, float] = {}
+    prev_h: dict[str, float] = {}
+    for k, s in enumerate(states):
+        hs = barrier_values(s, states[k - 1] if k > 0 else None, lim)
+        for name, v in hs.items():
+            worst_h[name] = min(worst_h.get(name, np.inf), v)
+            if name in prev_h:
+                slack = v - (1.0 - gamma) * prev_h[name]
+                worst_decay[name] = min(worst_decay.get(name, np.inf), slack)
+            prev_h[name] = v
+    ok = all(v >= -tol for v in worst_h.values()) and \
+        all(v >= -tol for v in worst_decay.values())
+    return bool(ok), {
+        "feasible": bool(ok),
+        "worst_h": {k: float(v) for k, v in worst_h.items()},
+        "worst_decay_slack": {k: float(v) for k, v in worst_decay.items()},
+        "violated": sorted([k for k, v in worst_h.items() if v < -tol] +
+                           [f"{k}:decay" for k, v in worst_decay.items() if v < -tol]),
+    }
+
+
+def filter_candidates(cands: Sequence[Sequence[dict[str, Any]]], *,
+                      lim: Limits | None = None, gamma: float = 0.4,
+                      tol: float = 0.0) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Vector wrapper for best-of-N: returns (feasible mask, per-candidate reports).
+
+    Intended composition (sampled CLF-CBF-MPC over the latent):
+        mask, reps = filter_candidates(decoded)          # CBF: hard filter
+        best = argmax over mask of clf.score_chunk(...)  # CLF: progress rank
+        if not mask.any(): execute HOLD (zero-motion chunk) and escalate.
+    """
+    reports = []
+    mask = np.zeros(len(cands), dtype=bool)
+    for i, states in enumerate(cands):
+        ok, rep = chunk_feasible(states, lim=lim, gamma=gamma, tol=tol)
+        mask[i] = ok
+        reports.append(rep)
+    return mask, reports
