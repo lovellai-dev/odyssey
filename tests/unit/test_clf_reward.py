@@ -119,12 +119,21 @@ def test_score_chunk_handles_mixed_phases_without_cross_jump():
     assert abs(m["total_reward"] - expected) < 1e-9
 
 
-def test_closing_off_center_earns_nothing():
-    # 3cm off-center: closing the gripper must NOT reduce V (centering-gated)
-    off = TGT + [0.03, 0, 0]
-    v_open = clf.clf_value(_s(clf.GRASP, off, grip=0.0))
-    v_closed = clf.clf_value(_s(clf.GRASP, off, grip=1.0))
-    assert v_closed == v_open
-    # centered: closing reduces V to ~0
+def test_closing_credit_is_graded_by_centering():
+    # centered: closing reduces V to exactly 0
     assert clf.clf_value(_s(clf.GRASP, TGT, grip=1.0)) == 0.0
     assert clf.clf_value(_s(clf.GRASP, TGT, grip=0.0)) > 0.5
+    # 3cm off-center: closing earns only a small fraction of the centered credit
+    off = TGT + [0.03, 0, 0]
+    credit_off = (clf.clf_value(_s(clf.GRASP, off, grip=0.0))
+                  - clf.clf_value(_s(clf.GRASP, off, grip=1.0)))
+    credit_ctr = (clf.clf_value(_s(clf.GRASP, TGT, grip=0.0))
+                  - clf.clf_value(_s(clf.GRASP, TGT, grip=1.0)))
+    assert 0.0 < credit_off < 0.2 * credit_ctr
+    # at the achieved-precision band (1.6cm) closing earns MEANINGFUL credit
+    near = TGT + [0.016, 0, 0]
+    credit_near = (clf.clf_value(_s(clf.GRASP, near, grip=0.0))
+                   - clf.clf_value(_s(clf.GRASP, near, grip=1.0)))
+    assert credit_near > 0.3 * credit_ctr
+    # and centering monotonically increases closing credit
+    assert credit_ctr > credit_near > credit_off

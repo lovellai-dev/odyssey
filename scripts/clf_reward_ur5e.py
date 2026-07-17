@@ -57,12 +57,15 @@ def clf_value(s: dict[str, Any]) -> float | None:
         d = np.asarray(s["pinch"], float) - np.asarray(s["grasp_target"], float)
         dist2 = float(d @ d)
         open_frac = 1.0 - float(np.clip(s["grip"], 0.0, 1.0))
-        # Capture refinement: the closure term is CENTERING-GATED — while the
-        # pinch is outside GRASP_ALIGN_R of the target, the openness cost is
-        # frozen at its maximum, so closing off-center earns NOTHING and
-        # "center first, then close" is strictly optimal (6/15 first-lift
-        # episodes struck the vial with off-center closes).
-        close_term = open_frac ** 2 if dist2 <= GRASP_ALIGN_R ** 2 else 1.0
+        # GRADED centering weight (capture refinement v2): closure credit scales
+        # smoothly with alignment — full at center, 0.5 at GRASP_ALIGN_R, ~0.2
+        # at 2x. The first HARD gate starved capture (achieved approach
+        # precision bottoms ~1.6-2.1cm > the 1.2cm gate, so closing never
+        # earned credit and closures fell 13/15 -> 3/9); the graded weight
+        # keeps "center more, earn more" strictly optimal while letting
+        # near-centered closes make progress.
+        w_align = GRASP_ALIGN_R ** 2 / (GRASP_ALIGN_R ** 2 + dist2)
+        close_term = 1.0 - (1.0 - open_frac ** 2) * w_align
         return float(close_term + GRASP_PINCH_W * dist2)
     if phase == TRANSPORT:
         if not bool(s.get("grasped")):
