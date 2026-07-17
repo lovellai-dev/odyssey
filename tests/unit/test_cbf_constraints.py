@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 import cbf_constraints_ur5e as cbf  # noqa: E402
 
-TGT = np.array([-0.45, 0.0, 0.05])
-VIAL = np.array([-0.45, 0.0, 0.03])
+# Realistic base-frame geometry (measured expert envelope: grasp z ~0.21-0.27)
+TGT = np.array([-0.45, 0.0, 0.25])
+VIAL = np.array([-0.45, 0.0, 0.23])
 
 
 def _s(pinch, vial=VIAL, grasped=False, q=None):
@@ -46,8 +47,8 @@ def test_descend_cone_allows_slow_grasp_descent_at_target():
     # Inside the cone AND inside the vial-protection radius: descent is allowed
     # but must be SLOW (<= vial_near_step_max) — the barrier composition
     # enforces the expert's own gentle final approach.
-    pts = [[-0.45, 0.0, 0.10 - 0.01 * k] for k in range(6)]   # 1 cm/tick
-    ok, rep = cbf.chunk_feasible(_traj(pts, vial=[-0.45, 0.0, 0.03]))
+    pts = [[-0.45, 0.0, 0.31 - 0.01 * k] for k in range(6)]   # 1 cm/tick toward the cap
+    ok, rep = cbf.chunk_feasible(_traj(pts))
     assert ok, rep
 
 
