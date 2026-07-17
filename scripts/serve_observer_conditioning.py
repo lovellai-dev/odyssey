@@ -416,6 +416,10 @@ class ConditioningService:
             k_bon = int(os.environ.get("STEER_BESTOFN_K", "1"))
             if k_bon > 1:
                 sess = self._steering.phase_inf._sess.get(sid, {})
+                # Adaptive K: finer selection granularity exactly where capture
+                # precision matters (GRASP phase), default 2x the base K.
+                if int(phase) == PhaseInference.GRASP:
+                    k_bon = int(os.environ.get("STEER_BESTOFN_K_GRASP", str(2 * k_bon)))
                 payload["bestofn"] = {
                     "k": k_bon,
                     "sigma": float(os.environ.get("STEER_BESTOFN_SIGMA", "0.35")),

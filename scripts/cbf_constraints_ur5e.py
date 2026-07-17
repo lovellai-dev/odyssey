@@ -50,7 +50,12 @@ class Limits:
     # expert's p99 and HOLD-rejected 86% of real best-of-N queries.)
     step_motion_max: float = 0.16         # m per 50ms control tick
     vial_protect_r: float = 0.10          # protection radius around the ungrasped vial
-    vial_near_step_max: float = 0.022     # m/tick inside the radius
+    vial_near_step_max: float = 0.022     # m/tick at the radius edge
+    # Capture refinement (post-first-lift): 6/15 episodes STRUCK the vial during
+    # the closing pass. The cap now GRADES with distance — full 0.022 at the
+    # radius edge, floored at ~the expert's near-contact p95 (0.68 cm/tick)
+    # at touch range — so approach automatically decelerates into contact.
+    vial_step_floor: float = 0.006        # m/tick floor at contact range
     joint_lo: np.ndarray = field(default_factory=lambda: np.array([-6.28, -3.14, -2.9, -6.28, -6.28, -6.28]))
     joint_hi: np.ndarray = field(default_factory=lambda: np.array([6.28, 0.0, 2.9, 6.28, 6.28, 6.28]))
     joint_margin: float = 0.05            # rad of required distance to a limit
@@ -90,7 +95,9 @@ def barrier_values(s: dict[str, Any], s_prev: dict[str, Any] | None,
         if not bool(s.get("grasped")):
             d_vial = float(np.linalg.norm(pinch - np.asarray(s["vial"], float)))
             if d_vial <= lim.vial_protect_r:
-                h["vial_protect"] = float(lim.vial_near_step_max - step)
+                cap = max(lim.vial_step_floor,
+                          lim.vial_near_step_max * d_vial / lim.vial_protect_r)
+                h["vial_protect"] = float(cap - step)
     return h
 
 

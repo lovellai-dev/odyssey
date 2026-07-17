@@ -35,6 +35,7 @@ REACH, GRASP, TRANSPORT, PLACE = 0, 1, 2, 3
 # Weights/geometry (metres). HOVER lifts the transport goal above the pocket so
 # transport's V=0 sits at the pre-place hover, not inside the rack wall.
 GRASP_PINCH_W = 0.5          # keep-pinch-on-target term inside the grasp phase
+GRASP_ALIGN_R = 0.012        # closing earns credit ONLY within this centering radius
 POCKET_HOVER_M = 0.06
 COMPLETION_BONUS = {GRASP: 1.0, TRANSPORT: 0.5, PLACE: 2.0}   # paid on ENTERING
 ALPHA_DEFAULT = 0.5          # exponential-decrease rate for the margin check
@@ -54,8 +55,15 @@ def clf_value(s: dict[str, Any]) -> float | None:
         return float(d @ d)
     if phase == GRASP:
         d = np.asarray(s["pinch"], float) - np.asarray(s["grasp_target"], float)
+        dist2 = float(d @ d)
         open_frac = 1.0 - float(np.clip(s["grip"], 0.0, 1.0))
-        return float(open_frac ** 2 + GRASP_PINCH_W * (d @ d))
+        # Capture refinement: the closure term is CENTERING-GATED — while the
+        # pinch is outside GRASP_ALIGN_R of the target, the openness cost is
+        # frozen at its maximum, so closing off-center earns NOTHING and
+        # "center first, then close" is strictly optimal (6/15 first-lift
+        # episodes struck the vial with off-center closes).
+        close_term = open_frac ** 2 if dist2 <= GRASP_ALIGN_R ** 2 else 1.0
+        return float(close_term + GRASP_PINCH_W * dist2)
     if phase == TRANSPORT:
         if not bool(s.get("grasped")):
             return None

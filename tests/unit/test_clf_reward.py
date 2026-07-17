@@ -117,3 +117,14 @@ def test_score_chunk_handles_mixed_phases_without_cross_jump():
     grasp_gain = 1.0  # open (V=1) -> closed (V=0)
     expected = reach_gain + clf.COMPLETION_BONUS[clf.GRASP] + grasp_gain
     assert abs(m["total_reward"] - expected) < 1e-9
+
+
+def test_closing_off_center_earns_nothing():
+    # 3cm off-center: closing the gripper must NOT reduce V (centering-gated)
+    off = TGT + [0.03, 0, 0]
+    v_open = clf.clf_value(_s(clf.GRASP, off, grip=0.0))
+    v_closed = clf.clf_value(_s(clf.GRASP, off, grip=1.0))
+    assert v_closed == v_open
+    # centered: closing reduces V to ~0
+    assert clf.clf_value(_s(clf.GRASP, TGT, grip=1.0)) == 0.0
+    assert clf.clf_value(_s(clf.GRASP, TGT, grip=0.0)) > 0.5

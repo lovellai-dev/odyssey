@@ -32,7 +32,8 @@ def _traj(points, **kw):
 
 
 def test_nominal_in_workspace_trajectory_is_feasible():
-    pts = [[-0.45, 0.0, 0.40 - 0.02 * k] for k in range(8)]   # gentle descent, high up
+    # descent that stays OUTSIDE the vial-protection radius (>=13cm above)
+    pts = [[-0.45, 0.0, 0.45 - 0.01 * k] for k in range(8)]
     ok, rep = cbf.chunk_feasible(_traj(pts))
     assert ok, rep
 
@@ -47,7 +48,10 @@ def test_descend_cone_allows_slow_grasp_descent_at_target():
     # Inside the cone AND inside the vial-protection radius: descent is allowed
     # but must be SLOW (<= vial_near_step_max) — the barrier composition
     # enforces the expert's own gentle final approach.
-    pts = [[-0.45, 0.0, 0.31 - 0.01 * k] for k in range(6)]   # 1 cm/tick toward the cap
+    # DECELERATING descent into the cap zone — the graded barrier's contract:
+    # full speed at the radius edge, expert-pace at contact range.
+    zs = [0.330, 0.312, 0.297, 0.285, 0.276, 0.270]
+    pts = [[-0.45, 0.0, z] for z in zs]
     ok, rep = cbf.chunk_feasible(_traj(pts))
     assert ok, rep
 
@@ -102,3 +106,22 @@ def test_filter_candidates_mask_and_reports():
     mask, reps = cbf.filter_candidates([good, bad])
     assert mask.tolist() == [True, False]
     assert reps[1]["violated"]
+
+
+def test_graded_vial_cap_decelerates_into_contact():
+    lim = cbf.Limits()
+    near = VIAL + [0.0, 0.0, 0.02]          # 2cm from the vial
+    # 1.5cm/tick at 2cm range: under the edge cap (0.022) but OVER the graded
+    # cap (max(0.006, 0.022*0.02/0.10)=0.006) -> must reject
+    fast = _traj([near, near + [0.015, 0, 0]])
+    ok, rep = cbf.chunk_feasible(fast, lim=lim)
+    assert not ok and "vial_protect" in rep["violated"]
+    # 0.5cm/tick at the same range -> under the floor -> feasible
+    slow = _traj([near, near + [0.005, 0, 0]])
+    ok2, _ = cbf.chunk_feasible(slow, lim=lim)
+    assert ok2
+    # and at the radius edge (9.5cm out) the full 0.022 still applies
+    far = VIAL + [0.0, 0.0, 0.095]
+    edge = _traj([far, far + [0.018, 0, 0]])
+    ok3, _ = cbf.chunk_feasible(edge, lim=lim)
+    assert ok3
