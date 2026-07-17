@@ -266,6 +266,25 @@ in-process by the best-of-N service; ~1-2 GPU-h re-encoding pass), then the
 same 3-block powered protocol; escalation if the lift CI stays on zero = the
 roadmap's SFT decision gate.
 
+**2026-07-17 (v4 image-conditioned head) — FIRST CI-BACKED SUCCESSES (45-ep
+powered, 3 blocks, commit 7da91eb..8c2cef9):** success 2/45 = 4.4% CI
+[1.2, 14.8]; lift 6/45 = 13.3% CI [6.3, 26.2]; pad median 2.1 cm (was 4.4).
+Both CIs clear zero vs the v0.2-mean baseline (0/45 lift, CI upper 7.9%) —
+the FIRST full pick-and-place (grasp+transport+seat) in the program, and it
+generalizes across all 3 pose blocks incl. untuned 8888/9999. The v4 head
+(pooled backbone features + low-15 -> noise) broke the corrective-fit floor
+by intervention (dagger-source MSE 0.087 -> 0.041, base EE 0.86 cm, first
+aggregated net to PASS the base gate). Server-head deploy: sidecar ships
+steer_low15, best-of-N service computes mean = head(low15 + pool_backbone)
+in-process (identical pooling to train); response carries steer_head:v4.
+Honest gaps: closures dropped to 47%, holds rose to 32% (1636/5086) — CBF
+envelope now over-conservative for the sharper v4 candidates. NEXT: (1)
+re-tune CBF caps to the v4 distribution (cheap, holds are leaving good
+candidates on the table); (2) DAgger round 2 on v4-visited states (lifts now
+happen -> first POST-GRASP transport/place states to harvest); (3)
+transport/place refinement (2 successes already exercise it). Then the demo
+HUD (Observer marker, safety-certificate ticker, Specialist panel).
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
