@@ -99,6 +99,8 @@ def mode_decode(args) -> dict:
     per = []
     steered_arm8, oracle_arm8, expert_arm8 = [], [], []
     stock_arm8 = []  # (N, 8, 6)
+    steered_traj, oracle_traj, expert_traj = [], [], []   # (N,16,6) for CLF
+    grasp_targets, plabels = [], []
     for (ep, fr) in all_picks:
         frames = read_frames(dataset_dir, [(ep, fr)], readers)
         f0 = frames[0]
@@ -162,6 +164,13 @@ def mode_decode(args) -> dict:
         oracle_arm8.append(np.asarray(phys_oracle["single_arm"], dtype=np.float32)[0, STEP8, :])
         expert_arm8.append(np.asarray(f0["arm"], dtype=np.float32)[STEP8, :])
         stock_arm8.append(arm8_stock)
+        # Full 16-step arm trajectories + the state's grasp target: consumed by
+        # the fk-gate's report-only CLF (Lyapunov-decrease) metrics.
+        steered_traj.append(np.asarray(phys_steer["single_arm"], dtype=np.float32)[0])
+        oracle_traj.append(np.asarray(phys_oracle["single_arm"], dtype=np.float32)[0])
+        expert_traj.append(np.asarray(f0["arm"], dtype=np.float32))
+        grasp_targets.append(np.asarray(s10[7:10], dtype=np.float32))
+        plabels.append(int(plabel))
 
         per.append({
             "episode": int(ep), "frame": int(fr), "phase": int(plabel),
@@ -184,6 +193,11 @@ def mode_decode(args) -> dict:
         mse_oracle=np.asarray([p["mse_oracle"] for p in per], dtype=np.float64),
         episode=np.asarray([p["episode"] for p in per], dtype=np.int64),
         frame=np.asarray([p["frame"] for p in per], dtype=np.int64),
+        steered_traj=np.asarray(steered_traj, dtype=np.float32),
+        oracle_traj=np.asarray(oracle_traj, dtype=np.float32),
+        expert_traj=np.asarray(expert_traj, dtype=np.float32),
+        grasp_target=np.asarray(grasp_targets, dtype=np.float32),
+        phase=np.asarray(plabels, dtype=np.int64),
     )
     frac = float(np.mean([p["steered_beats_stock"] for p in per])) if per else 0.0
     out = {
@@ -256,6 +270,31 @@ def mode_fk_gate(args) -> dict:
             "steered_closer_ee": bool(d_steer < d_stock),
         })
 
+    # ---- report-only CLF (Lyapunov-decrease) metrics on REACH-phase states ----
+    # V = ||pinch - grasp_target||^2 along the decoded 16-step trajectory; a
+    # good candidate DECREASES V monotonically. Purely informational for now —
+    # the R2 best-of-N scorer is the primary consumer of clf_reward_ur5e.
+    clf_report = None
+    if "steered_traj" in dec.files:
+        import clf_reward_ur5e as clfmod
+        phase_arr = dec["phase"]; tgts = dec["grasp_target"]
+        reach_idx = [k for k in range(N) if int(phase_arr[k]) == clfmod.REACH]
+        if reach_idx:
+            def traj_metrics(traj_key):
+                out = []
+                for k in reach_idx:
+                    pinch = np.stack([fk(q) for q in dec[traj_key][k]])
+                    out.append(clfmod.reach_series_metrics(pinch, tgts[k]))
+                return {
+                    "mean_total_reward": float(np.mean([m["total_reward"] for m in out])),
+                    "mean_monotone_frac": float(np.mean([m["monotone_frac"] for m in out])),
+                    "mean_violation_frac": float(np.mean([m["violation_frac"] for m in out])),
+                }
+            clf_report = {"n_reach_states": len(reach_idx),
+                          "steered": traj_metrics("steered_traj"),
+                          "oracle": traj_metrics("oracle_traj"),
+                          "expert": traj_metrics("expert_traj")}
+
     steered_ee = np.array([p["ee_dist_steered_cm"] for p in per])
     stock_ee = np.array([p["ee_dist_stock_mean_cm"] for p in per])
     oracle_ee = np.array([p["ee_dist_oracle_cm"] for p in per])
@@ -276,6 +315,7 @@ def mode_fk_gate(args) -> dict:
         "cond1_frac_ge_thresh": bool(cond1), "cond2_ee_improve_ge_thresh": bool(cond2),
         "frac_thresh": args.frac_thresh, "improve_thresh": args.improve_thresh,
         "pass": passed,
+        "clf_reach": clf_report,
         "per_state": per,
     }
     if args.out:
