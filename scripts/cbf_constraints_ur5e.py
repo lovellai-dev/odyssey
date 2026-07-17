@@ -38,9 +38,14 @@ class Limits:
     table_z: float = 0.16                 # min pinch height outside the descend cone
     descend_cone_xy: float = 0.06         # radius around the target where descent is allowed
     descend_floor_z: float = 0.015        # min pinch height inside the cone
-    step_motion_max: float = 0.035        # m per 50ms control tick (~0.7 m/s)
+    # Motion caps CALIBRATED against the expert's own decoded trajectories
+    # (gate states, 2026-07-17): all-steps p99 = 0.109 m/tick, near-vial p99 =
+    # 0.0138 m/tick. Caps = ~1.5x expert p99 — safety bounds AROUND demonstrated
+    # behavior. (The first hand-guessed caps, 0.035/0.012, sat below the
+    # expert's p99 and HOLD-rejected 86% of real best-of-N queries.)
+    step_motion_max: float = 0.16         # m per 50ms control tick
     vial_protect_r: float = 0.10          # protection radius around the ungrasped vial
-    vial_near_step_max: float = 0.012     # m/tick inside the radius (~0.24 m/s)
+    vial_near_step_max: float = 0.022     # m/tick inside the radius
     joint_lo: np.ndarray = field(default_factory=lambda: np.array([-6.28, -3.14, -2.9, -6.28, -6.28, -6.28]))
     joint_hi: np.ndarray = field(default_factory=lambda: np.array([6.28, 0.0, 2.9, 6.28, 6.28, 6.28]))
     joint_margin: float = 0.05            # rad of required distance to a limit

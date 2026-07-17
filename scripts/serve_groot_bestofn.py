@@ -64,6 +64,7 @@ class BestOfNService:
         self._lock = threading.Lock()   # one query at a time (GPU + FK)
         self.n_queries = 0
         self.n_fallback_hold = 0
+        self.rejection_hist: dict[str, int] = {}   # aggregated CBF rejections
         print(f"[bestofn] ready | ckpt={model_path} fk={self.fk_url}", flush=True)
 
     # -- helpers ---------------------------------------------------------------
@@ -137,6 +138,11 @@ class BestOfNService:
                     phase=int(cfg.get("phase", 0)),
                     grasped=bool(cfg.get("grasped", False)),
                 )
+                for name, cnt in (report.get("cbf_rejections") or {}).items():
+                    self.rejection_hist[name] = self.rejection_hist.get(name, 0) + int(cnt)
+                if self.n_queries % 25 == 0:
+                    print(f"[bestofn] q={self.n_queries} holds={self.n_fallback_hold} "
+                          f"rejections={self.rejection_hist}", flush=True)
                 if idx is None:
                     self.n_fallback_hold += 1
                     q_now = state10[:6]
