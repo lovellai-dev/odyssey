@@ -93,6 +93,7 @@ def mode_decode(args) -> dict:
     print(f"[gate] {len(all_picks)} held-out states", flush=True)
 
     gt_cache: dict = {}
+    _dq_cache: dict = {}   # per-episode arm-state arrays for the v3 dq feature
     readers: dict = {}
     fixed_pads = ts.deploy_pads(1)[0]  # (40,132) fixed-seed pad template
 
@@ -120,7 +121,19 @@ def mode_decode(args) -> dict:
                         else fr + REAL_STEPS)
             cols.append(np.array([min(1.0, fr / max(1.0, float(n_frames)))],
                                  dtype=np.float32))
-        obs_low = np.concatenate(cols).astype(np.float32)[None]  # (1, 14|15)
+        if int(meta.get("in_dim", 14)) >= 21:
+            # v3 recent-motion dq over the trainer's window, from the dataset.
+            import pyarrow.parquet as pq
+            if ep not in _dq_cache:
+                pf = dataset_dir / "data" / "chunk-000" / f"episode_{ep:06d}.parquet"
+                _dq_cache[ep] = np.stack(
+                    pq.read_table(pf, columns=["observation.state"])
+                    .column("observation.state").to_pylist())[:, :6]
+            sarr = _dq_cache[ep]
+            f_now = min(int(fr), len(sarr) - 1)
+            dq = (sarr[f_now] - sarr[max(0, f_now - 8)]).astype(np.float32)
+            cols.append(dq)
+        obs_low = np.concatenate(cols).astype(np.float32)[None]  # (1, 14|15|21)
 
         # (a) steered: build init_noise from the net output per its design.
         pred = forward(obs_low)

@@ -156,12 +156,50 @@ def chunk_motion_from_dataset(arrays: dict[str, np.ndarray], dataset_dir: str | 
     return out
 
 
+RECENT_MOTION_WINDOW = 8   # dataset frames == deploy control ticks per query
+
+
+def recent_motion_from_dataset(arrays: dict[str, np.ndarray],
+                               dataset_dir: str | Path,
+                               window: int = RECENT_MOTION_WINDOW) -> np.ndarray:
+    """Directional recent arm motion dq = qpos[f] - qpos[f-window] per sample (N,6).
+
+    v3 anti-ambiguity feature: at the hover-band poses where DAgger correctives
+    live, the EXPERT passing through is moving (dq != 0) while the stuck policy
+    is not (dq ~ 0) — the 15-d snapshot input could not represent that, so base
+    'keep ramping' and corrective 'start moving' targets collided at the same
+    input point (the interference sweep's 34 cm dagger-state EE). Frames before
+    ``window`` difference against frame 0 (episode start: both regimes static —
+    consistent with the deploy sidecar's zero-initialised per-session tracker).
+    """
+    import pyarrow.parquet as pq
+    dataset_dir = Path(dataset_dir)
+    ep = np.asarray(arrays["episode"], dtype=np.int64).reshape(-1)
+    fi = np.asarray(arrays["frame_idx"], dtype=np.int64).reshape(-1)
+    cache: dict[int, np.ndarray] = {}
+    out = np.zeros((len(ep), 6), dtype=np.float32)
+    for i in range(len(ep)):
+        e = int(ep[i])
+        if e not in cache:
+            f = dataset_dir / "data" / "chunk-000" / f"episode_{e:06d}.parquet"
+            cache[e] = np.stack(pq.read_table(f, columns=["observation.state"])
+                                .column("observation.state").to_pylist())[:, :6]
+        s = cache[e]
+        f_now = min(int(fi[i]), len(s) - 1)
+        f_prev = max(0, f_now - window)
+        out[i] = (s[f_now] - s[f_prev]).astype(np.float32)
+    return out
+
+
 def build_xy(arrays: dict[str, np.ndarray], output_design: str,
-             features: str = "v1") -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return (X (N,14|15), Y (N, 112|5280), episodes (N,)).
+             features: str = "v1", extra_feats: np.ndarray | None = None
+             ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return (X (N,14|15|21), Y (N, 112|5280), episodes (N,)).
 
     features: 'v1' -> [proprio7, grasp_target3, phase_onehot4]           (14)
               'v2' -> v1 + [t_norm]  (normalized episode progress)       (15)
+              'v3' -> v2 + extra_feats (recent-motion dq6 -> 21); caller
+                      supplies extra_feats (dataset-dependent).
     output_design: 'real112' -> Y = w_star_real flattened (112);
                    'full5280' -> Y = w_star_full flattened (5280) [requires w_star_full].
     """
@@ -169,11 +207,15 @@ def build_xy(arrays: dict[str, np.ndarray], output_design: str,
     gt3 = np.asarray(arrays["grasp_target3"], dtype=np.float32)         # (N,3)
     oh = phase_onehot(arrays["phase_label"])                            # (N,4)
     cols = [proprio7, gt3, oh]
-    if features == "v2":
+    if features in ("v2", "v3"):
         cols.append(t_norm_feature(arrays)[:, None])                    # (N,1)
-    elif features != "v1":
+    if features == "v3":
+        if extra_feats is None:
+            raise ValueError("features='v3' requires extra_feats (recent-motion dq)")
+        cols.append(np.asarray(extra_feats, dtype=np.float32).reshape(len(proprio7), -1))
+    elif features not in ("v1", "v2"):
         raise ValueError(f"unknown features {features!r}")
-    X = np.concatenate(cols, axis=1).astype(np.float32)                 # (N,14|15)
+    X = np.concatenate(cols, axis=1).astype(np.float32)                 # (N,14|15|21)
     if output_design == "real112":
         Y = np.asarray(arrays["w_star_real"], dtype=np.float32).reshape(len(X), REAL_OUT)
     elif output_design == "full5280":
@@ -234,7 +276,25 @@ def mode_train(args) -> dict:
     shard_dirs = [s for s in str(args.shards).split(",") if s]
     arrays, source = load_shards_multi(shard_dirs)
     design = args.output_design
-    X, Y, episodes = build_xy(arrays, design, features=args.features)
+    extra = None
+    if args.features == "v3":
+        # per-source recent-motion dq (dataset-dependent, like motion weights)
+        datasets_v3 = [d for d in str(args.dataset or "").split(",")]
+        if len(datasets_v3) == 1 and len(shard_dirs) > 1:
+            datasets_v3 = datasets_v3 * len(shard_dirs)
+        extra = np.zeros((len(arrays["episode"]), 6), dtype=np.float32)
+        for si in range(len(shard_dirs)):
+            m = source == si
+            ds = datasets_v3[si] if si < len(datasets_v3) else ""
+            if not np.any(m) or ds in ("", "none"):
+                raise SystemExit("features=v3 requires --dataset for every shard source")
+            sub = {k: (np.asarray(v)[m] if len(np.asarray(v)) == len(arrays["episode"]) else v)
+                   for k, v in arrays.items()}
+            sub["episode"] = np.asarray(sub["episode"]) % SOURCE_EP_OFFSET
+            extra[m] = recent_motion_from_dataset(sub, ds)
+        print(f"[train] v3 recent-motion: |dq| mean={float(np.abs(extra).mean()):.4f} "
+              f"static(<0.005)={float(np.mean(np.abs(extra).max(axis=1) < 0.005)):.1%}", flush=True)
+    X, Y, episodes = build_xy(arrays, design, features=args.features, extra_feats=extra)
     train_idx, val_idx = episode_split(episodes, val_frac=args.val_frac, seed=args.seed)
     n_train, n_val = len(train_idx), len(val_idx)
     print(f"[train] N={len(X)} in={X.shape[1]} out={Y.shape[1]} design={design} "
@@ -466,7 +526,7 @@ def main() -> int:
     pt.add_argument("--device", default="cuda")
     pt.add_argument("--out", default=None)
     # v0.1 anti-aliasing options (see t_norm_feature / motion_weights docstrings)
-    pt.add_argument("--features", default="v2", choices=["v1", "v2"])
+    pt.add_argument("--features", default="v2", choices=["v1", "v2", "v3"])
     pt.add_argument("--dataset", default=None,
                     help="LeRobot dataset dir; enables motion-weighted loss + stratified val")
     pt.add_argument("--weight-floor", type=float, default=0.2)

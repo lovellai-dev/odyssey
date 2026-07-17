@@ -188,3 +188,38 @@ def test_load_shards_multi_single_dir_is_backward_compatible(tmp_path):
     arrays, source = ts.load_shards_multi([d])
     assert np.array_equal(arrays["episode"], arr["episode"])  # offset 0
     assert np.all(source == 0)
+
+
+# ---------------------------------------------------------------------------
+# v3 anti-ambiguity features (directional recent motion)
+# ---------------------------------------------------------------------------
+
+def test_build_xy_v3_appends_extra_feats():
+    arr = _fake_arrays()
+    dq = np.random.default_rng(4).standard_normal((200, 6)).astype(np.float32)
+    X, Y, eps = ts.build_xy(arr, "real112", features="v3", extra_feats=dq)
+    assert X.shape == (200, 21)
+    assert np.allclose(X[:, 15:], dq)
+    with pytest.raises(ValueError):
+        ts.build_xy(arr, "real112", features="v3")   # extra_feats required
+
+
+def test_recent_motion_from_dataset(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    # synthetic episode: arm ramps linearly 0.01 rad/frame on joint 0
+    T = 40
+    states = np.zeros((T, 10), dtype=np.float32)
+    states[:, 0] = 0.01 * np.arange(T)
+    d = tmp_path / "data" / "chunk-000"
+    d.mkdir(parents=True)
+    tbl = pa.table({"observation.state": [row.tolist() for row in states]})
+    pq.write_table(tbl, d / "episode_000000.parquet")
+    arrays = {"episode": np.array([0, 0, 0], dtype=np.int64),
+              "frame_idx": np.array([0, 4, 20], dtype=np.int64)}
+    dq = ts.recent_motion_from_dataset(arrays, tmp_path, window=8)
+    assert dq.shape == (3, 6)
+    assert np.isclose(dq[0, 0], 0.0)          # frame 0: no history -> zero
+    assert np.isclose(dq[1, 0], 0.04, atol=1e-6)   # frame 4 vs frame 0
+    assert np.isclose(dq[2, 0], 0.08, atol=1e-6)   # frame 20 vs frame 12
+    assert np.allclose(dq[:, 1:], 0.0)

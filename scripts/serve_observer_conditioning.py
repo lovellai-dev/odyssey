@@ -285,6 +285,10 @@ class SteeringEngine:
         self._ticks_per_query = int(os.environ.get("STEER_TICKS_PER_QUERY", "8"))
         self._ep_ticks = float(os.environ.get("STEER_EP_TICKS", "900"))
         self._ticks: dict[str, int] = {}
+        # v3 recent-motion feature (in_dim >= 21): dq = q_now - q_prev_query,
+        # matching the trainer's per-8-frame window. Zero on a session's first
+        # query — consistent with the dataset's episode-start convention.
+        self._prev_q: dict[str, np.ndarray] = {}
         print(f"[steer] ready | weights={weights} design={self.design} "
               f"in_dim={self.in_dim} out_dim={meta.get('out_dim')} "
               f"t_norm={'ON' if self.in_dim >= 15 else 'off'}", flush=True)
@@ -303,7 +307,14 @@ class SteeringEngine:
             t = min(1.0, self._ticks.get(sid, 0) / self._ep_ticks)
             self._ticks[sid] = self._ticks.get(sid, 0) + self._ticks_per_query
             cols.append(np.array([t], dtype=np.float32))
-        x = np.concatenate(cols).astype(np.float32)[None]             # (1, 14|15)
+        if self.in_dim >= 21:
+            q_now = np.asarray(state7, dtype=np.float32).reshape(-1)[:6]
+            if len(self._prev_q) > 64:
+                self._prev_q.pop(next(iter(self._prev_q)))
+            dq = q_now - self._prev_q.get(sid, q_now)   # first query -> zeros
+            self._prev_q[sid] = q_now.copy()
+            cols.append(dq.astype(np.float32))
+        x = np.concatenate(cols).astype(np.float32)[None]             # (1, 14|15|21)
         pred = self._forward(x)
         if self.design == "full5280":
             noise = pred.reshape(ACTION_HORIZON, ACTION_DIM).astype(np.float32)
