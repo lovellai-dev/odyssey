@@ -12,7 +12,8 @@
 # pattern as constraints/{openvla,specialist}-known-good.txt). Idempotent.
 #
 # Usage:  bash examples/quickstart-gr00t/setup.sh
-# Overridable: ODYSSEY_DIR, ISAAC_GR00T_DIR, ISAACLAB_PATH, ISAAC_PYTHON, HF_HOME
+# Overridable: ODYSSEY_DIR, ODYSSEY_VENV, ISAAC_GR00T_DIR, GR00T_VENV_DIR,
+#              ISAACLAB_PATH, ISAAC_PYTHON, HF_HOME
 set -euo pipefail
 
 # This script lives at examples/quickstart-gr00t/setup.sh -> repo root is two up.
@@ -26,23 +27,43 @@ command -v uv >/dev/null || { echo "uv not found — install from https://docs.a
 
 echo "==> [1/4] Odyssey core env (uv)"
 cd "$ODYSSEY_DIR"
-uv venv --python 3.10 .venv
+# Odyssey core venv — overridable so a shared VM (e.g. one already running an
+# OpenVLA env in .venv) can build GR00T's core elsewhere without clobbering it:
+#   ODYSSEY_VENV=.venv-gr00t bash examples/quickstart-gr00t/setup.sh
+ODYSSEY_VENV="${ODYSSEY_VENV:-.venv}"
+uv venv --python 3.10 "$ODYSSEY_VENV"
 # huggingface extra: the GR00T training runner uses odyssey's HF provider.
-uv pip install --python .venv/bin/python -e ".[dev,huggingface]"
-GR00T_VENV_PYTHON="${GR00T_VENV_PYTHON:-$ISAAC_GR00T_DIR/.venv/bin/python}"
+uv pip install --python "$ODYSSEY_VENV/bin/python" -e ".[dev,huggingface]"
+# GR00T server venv location — overridable; defaults inside the checkout.
+GR00T_VENV_DIR="${GR00T_VENV_DIR:-$ISAAC_GR00T_DIR/.venv}"
 
-echo "==> [2/4] GR00T policy-server venv (uv) — torch 2.7.1+cu128, separate ABI"
+echo "==> [2/4] GR00T policy-server venv (uv) — py3.12, torch 2.9.0+cu128, separate ABI"
 if [ -d "$ISAAC_GR00T_DIR" ]; then
-  cd "$ISAAC_GR00T_DIR"
-  uv venv --python 3.10 .venv
-  uv pip install --python .venv/bin/python \
+  # If the venv would land inside a non-writable checkout (e.g. a root-owned
+  # /srv clone) and the caller didn't override GR00T_VENV_DIR, relocate it to a
+  # writable dir. The editable install still targets the checkout in place.
+  if [ "$GR00T_VENV_DIR" = "$ISAAC_GR00T_DIR/.venv" ] && [ ! -w "$ISAAC_GR00T_DIR" ]; then
+    GR00T_VENV_DIR="$HOME/gr00t-venv"
+    echo "    NOTE: $ISAAC_GR00T_DIR is not writable — placing the venv at $GR00T_VENV_DIR instead."
+  fi
+  # Isaac-GR00T's pyproject requires ==3.12.* (see requires-python); uv fetches a
+  # managed CPython 3.12 if the host only has 3.10.
+  uv venv --python 3.12 "$GR00T_VENV_DIR"
+  # --index-strategy unsafe-best-match: the pytorch cu128 index has a stale
+  # `requests`, but gr00t's datasets needs a newer one from PyPI — let uv pick
+  # the best across both indexes (torch still comes from the cu128 index).
+  uv pip install --python "$GR00T_VENV_DIR/bin/python" \
       --extra-index-url https://download.pytorch.org/whl/cu128 \
-      -c "$C/gr00t-server-known-good.txt" -e .
-  echo "    NOTE: install flash-attn (cu128 x86_64 wheel) per Isaac-GR00T's pyproject."
-  "$GR00T_VENV_PYTHON" -c "import gr00t; print('    gr00t OK')" 2>/dev/null || echo "    (gr00t import deferred — finish flash-attn install)"
+      --index-strategy unsafe-best-match \
+      -c "$C/gr00t-server-known-good.txt" -e "$ISAAC_GR00T_DIR"
+  echo "    NOTE: flash-attn comes from Isaac-GR00T's pyproject (prebuilt cu12/torch2.9 wheel)."
+  "$GR00T_VENV_DIR/bin/python" -c "import gr00t; print('    gr00t OK')" 2>/dev/null || echo "    (gr00t import deferred — finish flash-attn install)"
 else
   echo "    SKIP: \$ISAAC_GR00T_DIR ($ISAAC_GR00T_DIR) not found — clone NVIDIA/Isaac-GR00T first."
 fi
+# Derive the interpreter path from the (possibly relocated) venv dir, unless the
+# caller pinned GR00T_VENV_PYTHON explicitly.
+GR00T_VENV_PYTHON="${GR00T_VENV_PYTHON:-$GR00T_VENV_DIR/bin/python}"
 
 echo "==> [3/4] Isaac Lab eval env (client transport into Isaac's python)"
 if [ -x "$ISAAC_PYTHON" ]; then
