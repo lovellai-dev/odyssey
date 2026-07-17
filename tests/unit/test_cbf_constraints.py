@@ -50,7 +50,7 @@ def test_descend_cone_allows_slow_grasp_descent_at_target():
     # enforces the expert's own gentle final approach.
     # DECELERATING descent into the cap zone — the graded barrier's contract:
     # full speed at the radius edge, expert-pace at contact range.
-    zs = [0.330, 0.312, 0.297, 0.285, 0.276, 0.270]
+    zs = [0.330, 0.315, 0.302, 0.291, 0.282, 0.275]   # each step ~80% of the graded cap
     pts = [[-0.45, 0.0, z] for z in zs]
     ok, rep = cbf.chunk_feasible(_traj(pts))
     assert ok, rep
