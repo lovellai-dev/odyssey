@@ -121,7 +121,8 @@ def mode_decode(args) -> dict:
                         else fr + REAL_STEPS)
             cols.append(np.array([min(1.0, fr / max(1.0, float(n_frames)))],
                                  dtype=np.float32))
-        if int(meta.get("in_dim", 14)) >= 21:
+        in_dim = int(meta.get("in_dim", 14))
+        if in_dim == 21:
             # v3 recent-motion dq over the trainer's window, from the dataset.
             import pyarrow.parquet as pq
             if ep not in _dq_cache:
@@ -133,7 +134,12 @@ def mode_decode(args) -> dict:
             f_now = min(int(fr), len(sarr) - 1)
             dq = (sarr[f_now] - sarr[max(0, f_now - 8)]).astype(np.float32)
             cols.append(dq)
-        obs_low = np.concatenate(cols).astype(np.float32)[None]  # (1, 14|15|21)
+        elif in_dim > 100:
+            # v4 image-conditioned head: pooled backbone features from THIS
+            # state's own encode cache — same pool_backbone as train + deploy.
+            from flow_inverter_groot import pool_backbone
+            cols.append(pool_backbone(cache)[0].astype(np.float32))
+        obs_low = np.concatenate(cols).astype(np.float32)[None]  # (1, 14|15|21|15+D)
 
         # (a) steered: build init_noise from the net output per its design.
         pred = forward(obs_low)

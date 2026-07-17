@@ -223,3 +223,48 @@ def test_recent_motion_from_dataset(tmp_path):
     assert np.isclose(dq[1, 0], 0.04, atol=1e-6)   # frame 4 vs frame 0
     assert np.isclose(dq[2, 0], 0.08, atol=1e-6)   # frame 20 vs frame 12
     assert np.allclose(dq[:, 1:], 0.0)
+
+
+# ---------------------------------------------------------------------------
+# v4 image-conditioned features (pooled backbone)
+# ---------------------------------------------------------------------------
+
+def test_build_xy_v4_appends_feature_block():
+    arr = _fake_arrays()
+    F = np.random.default_rng(9).standard_normal((200, 64)).astype(np.float32)
+    X, Y, eps = ts.build_xy(arr, "real112", features="v4", extra_feats=F)
+    assert X.shape == (200, 15 + 64)
+    assert np.allclose(X[:, 15:], F)
+
+
+def test_load_feat_shards_alignment_and_offsets(tmp_path):
+    import numpy as np
+    # two sources; feat shards must align row-for-row after the ep offset
+    dirs = []
+    per_source = []
+    for si in range(2):
+        arr = _fake_arrays(n=30, n_eps=3, seed=si)
+        per_source.append(arr)
+        d = tmp_path / f"feat{si}"
+        d.mkdir()
+        np.savez(d / "feat_shard_0000.npz", episode=arr["episode"],
+                 frame_idx=arr["frame_idx"],
+                 feats=np.full((30, 8), si, dtype=np.float16))
+        dirs.append(d)
+    arrays = {
+        "episode": np.concatenate([per_source[0]["episode"],
+                                   per_source[1]["episode"] + ts.SOURCE_EP_OFFSET]),
+        "frame_idx": np.concatenate([per_source[0]["frame_idx"],
+                                     per_source[1]["frame_idx"]]),
+    }
+    source = np.concatenate([np.zeros(30, np.int64), np.ones(30, np.int64)])
+    F = ts.load_feat_shards(dirs, arrays, source)
+    assert F.shape == (60, 8)
+    assert np.all(F[:30] == 0) and np.all(F[30:] == 1)
+    # misalignment must raise
+    arrays_bad = dict(arrays)
+    arrays_bad["frame_idx"] = arrays["frame_idx"].copy()
+    arrays_bad["frame_idx"][5] += 1
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        ts.load_feat_shards(dirs, arrays_bad, source)

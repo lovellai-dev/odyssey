@@ -69,6 +69,41 @@ def load_shards_multi(shard_dirs: list[str | Path]) -> tuple[dict[str, np.ndarra
     return arrays, np.concatenate(sources)
 
 
+def load_feat_shards(feat_dirs: list[str | Path],
+                     arrays: dict[str, np.ndarray],
+                     source: np.ndarray) -> np.ndarray:
+    """Load pooled-backbone feature shards (feat_shard_*.npz), row-aligned with
+    the already-loaded target shards; verify alignment via episode/frame.
+
+    ``arrays['episode']`` carries the per-source SOURCE_EP_OFFSET; feat shards
+    store raw ids, so alignment is checked modulo the offset.
+    """
+    ep = np.asarray(arrays["episode"], dtype=np.int64) % SOURCE_EP_OFFSET
+    fi = np.asarray(arrays["frame_idx"], dtype=np.int64)
+    out: np.ndarray | None = None
+    for si, d in enumerate(feat_dirs):
+        files = sorted(Path(d).glob("feat_shard_*.npz"))
+        if not files:
+            raise FileNotFoundError(f"no feat_shard_*.npz in {d}")
+        eps, frs, feats = [], [], []
+        for f in files:
+            z = np.load(f)
+            eps.append(np.asarray(z["episode"], dtype=np.int64))
+            frs.append(np.asarray(z["frame_idx"], dtype=np.int64))
+            feats.append(np.asarray(z["feats"], dtype=np.float32))
+        eps, frs = np.concatenate(eps), np.concatenate(frs)
+        F = np.concatenate(feats)
+        m = source == si
+        if not (np.array_equal(eps, ep[m]) and np.array_equal(frs, fi[m])):
+            raise ValueError(f"feat shards in {d} misaligned with target shards "
+                             f"(source {si}): re-run encode-features")
+        if out is None:
+            out = np.zeros((len(ep), F.shape[1]), dtype=np.float32)
+        out[m] = F
+    assert out is not None
+    return out
+
+
 def load_shards(shard_dir: str | Path) -> dict[str, np.ndarray]:
     """Concatenate all ``shard_*.npz`` in a directory into flat arrays."""
     shard_dir = Path(shard_dir)
@@ -207,11 +242,13 @@ def build_xy(arrays: dict[str, np.ndarray], output_design: str,
     gt3 = np.asarray(arrays["grasp_target3"], dtype=np.float32)         # (N,3)
     oh = phase_onehot(arrays["phase_label"])                            # (N,4)
     cols = [proprio7, gt3, oh]
-    if features in ("v2", "v3"):
+    if features in ("v2", "v3", "v4"):
         cols.append(t_norm_feature(arrays)[:, None])                    # (N,1)
-    if features == "v3":
+    if features in ("v3", "v4"):
+        # v3: recent-motion dq6; v4: pooled backbone features (image-conditioned
+        # head — the inverted noise targets provably depend on the frames).
         if extra_feats is None:
-            raise ValueError("features='v3' requires extra_feats (recent-motion dq)")
+            raise ValueError(f"features={features!r} requires extra_feats")
         cols.append(np.asarray(extra_feats, dtype=np.float32).reshape(len(proprio7), -1))
     elif features not in ("v1", "v2"):
         raise ValueError(f"unknown features {features!r}")
@@ -277,6 +314,12 @@ def mode_train(args) -> dict:
     arrays, source = load_shards_multi(shard_dirs)
     design = args.output_design
     extra = None
+    if args.features == "v4":
+        feat_dirs = [d for d in str(args.feat_shards or "").split(",") if d]
+        if len(feat_dirs) != len(shard_dirs):
+            raise SystemExit("features=v4 requires --feat-shards aligned with --shards")
+        extra = load_feat_shards(feat_dirs, arrays, source)
+        print(f"[train] v4 pooled-backbone features: dim={extra.shape[1]}", flush=True)
     if args.features == "v3":
         # per-source recent-motion dq (dataset-dependent, like motion weights)
         datasets_v3 = [d for d in str(args.dataset or "").split(",")]
@@ -526,7 +569,9 @@ def main() -> int:
     pt.add_argument("--device", default="cuda")
     pt.add_argument("--out", default=None)
     # v0.1 anti-aliasing options (see t_norm_feature / motion_weights docstrings)
-    pt.add_argument("--features", default="v2", choices=["v1", "v2", "v3"])
+    pt.add_argument("--features", default="v2", choices=["v1", "v2", "v3", "v4"])
+    pt.add_argument("--feat-shards", default=None,
+                    help="v4: comma-separated feat-shard dirs aligned with --shards")
     pt.add_argument("--dataset", default=None,
                     help="LeRobot dataset dir; enables motion-weighted loss + stratified val")
     pt.add_argument("--weight-floor", type=float, default=0.2)

@@ -271,6 +271,66 @@ def _evict_video_readers(readers: dict, keep_eps: set[int]) -> None:
             pass
 
 
+def pool_backbone(cache: dict) -> np.ndarray:
+    """Pooled visual conditioning per sample: masked mean of vl_embeds -> (B,D).
+
+    THE canonical pooling for the image-conditioned steering head (v4): the
+    encoder pass, the offline gate, and the serving path must all use this
+    exact function — the inverted noise targets depend on these features, and
+    any pooling mismatch between train and deploy re-creates the target-noise
+    floor the head exists to break.
+    """
+    v = cache["vl_embeds"]                    # (B, S, D) torch fp32
+    m = cache.get("backbone_attention_mask")
+    if m is not None:
+        mm = m.float().unsqueeze(-1)          # (B, S, 1)
+        pooled = (v * mm).sum(dim=1) / mm.sum(dim=1).clamp(min=1.0)
+    else:
+        pooled = v.mean(dim=1)
+    return pooled.detach().float().cpu().numpy()
+
+
+def mode_encode_features(args) -> dict:
+    """Re-encoding pass: attach pooled backbone features to EXISTING noise-target
+    shards, row-aligned (same episode/frame order), resumable per shard."""
+    shards_dir = Path(args.shards)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dataset_dir = Path(args.dataset)
+    inv = FlowInverter(args.model_path, args.embodiment_tag, args.device,
+                       fp_iters=1)
+    readers: dict = {}
+    n_rows = 0
+    feat_dim = None
+    shard_files = sorted(shards_dir.glob("shard_*.npz"))
+    for sf in shard_files:
+        outp = out_dir / f"feat_{sf.name}"
+        if outp.exists():
+            print(f"[feat] {outp.name} exists — skip", flush=True)
+            continue
+        z = np.load(sf)
+        eps = np.asarray(z["episode"], dtype=np.int64)
+        frs = np.asarray(z["frame_idx"], dtype=np.int64)
+        feats = []
+        for i in range(0, len(eps), args.mini_batch):
+            batch = [(int(e), int(f)) for e, f in
+                     zip(eps[i:i + args.mini_batch], frs[i:i + args.mini_batch])]
+            frames = read_frames(dataset_dir, batch, readers)
+            cache, _ = inv.encode_batch(frames)
+            feats.append(pool_backbone(cache))
+        F = np.concatenate(feats).astype(np.float16)
+        feat_dim = F.shape[1]
+        np.savez(outp, episode=eps, frame_idx=frs, feats=F)
+        n_rows += len(eps)
+        print(f"[feat] {outp.name}: {len(eps)} rows dim={F.shape[1]}", flush=True)
+    out = {"n_rows": int(n_rows), "feat_dim": (int(feat_dim) if feat_dim else None),
+           "n_shards": len(shard_files), "out_dir": str(out_dir)}
+    if args.out:
+        Path(args.out).write_text(json.dumps(out, indent=2))
+    print("[feat] DONE", json.dumps(out), flush=True)
+    return out
+
+
 def read_frames(dataset_dir: Path, batch: list[tuple[int, int]], readers: dict) -> list[dict]:
     keep_eps = {ep for ep, _ in batch}
     _evict_video_readers(readers, keep_eps)
@@ -454,9 +514,22 @@ def main() -> int:
                    help="also store the full 40x132 w* (needed only if pad-check -> full5280)")
     p.add_argument("--out", default=None)
 
+    pf = sub.add_parser("encode-features",
+                        help="attach pooled backbone features to existing shards (v4 head)")
+    pf.add_argument("--model-path", default="/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000")
+    pf.add_argument("--embodiment-tag", default="new_embodiment")
+    pf.add_argument("--device", default="cuda")
+    pf.add_argument("--dataset", default="/home/ubuntu/ur5e_drugsort_obscond")
+    pf.add_argument("--shards", required=True, help="dir of shard_*.npz to re-encode")
+    pf.add_argument("--out-dir", required=True, help="dir for feat_shard_*.npz")
+    pf.add_argument("--mini-batch", type=int, default=16)
+    pf.add_argument("--out", default=None)
+
     args = ap.parse_args()
     if args.mode == "invert-dataset":
         out = mode_invert_dataset(args)
+    elif args.mode == "encode-features":
+        out = mode_encode_features(args)
     else:  # pragma: no cover
         raise SystemExit(f"unknown mode {args.mode}")
     text = json.dumps(out, indent=2)
