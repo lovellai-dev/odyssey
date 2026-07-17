@@ -176,7 +176,7 @@ while [ "$ep_i" -lt "$N_ROLL" ]; do
   ok=0
   for attempt in 1 2; do
     PLANS="$WORK/plan_one.json" OUT="$WORK/roll_out" PORT="$AGENT_PORT" N=1 \
-      N_ACTION_STEPS=8 MAX_TICKS="$MAX_TICKS" \
+      N_ACTION_STEPS=8 MAX_TICKS="$MAX_TICKS" KEEP_RAW=1 \
       PUPPETEER_CORE="$PUP" CHROME="$CHROME" DISPLAY="$DISPLAY" \
       "$NODE" dagger_rollout_browser.js >> "$WORK/rollout_node.log" 2>&1
     rc=$?

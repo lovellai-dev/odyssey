@@ -173,7 +173,11 @@ const RUN_ROLLOUT = async (plan, cfg) => {
 };
 
 (async () => {
-  fs.rmSync(RAW, { recursive: true, force: true }); fs.mkdirSync(RAW, { recursive: true });
+  // KEEP_RAW=1 preserves prior episodes (per-episode driver invocations, Stage C):
+  // the unconditional wipe silently destroyed 19/20 collected episodes when the
+  // driver called this script once per episode.
+  if (process.env.KEEP_RAW !== '1') fs.rmSync(RAW, { recursive: true, force: true });
+  fs.mkdirSync(RAW, { recursive: true });
   const browser = await puppeteer.launch({
     executablePath: CHROME, headless: true, userDataDir: PROFILE, protocolTimeout: 900000,
     env: { ...process.env, DISPLAY: process.env.DISPLAY || ':1' },
