@@ -89,25 +89,22 @@ cube-lift environment.
 
 **Prerequisites:**
 
-> **One-command setup** of the three eval environments (Odyssey core, GR00T
-> server, Isaac Lab) with uv: `bash examples/quickstart-gr00t/setup.sh`. See
-> [`examples/quickstart-gr00t/README.md`](examples/quickstart-gr00t/README.md) for
-> why they're separate venvs by design + the Isaac Sim provisioning. The manual
-> steps below are the step-by-step equivalent.
+> **Run `bash examples/quickstart-gr00t/setup.sh`** — it builds the three eval
+> venvs (Odyssey core, GR00T server, Isaac Lab client transport) with uv. See
+> [`examples/quickstart-gr00t/README.md`](examples/quickstart-gr00t/README.md)
+> for the full walkthrough and why they're separate venvs by design.
 
-1. Install the upstream Isaac-GR00T package — it carries the training entry
-   point (`gr00t.experiment.launch_finetune`) and the demo dataset. Accept
-   NVIDIA's weight license:
-   ```bash
-   git clone https://github.com/NVIDIA/Isaac-GR00T.git /srv/Isaac-GR00T
-   pip install -e /srv/Isaac-GR00T
-   export ISAAC_GR00T_REPO_PATH=/srv/Isaac-GR00T   # resolves the demo dataset
-   ```
-2. For the Isaac Lab evaluation, install Isaac Lab and point Odyssey at its
-   launcher:
-   ```bash
-   export ISAACLAB_PATH=/srv/IsaacLab              # provides isaaclab.sh
-   ```
+**Isaac Sim + Isaac Lab are a separate, heavy precondition** — a large NVIDIA
+Omniverse binary installed by NVIDIA's own tooling, **not** by `setup.sh` (the
+script wires the eval client into it, and skips with a note if it's absent).
+Provision them once following the
+[quickstart-gr00t README](examples/quickstart-gr00t/README.md), then point
+Odyssey at your checkouts:
+
+```bash
+export ISAAC_GR00T_REPO_PATH=/srv/Isaac-GR00T   # GR00T checkout + demo dataset
+export ISAACLAB_PATH=$HOME/IsaacLab             # provides isaaclab.sh
+```
 
 **Run:**
 
@@ -422,6 +419,27 @@ It's near-free: the camera-enabled eval env already renders the frame each step
 for the policy, so capture only adds a list append per step plus one encode per
 episode (offloaded to a thread). Optional knobs: `video_fps` (default 24),
 `video_format` (default `mp4`).
+
+### Choosing the video camera
+
+By default the clip records the **policy's own input frame** (`agentview` at
+256×256) — a view framed for the model, not for humans, so the robot may sit
+partially out of frame. To record from a dedicated, better-framed camera
+*without changing what the policy sees*, set `video_camera`:
+
+```yaml
+    config:
+      capture_video: true
+      video_camera: frontview    # any robosuite camera, e.g. frontview, sideview
+      video_height: 512          # optional, default 512
+      video_width: 512           # optional, default 512
+```
+
+The env then renders both cameras each step — the policy keeps consuming its
+own camera and the MP4 records the other — at the cost of one extra render
+stream per step. When `video_camera` is unset, behavior is exactly the near-free
+default above. Setting it to the policy's own camera raises an error: unset it
+instead to record the policy view.
 
 > **Dependency.** MP4 encoding needs `imageio[ffmpeg]`, which ships with the
 > `[robosuite]` (and `[all]`) extra — no extra install step if you already run

@@ -1,0 +1,86 @@
+name: Watch HF models
+
+# Watches pinned Hugging Face model revisions (see .github/model-pins/models.json)
+# and opens a tracking issue when upstream publishes a new revision, so a silent
+# model bump can't quietly change eval/training behaviour.
+#
+# Dependabot can't do this — models aren't package dependencies. This is the
+# model-side complement to .github/dependabot.yml.
+
+on:
+  schedule:
+    # Weekly, Mondays 06:00 UTC. Cron is UTC-only on GitHub Actions.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check pinned model revisions against Hugging Face
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PIN_FILE=".github/model-pins/models.json"
+
+          # Iterate over each pinned model as a compact JSON object per line.
+          jq -c '.models[]' "$PIN_FILE" | while read -r entry; do
+            id=$(echo "$entry" | jq -r '.id')
+            pinned=$(echo "$entry" | jq -r '.sha')
+
+            api="https://huggingface.co/api/models/${id}"
+            meta=$(curl -sS --fail --max-time 30 "$api")
+            latest=$(echo "$meta" | jq -r '.sha')
+            modified=$(echo "$meta" | jq -r '.lastModified')
+
+            if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+              echo "::warning::Could not read a revision for ${id} from HF — skipping."
+              continue
+            fi
+
+            if [ "$latest" = "$pinned" ]; then
+              echo "OK: ${id} is at pinned revision ${pinned}."
+              continue
+            fi
+
+            echo "DRIFT: ${id} pinned=${pinned} latest=${latest}"
+
+            marker="[model-drift] ${id}"
+            existing=$(gh issue list --state open --search "in:title \"${marker}\"" \
+              --json number --jq 'length')
+
+            if [ "$existing" != "0" ]; then
+              echo "Tracking issue already open for ${id} — not duplicating."
+              continue
+            fi
+
+            body=$(printf '%s\n' \
+              "Upstream published a new revision of \`${id}\` on Hugging Face." \
+              "" \
+              "- Pinned (in ${PIN_FILE}): ${pinned}" \
+              "- Latest on HF main:       ${latest}" \
+              "- Last modified upstream:  ${modified}" \
+              "" \
+              "Model:   https://huggingface.co/${id}" \
+              "Commits: https://huggingface.co/${id}/commits/main" \
+              "" \
+              "To resolve: validate the new revision, then bump the sha for" \
+              "'${id}' in ${PIN_FILE} and commit. Once the pin matches HF again" \
+              "this check goes green and won't reopen. Leave the issue open if" \
+              "you're not ready to move — it won't be duplicated on later runs." \
+              "" \
+              "Filed automatically by .github/workflows/watch-hf-models.yml.")
+
+            gh issue create \
+              --title "${marker}: new revision ${latest:0:12}" \
+              --body "$body" \
+              --assignee SoyGema \
+              --label dependencies
+          done
