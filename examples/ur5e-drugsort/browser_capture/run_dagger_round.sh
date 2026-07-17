@@ -59,7 +59,10 @@ CKPT=/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000
 OBS_WEIGHTS=$BC/percep_weights_browser
 
 export DISPLAY=${DISPLAY:-:1}
-rm -rf "$WORK"; mkdir -p "$WORK"
+# RESUME=1 keeps already-collected rollout episodes (per-episode meta.json is
+# the completion marker) — a Chrome crash never costs more than one episode.
+[ "${RESUME:-0}" = "1" ] || rm -rf "$WORK"
+mkdir -p "$WORK"
 cd "$BC"
 exec >>"$LOG" 2>&1
 echo "" ; echo "#################################################################"
@@ -155,19 +158,39 @@ curl -s --max-time 8 "http://127.0.0.1:$AGENT_PORT/api/groot/health" | grep -q '
 log "stack green (STEERED)"
 
 # ---- 3. steered rollout collection -------------------------------------------------
-log "STEP3 precompute rollout poses (N=$N_ROLL seed=$ROLL_SEED) + steered rollouts"
-"$PYUR5E" precompute_plans.py --xml "$XML" --num-episodes "$N_ROLL" --seed "$ROLL_SEED" \
-  --out "$WORK/plans_roll.json" || fail "precompute-roll"
-PLANS="$WORK/plans_roll.json" OUT="$WORK/roll_out" PORT="$AGENT_PORT" N="$N_ROLL" \
-  N_ACTION_STEPS=8 MAX_TICKS="$MAX_TICKS" \
-  PUPPETEER_CORE="$PUP" CHROME="$CHROME" DISPLAY="$DISPLAY" \
-  "$NODE" dagger_rollout_browser.js > "$WORK/rollout_node.log" 2>&1
-rc=$?
-tail -15 "$WORK/rollout_node.log"
-kill_chrome_pidfile "$WORK/roll_out/rollout_pid.txt"
-[ "$rc" -eq 0 ] || fail "rollout(rc=$rc)"
-NEPS=$(ls -d "$WORK/roll_out/raw"/ep* 2>/dev/null | wc -l)
-[ "$NEPS" -ge 1 ] || fail "no-rollout-episodes"
+log "STEP3 precompute rollout poses (N=$N_ROLL seed=$ROLL_SEED) + steered rollouts (per-episode Chrome)"
+[ -f "$WORK/plans_roll.json" ] || "$PYUR5E" precompute_plans.py --xml "$XML" \
+  --num-episodes "$N_ROLL" --seed "$ROLL_SEED" --out "$WORK/plans_roll.json" || fail "precompute-roll"
+# One Chrome session PER EPISODE: the first full-round attempt died at ep003
+# when a single long session accumulated memory (Target closed). Per-episode
+# sessions bound the blast radius to one episode, enable resume, and reset
+# renderer memory every ~7 min. Retry each episode once with a fresh Chrome.
+ep_i=0
+while [ "$ep_i" -lt "$N_ROLL" ]; do
+  epd=$(printf "ep%03d" "$ep_i")
+  if [ -f "$WORK/roll_out/raw/$epd/meta.json" ]; then
+    log "$epd already collected — skip"
+    ep_i=$((ep_i + 1)); continue
+  fi
+  "$PYUR5E" -c "import json;d=json.load(open('$WORK/plans_roll.json'));json.dump({'plans':[d['plans'][$ep_i]]},open('$WORK/plan_one.json','w'))" || fail "slice-plan-$epd"
+  ok=0
+  for attempt in 1 2; do
+    PLANS="$WORK/plan_one.json" OUT="$WORK/roll_out" PORT="$AGENT_PORT" N=1 \
+      N_ACTION_STEPS=8 MAX_TICKS="$MAX_TICKS" \
+      PUPPETEER_CORE="$PUP" CHROME="$CHROME" DISPLAY="$DISPLAY" \
+      "$NODE" dagger_rollout_browser.js >> "$WORK/rollout_node.log" 2>&1
+    rc=$?
+    kill_chrome_pidfile "$WORK/roll_out/rollout_pid.txt"
+    if [ "$rc" -eq 0 ] && [ -f "$WORK/roll_out/raw/$epd/meta.json" ]; then ok=1; break; fi
+    log "$epd attempt $attempt failed (rc=$rc) — fresh Chrome retry"
+    sleep 5
+  done
+  [ "$ok" = "1" ] || fail "rollout-$epd"
+  log "$epd collected ($(grep -cE '^ROLL' "$WORK/rollout_node.log") total)"
+  ep_i=$((ep_i + 1))
+done
+NEPS=$(ls -d "$WORK/roll_out/raw"/ep*/meta.json 2>/dev/null | wc -l)
+[ "$NEPS" -ge "$N_ROLL" ] || fail "incomplete-collection($NEPS/$N_ROLL)"
 log "collected $NEPS rollout episodes"
 # rollouts done -> the serving stack can come down (frees GPU for inversion)
 cleanup
