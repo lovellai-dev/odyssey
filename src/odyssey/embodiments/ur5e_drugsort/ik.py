@@ -205,7 +205,17 @@ def build_adaptive_phases(
     vial_xyz: Any,
     pocket_xyz: Any,
     home_q: tuple[float, float, float, float, float, float] | None = None,
+    dr: dict[str, Any] | None = None,
 ) -> AdaptivePlan:
+    """... (see original). ``dr`` (optional) domain-randomizes the TRAJECTORY
+    SHAPE — hover clearance, angled final-approach column offset, grasp depth,
+    transport-carry height, and a per-episode velocity scale — to break the
+    single-shape stereotypy that let the base policy shortcut to wrist-pixels
+    only (Phase-1 attention collapse). ``dr=None`` reproduces the deterministic
+    expert exactly (eval poses unchanged). Keys: rng, clearance, approach_xy,
+    grasp_z, carry_z, vel_scale=(lo,hi). Jitters are small enough that IK still
+    converges and the grasp still succeeds (the harness success-filters anyway).
+    """
     """Build an episode-specific phase list by IK-solving each Cartesian anchor.
 
     The Cartesian anchors are derived from ``vial_xyz`` (grasp column) and
@@ -224,26 +234,40 @@ def build_adaptive_phases(
         float(home[3]), float(home[4]), float(home[5]),
     )
 
-    grasp_z = float(vial[2] - GRASP_PINCH_BELOW_VIAL)
-    carry_z = grasp_z + APPROACH_CLEARANCE
+    _rng = dr.get("rng") if dr else None
+
+    def _j(key: str) -> float:  # symmetric uniform jitter, 0 when DR off
+        return float(_rng.uniform(-dr[key], dr[key])) if (dr and _rng is not None and key in dr) else 0.0
+
+    grasp_below = GRASP_PINCH_BELOW_VIAL + _j("grasp_z")
+    clearance = APPROACH_CLEARANCE + _j("clearance")
+    grasp_z = float(vial[2] - grasp_below)
+    carry_z = grasp_z + clearance
     place_z = float(pocket[2] - PLACE_PINCH_BELOW_POCKET)
 
     grasp_xy = (float(vial[0]), float(vial[1]))
     pocket_xy = (float(pocket[0]), float(pocket[1]))
+    # Angled final approach: hover at an OFFSET column, then descend diagonally
+    # to the true grasp column. Transport carries at a jittered height.
+    axo = (_j("approach_xy"), _j("approach_xy"))
+    carry_t_z = carry_z + _j("carry_z")
 
     # Cartesian target per named phase (None => keep the scripted joint target).
     targets: dict[str, np.ndarray | None] = {
         "home": None,
-        "approach": np.array([grasp_xy[0], grasp_xy[1], carry_z]),
+        "approach": np.array([grasp_xy[0] + axo[0], grasp_xy[1] + axo[1], carry_z]),
         "descend": np.array([grasp_xy[0], grasp_xy[1], grasp_z]),
         "close": None,      # grip-only: inherits descend
         "lift": np.array([grasp_xy[0], grasp_xy[1], carry_z]),
-        "transport": np.array([pocket_xy[0], pocket_xy[1], carry_z]),
+        "transport": np.array([pocket_xy[0], pocket_xy[1], carry_t_z]),
         "lower": np.array([pocket_xy[0], pocket_xy[1], place_z]),
         "release": None,    # grip-only: inherits lower
-        "retract": np.array([pocket_xy[0], pocket_xy[1], carry_z]),
+        "retract": np.array([pocket_xy[0], pocket_xy[1], carry_t_z]),
         "home2": None,
     }
+    # Per-episode velocity scale (one multiplier per demo -> varied speed).
+    vscale = (float(_rng.uniform(*dr["vel_scale"]))
+              if (dr and _rng is not None and "vel_scale" in dr) else 1.0)
 
     solves: dict[str, IKSolveInfo] = {}
     new_phases: list[Waypoint] = []
@@ -259,8 +283,18 @@ def build_adaptive_phases(
             info = ik.solve(tgt, ph.q)
             solves[ph.name] = info
             q = info.q
+        # Velocity DR: scale the descend's explicit move_steps AND, under DR,
+        # assign a scaled move_steps to the other MOTION phases (which otherwise
+        # use the harness default ~800) so the WHOLE trajectory's speed varies.
+        _MOTION = {"approach", "lift", "transport", "lower", "retract"}
+        if ph.move_steps is not None:
+            ms = int(round(ph.move_steps * vscale))
+        elif dr is not None and ph.name in _MOTION:
+            ms = int(round(800 * vscale))
+        else:
+            ms = ph.move_steps
         new_phases.append(
-            Waypoint(name=ph.name, q=q, grip=ph.grip, hold=ph.hold, move_steps=ph.move_steps)
+            Waypoint(name=ph.name, q=q, grip=ph.grip, hold=ph.hold, move_steps=ms)
         )
         prev_q = q
 

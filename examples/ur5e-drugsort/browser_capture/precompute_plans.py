@@ -87,6 +87,15 @@ def main() -> int:
     ap.add_argument("--area-y", type=float, default=0.07, help="vial y randomisation half-range (m)")
     ap.add_argument("--yaw-jitter", type=float, default=0.08, help="vial yaw randomisation half-range (rad)")
     ap.add_argument("--seed", type=int, default=0)
+    # Trajectory-shape DR (opt-in; for diverse SFT data, NOT for eval poses)
+    ap.add_argument("--randomize", action="store_true",
+                    help="domain-randomize the expert trajectory SHAPE (diverse SFT data)")
+    ap.add_argument("--dr-clearance", type=float, default=0.04, help="hover-clearance jitter (m)")
+    ap.add_argument("--dr-approach-xy", type=float, default=0.03, help="angled-approach column offset (m)")
+    ap.add_argument("--dr-grasp-z", type=float, default=0.003, help="grasp-depth jitter (m)")
+    ap.add_argument("--dr-carry-z", type=float, default=0.03, help="transport-carry-height jitter (m)")
+    ap.add_argument("--dr-vel-lo", type=float, default=0.7, help="min per-episode velocity scale")
+    ap.add_argument("--dr-vel-hi", type=float, default=1.4, help="max per-episode velocity scale")
     args = ap.parse_args()
 
     import mujoco as mj
@@ -129,7 +138,16 @@ def main() -> int:
         vial_qpos = [float(data.qpos[vq + i]) for i in range(7)]
         vial_xyz = np.array(data.xpos[idx["vial_body"]], dtype=np.float64)
         pocket_xyz = np.array(data.site_xpos[idx["pocket_site"]], dtype=np.float64)
-        plan = build_adaptive_phases(ik, vial_xyz=vial_xyz, pocket_xyz=pocket_xyz, home_q=home_q)
+        # Trajectory-shape domain randomization (opt-in): breaks the single-shape
+        # stereotypy so the SFT base must actually use the target/scene rather
+        # than memorize one wrist-pixels->action mapping (the attention collapse).
+        dr = None
+        if args.randomize and not nominal:
+            dr = {"rng": rng, "clearance": args.dr_clearance,
+                  "approach_xy": args.dr_approach_xy, "grasp_z": args.dr_grasp_z,
+                  "carry_z": args.dr_carry_z, "vel_scale": (args.dr_vel_lo, args.dr_vel_hi)}
+        plan = build_adaptive_phases(ik, vial_xyz=vial_xyz, pocket_xyz=pocket_xyz,
+                                     home_q=home_q, dr=dr)
 
         plans.append({
             "episode": ep, "nominal": nominal,
