@@ -115,6 +115,53 @@ def _default_env_factory(benchmark_name: str, robosuite_robot: str | None) -> An
     return robosuite.make(**kwargs)
 
 
+def _resolve_cameras(cfg: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    """Compute the env's camera kwargs and the video-capture obs key.
+
+    Opt-in ``video_camera`` (with ``video_height``/``video_width``, default 512)
+    adds a second render camera dedicated to the rollout video, decoupled from
+    the policy's camera. Unset — or with ``capture_video`` off, where it would
+    be pure render cost — the kwargs and capture key (None) match the near-free
+    path: the video reuses the policy frame.
+    """
+    camera_names = cfg.get("camera_names", "agentview")
+    camera_height = cfg.get("camera_height", 256)
+    camera_width = cfg.get("camera_width", 256)
+    video_camera = cfg.get("video_camera")
+    if video_camera is None or not cfg.get("capture_video", False):
+        return (
+            {
+                "camera_names": camera_names,
+                "camera_heights": camera_height,
+                "camera_widths": camera_width,
+            },
+            None,
+        )
+    video_camera = str(video_camera)
+    policy_cameras = (
+        [camera_names] if isinstance(camera_names, str) else list(camera_names)
+    )
+    if video_camera in policy_cameras:
+        raise ValueError(
+            f"video_camera {video_camera!r} is already a policy camera — robosuite "
+            "renders each camera at a single resolution, so the video would just be "
+            "the policy frame. Unset video_camera to record the policy view, or "
+            "pick a different camera (e.g. 'frontview')."
+        )
+
+    def _per_camera(value: Any) -> list[Any]:
+        return list(value) if isinstance(value, list | tuple) else [value] * len(policy_cameras)
+
+    return (
+        {
+            "camera_names": [*policy_cameras, video_camera],
+            "camera_heights": [*_per_camera(camera_height), int(cfg.get("video_height", 512))],
+            "camera_widths": [*_per_camera(camera_width), int(cfg.get("video_width", 512))],
+        },
+        f"{video_camera}_image",
+    )
+
+
 def _make_eval_env(
     benchmark_name: str,
     robosuite_robot: str | None,
@@ -128,18 +175,13 @@ def _make_eval_env(
             "Robosuite eval requires the 'robosuite' extra. "
             "Install with: pip install 'lovell-odyssey[robosuite]'"
         ) from e
-    cfg = config or {}
-    camera_names = cfg.get("camera_names", "agentview")
-    camera_height = cfg.get("camera_height", 256)
-    camera_width = cfg.get("camera_width", 256)
+    camera_kwargs, _ = _resolve_cameras(config or {})
     kwargs: dict[str, Any] = {
         "env_name": benchmark_name,
         "has_renderer": False,
         "has_offscreen_renderer": True,
         "use_camera_obs": True,
-        "camera_names": camera_names,
-        "camera_heights": camera_height,
-        "camera_widths": camera_width,
+        **camera_kwargs,
     }
     if robosuite_robot is not None:
         kwargs["robots"] = robosuite_robot
@@ -198,6 +240,10 @@ class RobosuiteRunner(Runner):
 
         cfg = spec.config or {}
         image_key = cfg.get("image_key", "agentview_image")
+        # An opt-in `video_camera` records the rollout from its own camera;
+        # unset, the video reuses the policy frame (capture_key == image_key).
+        _, video_key = _resolve_cameras(cfg)
+        capture_key = video_key or image_key
         # Opt-in rollout video. The camera-enabled eval env already renders the
         # frame each step (the policy uses it), so capture is near-free: a list
         # append per step plus one mp4 encode per episode, offloaded to a thread.
@@ -311,12 +357,17 @@ class RobosuiteRunner(Runner):
                 if runtime:
                     image = _extract_image(obs, image_key)
                     if capture_video:
-                        _capture_frame(frames, image)
+                        _capture_frame(
+                            frames,
+                            image
+                            if capture_key == image_key
+                            else _extract_image(obs, capture_key),
+                        )
                     action = runtime.get_action(image)
                 else:
                     assert policy is not None
                     if capture_video:
-                        _capture_frame(frames, _extract_image(obs, image_key))
+                        _capture_frame(frames, _extract_image(obs, capture_key))
                     action = policy(obs if isinstance(obs, dict) else {"observation": obs})
 
                 step_result = env.step(action)

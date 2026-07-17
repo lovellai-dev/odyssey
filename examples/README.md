@@ -5,9 +5,24 @@
 | `quickstart-openvla/` | OpenVLA 7B LoRA fine-tune on Bridge V2 + Robosuite Lift eval. | 24 GB GPU |
 | `quickstart-gr00t/` | GR00T N1.7 3B fine-tune on the Isaac-GR00T demo set + Isaac Lab eval. | 24 GB+ GPU for training; eval mock-only until the Isaac Lab runner lands |
 | `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
+| `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
 
 More quickstarts (Octo, Pi0.5) arrive in later releases. See the
 publication plan for the cadence.
+
+## LIBERO eval (`franka-libero/`)
+
+An **eval-only** example: it scores an already-fine-tuned, published OpenVLA-LIBERO
+checkpoint (no training, no dataset on disk) so you can watch a VLA pilot actually
+succeed in simulation. Two missions ship — single-agent (`mission.yaml`) and
+multi-agent with a Gemma planner (`mission-multiagent.yaml`).
+
+LIBERO's packaging conflicts with the OpenVLA stack (older `robosuite`, a
+`transformers` pin, a namespace package, and a C-built `egl_probe`), so it installs
+into a **dedicated `env_pilot_libero` venv** rather than the validated `env_pilot`.
+The [`franka-libero/` README](franka-libero/README.md) has the full validated
+setup, run commands, and a dependency-gotcha table; `franka-libero/setup.sh`
+automates it.
 
 ## Validating and mock-running an example
 
