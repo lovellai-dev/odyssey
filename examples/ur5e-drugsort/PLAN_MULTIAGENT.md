@@ -250,6 +250,22 @@ DAgger. Also: v3 stuckness feature falsified as the corrective-fit fix
 (dagger-source val MSE floor ~0.09 across 6 configs -> stateful-relabeler
 target noise is the standing hypothesis).
 
+**2026-07-17 (later) — POWERED VERDICT (45 eps, 3 fixed-seed blocks, commit
+769f380..b0d8594): closure 40/45 = 88.9% CI [76.5, 95.2]; lift 0/45, CI upper
+bound 7.9%; pad median 4.4 cm.** The selection stack solves approach+closure
+robustly across the task distribution; capture is a sub-8% tail event at
+current candidate quality. Eight steering configs pinned at the ~0.08-0.09
+corrective-fit floor -> surviving diagnosis: NOISE TARGETS ARE IMAGE-
+CONDITIONED (the inverted w* depends on frames the 15-d steering input cannot
+see; base targets fit at 0.008 because the image-conditioned field already
+flows toward expert actions there). Shaping variants (hard/graded centering,
+graded contact cap, CEM-at-grasp) were statistically indistinguishable at
+n=15 and are now config pins. NEXT: image-conditioned steering head v2
+(pooled backbone features + low-dim -> noise; features already computed
+in-process by the best-of-N service; ~1-2 GPU-h re-encoding pass), then the
+same 3-block powered protocol; escalation if the lift CI stays on zero = the
+roadmap's SFT decision gate.
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
