@@ -33,8 +33,13 @@ import numpy as np
 @dataclass
 class Limits:
     """Cell safety envelope (defaults sized for the aseptipack cell)."""
-    workspace_lo: np.ndarray = field(default_factory=lambda: np.array([-1.05, -0.65, 0.02]))
-    workspace_hi: np.ndarray = field(default_factory=lambda: np.array([0.25, 0.65, 0.90]))
+    # Workspace box MEASURED from the expert's FK'd pinch envelope (base frame,
+    # 2026-07-17): x [-0.504, 0.503], y [-0.492, 0.476], z [0.205, 0.342];
+    # box = envelope + 0.15 m margin. (The first hand-guessed box capped x at
+    # +0.25 — inside the task's own transport arc — and rejected ~90% of real
+    # candidates including the pure steering mean.)
+    workspace_lo: np.ndarray = field(default_factory=lambda: np.array([-0.66, -0.65, 0.05]))
+    workspace_hi: np.ndarray = field(default_factory=lambda: np.array([0.66, 0.63, 0.90]))
     table_z: float = 0.16                 # min pinch height outside the descend cone
     descend_cone_xy: float = 0.06         # radius around the target where descent is allowed
     descend_floor_z: float = 0.015        # min pinch height inside the cone
