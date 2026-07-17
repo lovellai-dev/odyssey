@@ -104,3 +104,13 @@ def test_grip_release_allowed_in_place_phase():
                           vial=VIAL, grasp_target=TGT, pocket=[0.39, -0.18, 0.21],
                           phase=3, grasped=True)
     assert idx == 0 and "grip_hold" not in (rep["cbf_rejections"] or {})
+
+
+def test_make_cem_seeds_elite_preserved():
+    elite = np.random.default_rng(1).standard_normal((40, 132)).astype(np.float32)
+    seeds = bon.make_cem_seeds(elite, 8, 0.2, rng=np.random.default_rng(2))
+    assert seeds.shape == (8, 40, 132)
+    assert np.array_equal(seeds[0], elite)          # slot 0 = the elite, exactly
+    assert not np.array_equal(seeds[1], elite)      # others are jittered
+    z = bon.make_cem_seeds(elite, 4, 0.0)
+    assert np.allclose(z, elite[None])              # sigma 0 -> pure elite

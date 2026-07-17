@@ -35,7 +35,12 @@ REACH, GRASP, TRANSPORT, PLACE = 0, 1, 2, 3
 # Weights/geometry (metres). HOVER lifts the transport goal above the pocket so
 # transport's V=0 sits at the pre-place hover, not inside the rack wall.
 GRASP_PINCH_W = 0.5          # keep-pinch-on-target term inside the grasp phase
-GRASP_ALIGN_R = 0.012        # closing earns credit ONLY within this centering radius
+GRASP_ALIGN_R = 0.012        # centering scale for the graded closure credit
+# Closure-credit mode: "graded" (centering-weighted) or "off" (original V —
+# closing always earns full credit). A config knob, not a code state: the three
+# n=15 shaping variants were statistically indistinguishable, so powered runs
+# pin the mode explicitly instead of burying it in commits.
+CENTERING_MODE = "graded"
 POCKET_HOVER_M = 0.06
 COMPLETION_BONUS = {GRASP: 1.0, TRANSPORT: 0.5, PLACE: 2.0}   # paid on ENTERING
 ALPHA_DEFAULT = 0.5          # exponential-decrease rate for the margin check
@@ -64,8 +69,11 @@ def clf_value(s: dict[str, Any]) -> float | None:
         # earned credit and closures fell 13/15 -> 3/9); the graded weight
         # keeps "center more, earn more" strictly optimal while letting
         # near-centered closes make progress.
-        w_align = GRASP_ALIGN_R ** 2 / (GRASP_ALIGN_R ** 2 + dist2)
-        close_term = 1.0 - (1.0 - open_frac ** 2) * w_align
+        if CENTERING_MODE == "off":
+            close_term = open_frac ** 2
+        else:
+            w_align = GRASP_ALIGN_R ** 2 / (GRASP_ALIGN_R ** 2 + dist2)
+            close_term = 1.0 - (1.0 - open_frac ** 2) * w_align
         return float(close_term + GRASP_PINCH_W * dist2)
     if phase == TRANSPORT:
         if not bool(s.get("grasped")):

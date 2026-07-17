@@ -431,6 +431,10 @@ class ConditioningService:
                     # the held vial at the rack, not at its own pickup point.
                     "pocket": [float(x) for x in os.environ.get(
                         "STEER_POCKET", "-0.39,0.174,0.228").split(",")],
+                    # Powered-run config pins (defaults = current shaping)
+                    "clf_centering": os.environ.get("STEER_CLF_CENTERING", "graded"),
+                    "cbf_flat_vial_cap": os.environ.get("STEER_CBF_FLAT", "0") == "1",
+                    "cem_rounds": int(os.environ.get("STEER_CEM_ROUNDS", "1")),
                 }
             print(f"[steer] n={self._steering.n_attached} sid={sid} "
                   f"phase={phase}({PHASE_NAMES[phase]}) grip={state[6]:.3f}", flush=True)

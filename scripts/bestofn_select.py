@@ -44,6 +44,22 @@ def build_candidate_states(pinch_traj: np.ndarray, grip_traj: np.ndarray,
     return out
 
 
+def make_cem_seeds(elite: np.ndarray, k: int, sigma: float,
+                   rng: np.random.Generator | None = None) -> np.ndarray:
+    """CEM refinement seeds: the elite itself + (k-1) samples around it.
+
+    Round-2 of iterated selection at grasp: resample around round-1's winner at
+    half the exploration sigma, so search FOCUSES where the image-conditioned
+    sampler already showed good behavior. Deterministic slot 0 = the elite, so
+    a refinement round can never do worse than its starting point.
+    """
+    rng = rng or np.random.default_rng()
+    seeds = np.repeat(np.asarray(elite, np.float32)[None], k, axis=0)
+    if k > 1 and sigma > 0:
+        seeds[1:] += (sigma * rng.standard_normal(seeds[1:].shape)).astype(np.float32)
+    return seeds
+
+
 def hold_chunk(q_now: np.ndarray, grip_now: float, horizon: int = 16
                ) -> tuple[np.ndarray, np.ndarray]:
     """The always-feasible fallback: hold pose + hold grip for the horizon."""

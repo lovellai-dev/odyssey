@@ -123,22 +123,58 @@ class BestOfNService:
             arm = np.asarray(phys["single_arm"], dtype=np.float32)[:, :REAL_STEPS, :]   # (K,16,6)
             grip = np.asarray(phys["gripper"], dtype=np.float32)[:, :REAL_STEPS, 0]     # (K,16)
 
-            chosen, report = 0, {"k": K, "selection": "single"}
-            if K > 1:
-                pinch_flat = self._fk_batch(arm.reshape(-1, 6)).reshape(K, REAL_STEPS, 3)
+            # Per-request shaping config (powered runs pin these explicitly)
+            import clf_reward_ur5e as clfmod
+            clfmod.CENTERING_MODE = str(cfg.get("clf_centering", "graded"))
+            lim = self.cbf.Limits()
+            if bool(cfg.get("cbf_flat_vial_cap", False)):
+                lim.vial_step_floor = lim.vial_near_step_max   # flat (run-1) cap
+
+            def _select(arm_c, grip_c):
+                Kc = len(arm_c)
+                pinch_flat = self._fk_batch(arm_c.reshape(-1, 6)).reshape(Kc, REAL_STEPS, 3)
                 fk_lut = {}
-                for k in range(K):
+                for kk in range(Kc):
                     for t in range(REAL_STEPS):
-                        fk_lut[arm[k, t].tobytes()] = pinch_flat[k, t]
-                idx, report = self.bon.select(
-                    arm, grip, lambda q6: fk_lut[np.asarray(q6, np.float32).tobytes()],
+                        fk_lut[arm_c[kk, t].tobytes()] = pinch_flat[kk, t]
+                return self.bon.select(
+                    arm_c, grip_c,
+                    lambda q6: fk_lut[np.asarray(q6, np.float32).tobytes()],
                     vial=cfg.get("vial") or state10[7:10],
                     grasp_target=cfg.get("grasp_target") or state10[7:10],
                     pocket=cfg.get("pocket"),
                     phase=int(cfg.get("phase", 0)),
                     grasped=bool(cfg.get("grasped", False)),
                     exec_horizon=int(cfg.get("exec_horizon", 8)),
+                    lim=lim,
                 )
+
+            chosen, report = 0, {"k": K, "selection": "single"}
+            if K > 1:
+                idx, report = _select(arm, grip)
+                # CEM refinement at GRASP phase: resample around round-1's
+                # winner at sigma/2, decode, re-select; keep the better round.
+                cem_rounds = int(cfg.get("cem_rounds", 1))
+                if (idx is not None and cem_rounds > 1
+                        and int(cfg.get("phase", 0)) == 1):
+                    r1_reward = (report.get("chosen_clf") or {}).get("total_reward", 0.0)
+                    seeds2 = self.bon.make_cem_seeds(seeds[idx], K, sigma * 0.5)
+                    w2 = torch.as_tensor(seeds2, dtype=torch.float32, device=self.device)
+                    with torch.no_grad():
+                        x2 = self._sample(w2, vfn, self.flow.n_steps, self.flow.dt)
+                    phys2 = self.flow.decode_to_physical(x2)
+                    arm2 = np.asarray(phys2["single_arm"], dtype=np.float32)[:, :REAL_STEPS, :]
+                    grip2 = np.asarray(phys2["gripper"], dtype=np.float32)[:, :REAL_STEPS, 0]
+                    idx2, rep2 = _select(arm2, grip2)
+                    r2_reward = (rep2.get("chosen_clf") or {}).get("total_reward", -1e9) \
+                        if idx2 is not None else -1e9
+                    if idx2 is not None and r2_reward > r1_reward:
+                        arm, grip, idx, report = arm2, grip2, idx2, rep2
+                        report["cem"] = {"rounds": 2, "used_round": 2,
+                                         "r1_reward": r1_reward, "r2_reward": r2_reward}
+                    else:
+                        report["cem"] = {"rounds": 2, "used_round": 1,
+                                         "r1_reward": r1_reward, "r2_reward": r2_reward}
                 for name, cnt in (report.get("cbf_rejections") or {}).items():
                     self.rejection_hist[name] = self.rejection_hist.get(name, 0) + int(cnt)
                 if self.n_queries % 25 == 0:
