@@ -235,6 +235,21 @@ launched**: steered rollouts (fresh seed-4242 plans) → IK-expert relabel →
 invert → aggregate (dagger-boosted) → retrain → gate → A/B, mini-round smoke
 first.
 
+**2026-07-17 — FIRST LIFT (best-of-N R2, commit fd17e2e..5dab103):** the
+selection-first pivot (16 candidates around the v0.2 steering mean, CBF filter,
+CLF rank, HOLD fallback) produced the program's first grasp-and-lift: ep001
+lifted 11.4 cm (expert height) after a 0.2 cm approach. Full eval 0/15 success
+but 1 lift, **13/15 full grip closures** (v0.2: 2 mistimed), all pads <=4.3 cm,
+holds ~3%. Three telemetry-driven CBF calibration cycles preceded it (caps ->
+1.5x expert p99; executed-horizon safety; decay only on state-distance
+barriers; workspace box MEASURED from the expert pinch envelope — the guessed
+box bisected the transport arc). New dominant failure: contact-without-capture
+(6 vial strikes during closing). Next: capture refinement — graded near-vial
+speed barrier, precision-weighted GRASP CLF, adaptive K, stateless-relabel
+DAgger. Also: v3 stuckness feature falsified as the corrective-fit fix
+(dagger-source val MSE floor ~0.09 across 6 configs -> stateful-relabeler
+target noise is the standing hypothesis).
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
