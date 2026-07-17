@@ -408,6 +408,22 @@ class ConditioningService:
         if self._steering is not None:
             noise, phase = self._steering.init_noise(sid, state, tgt)
             payload["init_noise_b64"], payload["init_noise_shape"] = encode_init_noise(noise)
+            # R2 best-of-N passthrough: when STEER_BESTOFN_K > 1 the downstream
+            # service samples K jittered candidates around this steering mean and
+            # selects via CBF-filter + CLF-rank. grasped = the phase machine's
+            # closure latch for this session (drives the CBF vial-protection
+            # exemption and the CLF transport/place gates).
+            k_bon = int(os.environ.get("STEER_BESTOFN_K", "1"))
+            if k_bon > 1:
+                sess = self._steering.phase_inf._sess.get(sid, {})
+                payload["bestofn"] = {
+                    "k": k_bon,
+                    "sigma": float(os.environ.get("STEER_BESTOFN_SIGMA", "0.35")),
+                    "phase": int(phase),
+                    "grasped": bool(sess.get("was_closed", False)),
+                    "vial": [float(x) for x in tgt],
+                    "grasp_target": [float(x) for x in tgt],
+                }
             print(f"[steer] n={self._steering.n_attached} sid={sid} "
                   f"phase={phase}({PHASE_NAMES[phase]}) grip={state[6]:.3f}", flush=True)
         if self._n <= 3 or self._n % 200 == 0:
