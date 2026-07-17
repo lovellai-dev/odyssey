@@ -285,6 +285,24 @@ happen -> first POST-GRASP transport/place states to harvest); (3)
 transport/place refinement (2 successes already exercise it). Then the demo
 HUD (Observer marker, safety-certificate ticker, Specialist panel).
 
+**2026-07-17 (CBF re-tune, commit f779d3d) — HOLDS+CLOSURES FIXED, SUCCESS
+UNCHANGED (honest).** The v4 run's 32% HOLD rate traced to two over-firing
+barriers (vial_protect 30k: flat 0.022 cap throttled the whole 10cm zone;
+table_clear:decay 16k: criminalized the legitimate fast descent). Measured
+fix: vial_protect TAPERS from the global cap (0.16) at the edge to a 0.02
+contact floor (calibrated to the v4 near-vial profile — v4 mean contact max
+0.015); table_clear dropped from DECAY_BARRIERS. Re-tuned 45-ep powered:
+holds 32%->1.1%, closures 47%->88.9% [76.5,95.2] — both decisively fixed. BUT
+success 4.4% [1.2,14.8] IDENTICAL to pre-tune, lift 8.9% [3.5,20.7] statistically
+unchanged (overlapping CIs). LESSON: the 32% holds were a real inefficiency but
+NOT the success bottleneck — my "unblock->more success" hypothesis FALSIFIED.
+The funnel is now 89% closure -> 9% lift -> 4% seat: the loss is CAPTURE
+SECURITY (close != secure) and lift->seat. This routes the next work with
+evidence: DAgger round 2 on v4-VISITED states (running — relabels v4 grasp-slip
+states in the image-conditioned space + first post-grasp data) attacks capture
+security; transport/place refine attacks lift->seat. The tapered CBF is the
+config of record going forward (removes the hold/closure confound).
+
 ## Single biggest risk
 
 If Phase 1 shows obs varies, actions vary at correct scale, and it still fails,
