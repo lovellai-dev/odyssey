@@ -33,6 +33,7 @@ import argparse
 import base64
 import io
 import json
+import os
 import sys
 import threading
 import urllib.request
@@ -78,7 +79,25 @@ class BestOfNService:
         self.n_queries = 0
         self.n_fallback_hold = 0
         self.rejection_hist: dict[str, int] = {}   # aggregated CBF rejections
-        print(f"[bestofn] ready | ckpt={model_path} fk={self.fk_url}", flush=True)
+        # L5 lever — bounded final-centimeter visual servo (STEER_SERVO=1, opt-in).
+        # OFF => the V4 selection path is byte-identical (no "servo" key emitted).
+        self.servo_enabled = os.environ.get("STEER_SERVO", "0") == "1"
+        self.servo = None
+        self.servo_kwargs: dict = {}
+        self.n_servo_applied = 0
+        if self.servo_enabled:
+            import servo_ur5e as servo
+            self.servo = servo
+            self.servo_kwargs = dict(
+                radius=float(os.environ.get("STEER_SERVO_RADIUS", "0.08")),
+                gain=float(os.environ.get("STEER_SERVO_GAIN", "0.8")),
+                damping=float(os.environ.get("STEER_SERVO_DAMPING", "0.08")),
+                bound=float(os.environ.get("STEER_SERVO_BOUND", "0.08")),
+                max_dominance=float(os.environ.get("STEER_SERVO_DOMINANCE", "0.5")),
+            )
+            print(f"[bestofn] L5 servo ENABLED | {self.servo_kwargs}", flush=True)
+        print(f"[bestofn] ready | ckpt={model_path} fk={self.fk_url} "
+              f"servo={'on' if self.servo_enabled else 'off'}", flush=True)
 
     # -- helpers ---------------------------------------------------------------
     @staticmethod
@@ -216,14 +235,39 @@ class BestOfNService:
                     chosen = int(idx)
 
             self.n_queries += 1
-            return {
-                "q": [float(v) for v in arm[chosen, 0]],
+
+            # L5 — bounded final-centimeter visual servo. Composed onto GR00T's
+            # ALREADY-SELECTED chunk (arm dims only; grip untouched), gated to
+            # REACH/GRASP within a small radius, dominance-capped so GR00T owns
+            # the majority of motion, and re-checked through the SAME CBF filter.
+            # When STEER_SERVO is off, `chosen_arm` is exactly `arm[chosen]` and
+            # no "servo" key is added => the response is byte-identical to V4.
+            chosen_arm = arm[chosen]
+            servo_report = None
+            if self.servo_enabled:
+                tgt = cfg.get("grasp_target") or cfg.get("vial")
+                if tgt is not None:
+                    corrected, servo_report = self.servo.servo_correction(
+                        chosen_arm, self._fk_batch, tgt,
+                        int(cfg.get("phase", 0)), bool(cfg.get("grasped", False)),
+                        lim, exec_horizon=int(cfg.get("exec_horizon", 8)),
+                        **self.servo_kwargs,
+                    )
+                    chosen_arm = corrected
+                    if servo_report.get("applied"):
+                        self.n_servo_applied += 1
+
+            out = {
+                "q": [float(v) for v in chosen_arm[0]],
                 "grip": float(np.clip(grip[chosen, 0], 0.0, 1.0)),
-                "chunk_q": [[float(v) for v in row] for row in arm[chosen]],
+                "chunk_q": [[float(v) for v in row] for row in chosen_arm],
                 "chunk_grip": [float(np.clip(g, 0.0, 1.0)) for g in grip[chosen]],
                 "bestofn": report,
                 "steer_head": ("v4" if steer_head_used else None),
             }
+            if self.servo_enabled:
+                out["servo"] = servo_report
+            return out
 
 
 def main() -> int:
