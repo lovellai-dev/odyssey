@@ -33,6 +33,10 @@ V4=${V4:-0}
 # uses this to measure the bare-base funnel. Default 0 keeps the pinned config
 # byte-for-byte (backward compatible).
 BARE=${BARE:-0}
+# STEER_SERVO=1 -> the best-of-N SERVICE composes the L5 bounded final-cm visual
+# servo onto its selected chunk (arm dims only). Default 0 keeps the served
+# response byte-identical to the current V4 path (backward compatible).
+STEER_SERVO=${STEER_SERVO:-0}
 SUF=""; [ "$V4" = "1" ] && SUF="_v4"
 WORK=$HOME/powered_eval$SUF
 LOG=$HOME/powered_eval$SUF.log
@@ -86,7 +90,7 @@ fail(){
 }
 trap 'fail "signal"' TERM INT HUP
 
-log "START pid=$$ (3x15 blocks; config: centering=off v4-tapered-CBF K=16 sigma=0.25 cem=2)"
+log "START pid=$$ (3x15 blocks; config: centering=off v4-tapered-CBF K=16 sigma=0.25 cem=2; servo=$STEER_SERVO)"
 echo "POWERED_EVAL PID=$$"
 
 # wait (<=1h) for the stateless-dagger gates to release the GPU. SKIP_GPU_WAIT=1
@@ -114,10 +118,12 @@ log "STEP1 deploy bestofn stack"
 scp -q -o StrictHostKeyChecking=no "$ODY/scripts/serve_groot_bestofn.py" \
   "$ODY/scripts/serve_fk_ur5e.py" "$ODY/scripts/bestofn_select.py" \
   "$ODY/scripts/clf_reward_ur5e.py" "$ODY/scripts/cbf_constraints_ur5e.py" \
+  "$ODY/scripts/servo_ur5e.py" \
   "$ODY/scripts/probe_flow_inversion_groot.py" \
   vm_deploy_bestofn.sh "$VM:/home/ubuntu/" || fail "scp"
 V4NET=""; [ "$V4" = "1" ] && V4NET=/home/ubuntu/steering_net_v4.npz
-$SSH "$VM" "bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT $V4NET" || fail "vm-deploy"
+# Forward STEER_SERVO so the VM-side service launches with the L5 servo on/off.
+$SSH "$VM" "STEER_SERVO=$STEER_SERVO bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT $V4NET" || fail "vm-deploy"
 $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$HTTP_PORT:127.0.0.1:$HTTP_PORT "$VM" || fail "tunnel"
 for i in $(seq 1 30); do curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"ok": *true' && break; sleep 5; done
 curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"bestofn": *true' || fail "bestofn-health"

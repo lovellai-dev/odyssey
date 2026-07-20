@@ -308,3 +308,57 @@ def test_execute_wired_l1_launches_driver():
     launches = [e for e in eff if e[0] == "launch"]
     assert st2["phase"] == "execute" and launches
     assert launches[0][1] == "run_l1_steering"
+
+
+# ---------------------------------------------------------------------------
+# L5 servo lever (serving-time bounded final-cm visual servo)
+# ---------------------------------------------------------------------------
+def test_l5_candidate_config_is_servo_mode():
+    st = rl.default_state()
+    st["current_best"]["policy_ckpt"] = "/vm/dr/checkpoint-15000"
+    cfg = rl._lever_candidate_config("L5_servo", st)
+    assert cfg["mode"] == "servo"
+    assert cfg["policy_ckpt"] == "/vm/dr/checkpoint-15000"
+    # L2 must stay a distinct selection-config lever (not folded into servo)
+    assert rl._lever_candidate_config("L2_selection", st)["mode"] == "selection"
+
+
+def test_l5_execute_launches_run_l5_servo():
+    # L5 is now wired -> execute LAUNCHES run_l5_servo, does not block
+    st = rl.default_state()
+    st["phase"] = "execute"
+    st["pending_lever"] = "L5_servo"
+    st["candidate"] = {"config": {"policy_ckpt": "/x/dr/checkpoint-15000", "mode": "servo"}}
+    st2, eff = rl.advance(st, {"driver_status": None})
+    launches = [e for e in eff if e[0] == "launch"]
+    assert st2["phase"] == "execute" and launches
+    assert launches[0][1] == "run_l5_servo"
+
+
+def test_l5_driver_wired_in_table():
+    assert rl.LEVER_DRIVER["L5_servo"] == "run_l5_servo"
+
+
+def test_servo_mode_eval_env_sets_steer_servo():
+    # the candidate eval for mode "servo" must serve with V4=1 AND STEER_SERVO=1
+    env = rl._eval_env({"policy_ckpt": "/vm/ckpt", "mode": "servo"})
+    assert env["V4"] == "1" and env["BARE"] == "0"
+    assert env["STEER_SERVO"] == "1"
+
+
+def test_v4_and_selection_eval_env_leave_servo_off():
+    # every non-servo mode must keep STEER_SERVO off so V4/L1 evals are unchanged
+    for mode in ("v4", "selection"):
+        env = rl._eval_env({"policy_ckpt": "/vm/ckpt", "mode": mode})
+        assert env["V4"] == "1"
+        assert env["STEER_SERVO"] == "0"
+    bare = rl._eval_env({"policy_ckpt": "/vm/ckpt", "mode": "bare"})
+    assert bare["V4"] == "0" and bare.get("STEER_SERVO", "0") != "1"
+
+
+def test_l5_driver_spec_marker_and_script():
+    spec = rl._driver_spec("run_l5_servo", {"policy_ckpt": "/vm/ckpt", "mode": "servo"})
+    assert spec["marker_done"] == "L5_SERVO DONE"
+    assert spec["marker_fail"] == "L5_SERVO FAILED"
+    assert spec["cmd"][0] == "bash" and spec["cmd"][1].endswith("run_l5_servo.sh")
+    assert spec["env"].get("CKPT_OVERRIDE") == "/vm/ckpt"

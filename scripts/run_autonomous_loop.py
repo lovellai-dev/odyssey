@@ -74,7 +74,7 @@ LEVER_DRIVER: dict[str, str | None] = {
     "L2_selection": None,       # lever_pending — K/sigma/CEM config sweep (eval itself is best-of-N)
     "L3_dagger": None,          # lever_pending — v4-visited DAgger round
     "L4_distill": None,         # lever_pending
-    "L5_servo": None,           # lever_pending
+    "L5_servo": "run_l5_servo",  # WIRED — enable the bounded final-cm visual servo (serving-time)
     "L6_place": None,           # lever_pending
 }
 
@@ -206,8 +206,12 @@ def _lever_candidate_config(lever: str, state: dict[str, Any]) -> dict[str, Any]
         return {"policy_ckpt": ckpt, "mode": "bare"}
     if lever == "L1_steering":
         return {"policy_ckpt": ckpt, "mode": "v4"}
-    if lever in ("L2_selection", "L5_servo"):
+    if lever == "L2_selection":
         return {"policy_ckpt": ckpt, "mode": "selection"}
+    if lever == "L5_servo":
+        # servo is a serving-time lever: same V4 best-of-N eval, but the service
+        # composes the bounded final-cm correction (STEER_SERVO=1 in _eval_env).
+        return {"policy_ckpt": ckpt, "mode": "servo"}
     return {"policy_ckpt": ckpt, "mode": "v4"}
 
 
@@ -450,9 +454,12 @@ def _eval_env(cfg: dict[str, Any]) -> dict[str, str]:
     env["RESUME"] = "1"            # keep finished blocks across infra hiccups
     if cfg.get("policy_ckpt"):
         env["CKPT_OVERRIDE"] = cfg["policy_ckpt"]
-    if mode in ("v4", "selection"):
+    if mode in ("v4", "selection", "servo"):
         env["V4"] = "1"
         env["BARE"] = "0"
+        # L5: same V4 best-of-N serving, plus the bounded final-cm visual servo
+        # composed onto the selected chunk inside the service.
+        env["STEER_SERVO"] = "1" if mode == "servo" else "0"
     else:  # "bare" (and any unknown mode) -> genuinely bare
         env["V4"] = "0"
         env["BARE"] = "1"
@@ -482,6 +489,22 @@ def _driver_spec(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "marker_done": "L1_STEERING DONE",
             "marker_fail": "L1_STEERING FAILED",
             "result": str(HOME / "l1_steering_result.json"),
+            "parse": "checkpoint",   # benign: result has no 'checkpoint' -> base ckpt kept
+        }
+    if name == "run_l5_servo":
+        # L5 TRAINS nothing — it is a serving-time config. This driver just
+        # records that the servo is enabled (result JSON + marker); the loop's
+        # SUBSEQUENT candidate eval serves with STEER_SERVO=1 (mode "servo").
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        if cfg.get("policy_ckpt"):
+            env["CKPT_OVERRIDE"] = cfg["policy_ckpt"]
+        return {
+            "cmd": ["bash", str(BC / "run_l5_servo.sh")],
+            "env": env,
+            "log": str(HOME / "l5_servo.log"),
+            "marker_done": "L5_SERVO DONE",
+            "marker_fail": "L5_SERVO FAILED",
+            "result": str(HOME / "l5_servo_result.json"),
             "parse": "checkpoint",   # benign: result has no 'checkpoint' -> base ckpt kept
         }
     if name == "powered_eval":
