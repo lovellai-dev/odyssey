@@ -182,10 +182,10 @@ def test_execute_L0_launches_finish_base():
 def test_execute_pending_lever_blocks_gracefully_and_records():
     st = rl.default_state()
     st["phase"] = "execute"
-    st["pending_lever"] = "L1_steering"     # driver not wired
+    st["pending_lever"] = "L4_distill"      # driver not wired yet
     st2, eff = rl.advance(st, {"driver_status": None})
     assert st2["phase"] == "blocked"
-    assert st2["blocked_reason"] == "lever_pending:L1_steering"
+    assert st2["blocked_reason"] == "lever_pending:L4_distill"
     recs = _logs(eff)
     assert recs and recs[0]["status"] == "lever_pending"
 
@@ -296,3 +296,15 @@ def test_compute_funnel_feeds_diagnose_end_to_end():
     d = al.diagnose(f, ladder)
     assert d["bottleneck"] == "reached->centered"
     assert d["lever"] == "L1_steering"
+
+
+def test_execute_wired_l1_launches_driver():
+    # L1 is now wired -> execute must LAUNCH run_l1_steering, not block
+    st = rl.default_state()
+    st["phase"] = "execute"
+    st["pending_lever"] = "L1_steering"
+    st["candidate"] = {"config": {"policy_ckpt": "/x/dr/checkpoint-15000", "mode": "v4"}}
+    st2, eff = rl.advance(st, {"driver_status": None})
+    launches = [e for e in eff if e[0] == "launch"]
+    assert st2["phase"] == "execute" and launches
+    assert launches[0][1] == "run_l1_steering"

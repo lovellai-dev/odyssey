@@ -70,7 +70,7 @@ GPU_HOURS_CAP = float(os.environ.get("AUTO_LOOP_GPU_HOURS", "24"))
 # ---------------------------------------------------------------------------
 LEVER_DRIVER: dict[str, str | None] = {
     "L0_base": "finish_base",   # WIRED — assemble->augment->rsync->SFT fresh dr ckpt
-    "L1_steering": None,        # lever_pending — v4 image-cond head (re-encode+train+gate)
+    "L1_steering": "run_l1_steering",  # WIRED — v4 image-cond head for the current base
     "L2_selection": None,       # lever_pending — K/sigma/CEM config sweep (eval itself is best-of-N)
     "L3_dagger": None,          # lever_pending — v4-visited DAgger round
     "L4_distill": None,         # lever_pending
@@ -470,6 +470,19 @@ def _driver_spec(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "marker_fail": "FINISH_BASE FAILED",
             "result": str(HOME / "finish_base_result.json"),
             "parse": "checkpoint",
+        }
+    if name == "run_l1_steering":
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        if cfg.get("policy_ckpt"):
+            env["CKPT_OVERRIDE"] = cfg["policy_ckpt"]   # build the head for the current base
+        return {
+            "cmd": ["bash", str(BC / "run_l1_steering.sh")],
+            "env": env,
+            "log": str(HOME / "l1_steering.log"),
+            "marker_done": "L1_STEERING DONE",
+            "marker_fail": "L1_STEERING FAILED",
+            "result": str(HOME / "l1_steering_result.json"),
+            "parse": "checkpoint",   # benign: result has no 'checkpoint' -> base ckpt kept
         }
     if name == "powered_eval":
         suf = "_v4" if _eval_env(cfg).get("V4") == "1" else ""
