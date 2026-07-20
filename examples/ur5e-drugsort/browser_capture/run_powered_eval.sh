@@ -27,6 +27,12 @@ NODE=/home/daniel/.nvm/versions/node/v22.22.0/bin/node
 # V4=1 -> serve the image-conditioned steering head server-side (sidecar ships
 # its low15; the service computes the mean from pooled backbone features).
 V4=${V4:-0}
+# BARE=1 -> genuinely bare pilot through the SAME 45-ep powered protocol: no
+# steering head, single GR00T sample (K=1 => the sidecar sends no best-of-N
+# payload, so the bridge returns one raw action), no CEM. The autonomous loop
+# uses this to measure the bare-base funnel. Default 0 keeps the pinned config
+# byte-for-byte (backward compatible).
+BARE=${BARE:-0}
 SUF=""; [ "$V4" = "1" ] && SUF="_v4"
 WORK=$HOME/powered_eval$SUF
 LOG=$HOME/powered_eval$SUF.log
@@ -41,7 +47,7 @@ AGENT_PORT=8032
 HTTP_PORT=5596
 FK_PORT=5560
 COND_PORT=5604
-CKPT=/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000
+CKPT=${CKPT_OVERRIDE:-/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000}
 STEER_SRC=/home/ubuntu/steering_net_v02.npz
 OBS_WEIGHTS=$BC/percep_weights_browser
 SEEDS=(7777 8888 9999)
@@ -83,13 +89,19 @@ trap 'fail "signal"' TERM INT HUP
 log "START pid=$$ (3x15 blocks; config: centering=off v4-tapered-CBF K=16 sigma=0.25 cem=2)"
 echo "POWERED_EVAL PID=$$"
 
-# wait (<=1h) for the stateless-dagger gates to release the GPU
-for i in $(seq 1 120); do
-  last=$(tail -1 "$HOME/dagger1s.log" 2>/dev/null || true)
-  echo "$last" | grep -qE "DAGGER1S (DONE|FAILED)" && break
-  sleep 30
-done
-log "dagger1s released the GPU ($(tail -1 "$HOME/dagger1s.log" 2>/dev/null))"
+# wait (<=1h) for the stateless-dagger gates to release the GPU. SKIP_GPU_WAIT=1
+# (set by the autonomous loop, which GPU-gates itself) or a missing dagger1s.log
+# bypasses this so the loop's eval isn't stalled up to an hour on a stale gate.
+if [ "${SKIP_GPU_WAIT:-0}" != "1" ] && [ -f "$HOME/dagger1s.log" ]; then
+  for i in $(seq 1 120); do
+    last=$(tail -1 "$HOME/dagger1s.log" 2>/dev/null || true)
+    echo "$last" | grep -qE "DAGGER1S (DONE|FAILED)" && break
+    sleep 30
+  done
+  log "dagger1s released the GPU ($(tail -1 "$HOME/dagger1s.log" 2>/dev/null))"
+else
+  log "GPU wait skipped (SKIP_GPU_WAIT=${SKIP_GPU_WAIT:-0}, dagger1s.log $([ -f "$HOME/dagger1s.log" ] && echo present || echo absent))"
+fi
 
 # ---- sanity + stack (once, shared across blocks) --------------------------------
 [ -f "$OBS_WEIGHTS/observer_head.pt" ] || fail "no-observer-weights"
@@ -110,8 +122,16 @@ $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$HTTP_PORT:127.0.0.1:$HTTP_P
 for i in $(seq 1 30); do curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"ok": *true' && break; sleep 5; done
 curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"bestofn": *true' || fail "bestofn-health"
 
-log "STEP2 sidecar (PINNED config) + agent"
-if [ "$V4" = "1" ]; then
+log "STEP2 sidecar ($([ "$BARE" = "1" ] && echo BARE-single-sample || echo PINNED config)) + agent"
+# best-of-N knobs (PINNED defaults); BARE overrides them to a single raw sample.
+BON_K=16; BON_KG=16; BON_SIGMA=0.25; BON_CEM=2; CENTERING=off
+if [ "$BARE" = "1" ]; then
+  # no steering head + K=1 => the sidecar attaches no best-of-N payload, so the
+  # bridge returns a single raw GR00T action. The Observer still injects the
+  # grasp target to fill the 10-D state channel the policy was trained with.
+  SIDE_STEER=(STEERING_WEIGHTS=)
+  BON_K=1; BON_KG=1; BON_CEM=0
+elif [ "$V4" = "1" ]; then
   SIDE_STEER=(STEERING_WEIGHTS= STEER_SERVER_HEAD=1)
 else
   scp -q -o StrictHostKeyChecking=no "$VM:$STEER_SRC" "$WORK/steering_net.npz" || fail "fetch-steer"
@@ -120,8 +140,8 @@ fi
 env HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 OBSERVER_WEIGHTS="$OBS_WEIGHTS" \
   CONDITION_BRIDGE_URL="http://127.0.0.1:$HTTP_PORT" OBSERVER_DEVICE=cuda PYTHONPATH="$ODY/src" \
   "${SIDE_STEER[@]}" STEERING_FK_XML="$XML" \
-  STEER_BESTOFN_K=16 STEER_BESTOFN_K_GRASP=16 STEER_BESTOFN_SIGMA=0.25 \
-  STEER_CLF_CENTERING=off STEER_CEM_ROUNDS=2 \
+  STEER_BESTOFN_K=$BON_K STEER_BESTOFN_K_GRASP=$BON_KG STEER_BESTOFN_SIGMA=$BON_SIGMA \
+  STEER_CLF_CENTERING=$CENTERING STEER_CEM_ROUNDS=$BON_CEM \
   setsid "$OBSPY" "$ODY/scripts/serve_observer_conditioning.py" --port "$COND_PORT" \
   >"$WORK/conditioner.log" 2>&1 &
 echo $! > "$WORK/cond_pid.txt"
