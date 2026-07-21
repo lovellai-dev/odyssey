@@ -35,6 +35,15 @@ import argparse
 import json
 import logging
 import os
+import sys
+
+# When launched as a script (python …/runners/evals/gr00t_libero_eval.py), sys.path[0]
+# is THIS file's directory — which also holds libero.py (the odyssey LiberoRunner).
+# That shadows the real LIBERO namespace package, so `from libero.libero import …`
+# fails with "'libero' is not a package". Drop this dir; odyssey's own modules still
+# import via the installed (editable) package, not the script dir.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _HERE]
 
 log = logging.getLogger("gr00t_libero_eval")
 
