@@ -362,3 +362,18 @@ def test_l5_driver_spec_marker_and_script():
     assert spec["marker_fail"] == "L5_SERVO FAILED"
     assert spec["cmd"][0] == "bash" and spec["cmd"][1].endswith("run_l5_servo.sh")
     assert spec["env"].get("CKPT_OVERRIDE") == "/vm/ckpt"
+
+
+def test_powered_eval_servo_uses_distinct_result_path_from_v4():
+    # REGRESSION: the servo eval MUST read a different result/log than the v4
+    # eval. Sharing them (both '_v4') let RESUME=1 reuse the v4 candidate's
+    # completed blocks, so the servo was never actually run and its gate
+    # compared L1's funnel to itself. servo -> _v4_servo, v4 -> _v4.
+    v4 = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckpt", "mode": "v4"})
+    servo = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckpt", "mode": "servo"})
+    assert v4["result"] != servo["result"], "servo must not share the v4 result file"
+    assert v4["log"] != servo["log"], "servo must not share the v4 log file"
+    assert servo["result"].endswith("powered_eval_v4_servo_result.json")
+    assert v4["result"].endswith("powered_eval_v4_result.json")
+    # the STATE_DIR funnel cache is already distinct (config_hash includes mode)
+    assert v4["config_hash"] != servo["config_hash"]

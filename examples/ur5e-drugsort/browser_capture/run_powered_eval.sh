@@ -37,7 +37,12 @@ BARE=${BARE:-0}
 # servo onto its selected chunk (arm dims only). Default 0 keeps the served
 # response byte-identical to the current V4 path (backward compatible).
 STEER_SERVO=${STEER_SERVO:-0}
+# SUF distinguishes candidate configs so their blocks never cross-contaminate.
+# Critical: servo runs MUST NOT reuse the v4 blocks (RESUME=1 would skip them),
+# or the servo is never actually evaluated (the L5 gate would compare a config
+# to itself). v4 -> _v4 ; v4+servo -> _v4_servo.
 SUF=""; [ "$V4" = "1" ] && SUF="_v4"
+[ "$STEER_SERVO" = "1" ] && SUF="${SUF}_servo"
 WORK=$HOME/powered_eval$SUF
 LOG=$HOME/powered_eval$SUF.log
 RESULT=$HOME/powered_eval${SUF}_result.json

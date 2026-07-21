@@ -513,7 +513,14 @@ def _driver_spec(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "parse": "checkpoint",   # benign: result has no 'checkpoint' -> base ckpt kept
         }
     if name == "powered_eval":
-        suf = "_v4" if _eval_env(cfg).get("V4") == "1" else ""
+        # Mirror run_powered_eval.sh's SUF exactly: v4 -> _v4 ; v4+servo ->
+        # _v4_servo. Servo evals MUST read a distinct result/log so they never
+        # reuse the v4 candidate's completed blocks (RESUME=1) — otherwise the
+        # servo is never actually run and its gate compares a config to itself.
+        env = _eval_env(cfg)
+        suf = "_v4" if env.get("V4") == "1" else ""
+        if env.get("STEER_SERVO") == "1":
+            suf += "_servo"
         return {
             "cmd": ["bash", str(BC / "run_powered_eval.sh")],
             "env": _eval_env(cfg),
