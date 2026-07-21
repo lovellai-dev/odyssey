@@ -30,10 +30,10 @@ checkpoints — a future "support another VLA" runner, bigger lift.)
 |---|---|---|
 | `EvaluationType.LIBERO` | `src/odyssey/spec/tasks.py` | new enum value `"libero"` |
 | Eval-only checkpoint wiring | `src/odyssey/runners/evals/_common.py` | `resolve_eval_checkpoint` now honors `config.checkpoint` (local path **or** HF repo id) before falling back to a training checkpoint |
-| `LiberoRunner` | `src/odyssey/runners/evals/libero.py` | mirrors `RobosuiteRunner`; LIBERO env + obs/action handling; single-agent (OpenVLA policy) **and** multi-agent (`PlannedEvalRuntime` + Gemma) |
+| `LiberoRunner` | `src/odyssey/runners/evals/libero.py` | mirrors `RobosuiteRunner`; LIBERO env + obs/action handling; OpenVLA single-agent, plus the GR00T pilot (single- and multi-agent via the out-of-process recipe) |
 | Registration | `src/odyssey/cli/commands/run.py` | `registry.register(LiberoRunner())` |
 | mypy ignore | `pyproject.toml` | `libero.*` added to missing-imports list |
-| Example missions | `examples/franka-libero/mission.yaml`, `mission-multiagent.yaml` | **eval-only** (no training task) |
+| Example missions | `examples/franka-libero/mission.yaml`, `mission-gr00t.yaml`, `mission-gr00t-multiagent.yaml` | **eval-only** (no training task) |
 | Setup script | `examples/franka-libero/setup.sh` | installs `libero` + `imageio[ffmpeg]`, sets render env, prints next steps |
 
 Verified: `ruff check src/` clean · `mypy` clean (69 files) · `test_robosuite_runner` +
@@ -93,9 +93,9 @@ export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 odyssey validate examples/franka-libero/mission.yaml
 odyssey run      examples/franka-libero/mission.yaml
 
-# 4. multi-agent (Gemma planner) — load the specialist venv first
+# 4. multi-agent (GR00T pilot + Gemma specialist) — load the specialist venv first
 source examples/multiagent-openvla-gemma/.env
-odyssey run examples/franka-libero/mission-multiagent.yaml
+odyssey run examples/franka-libero/mission-gr00t-multiagent.yaml
 
 # 5. videos
 find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;

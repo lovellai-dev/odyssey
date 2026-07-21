@@ -14,8 +14,10 @@ publication plan for the cadence.
 
 An **eval-only** example: it scores an already-fine-tuned, published OpenVLA-LIBERO
 checkpoint (no training, no dataset on disk) so you can watch a VLA pilot actually
-succeed in simulation. Two missions ship — single-agent (`mission.yaml`) and
-multi-agent with a Gemma planner (`mission-multiagent.yaml`).
+succeed in simulation. Missions ship for OpenVLA single-agent (`mission.yaml`),
+the GR00T pilot (`mission-gr00t.yaml`), and GR00T multi-agent with a Gemma
+specialist (`mission-gr00t-multiagent.yaml`). Multi-agent runs on GR00T (OpenVLA
+is single-agent only).
 
 LIBERO's packaging conflicts with the OpenVLA stack (older `robosuite`, a
 `transformers` pin, a namespace package, and a C-built `egl_probe`), so it installs

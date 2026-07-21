@@ -220,9 +220,10 @@ cat <<'EOF'
   2. SINGLE-AGENT — score the published checkpoint (it auto-downloads from HF):
        odyssey validate examples/franka-libero/mission.yaml
        odyssey run      examples/franka-libero/mission.yaml
-  3. MULTI-AGENT (Gemma planner) — needs the specialist venv loaded first:
+  3. MULTI-AGENT (GR00T pilot + Gemma specialist) — build the GR00T venv first
+     (bash examples/franka-libero/setup.sh --pilot gr00t), then load the specialist:
        source examples/multiagent-openvla-gemma/.env     # sets ODYSSEY_SPECIALIST_PYTHON
-       odyssey run examples/franka-libero/mission-multiagent.yaml
+       odyssey run examples/franka-libero/mission-gr00t-multiagent.yaml
   4. find the per-episode MP4s:
        find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;
 
