@@ -76,6 +76,20 @@ class BestOfNService:
         self.fk_url = fk_url.rstrip("/")
         self.device = device
         self._lock = threading.Lock()   # one query at a time (GPU + FK)
+        # Render-gap DIAGNOSTIC (opt-in, STEER_DIAG=1): for the first N queries,
+        # dump the received BROWSER frames + state + the pure head-mean chunk's
+        # decoded pinch-vs-target. Lets an offline pass replay the SAME states on
+        # DATASET frames and confirm whether the head-mean reaches offline but
+        # parks online (the v4-head online-park hypothesis). Zero effect when off.
+        self.diag = os.environ.get("STEER_DIAG", "0") == "1"
+        self.diag_path = os.environ.get("STEER_DIAG_PATH", "/home/ubuntu/steer_diag.jsonl")
+        self.diag_frames = os.environ.get("STEER_DIAG_FRAMES", "/home/ubuntu/steer_diag_frames")
+        self.diag_max = int(os.environ.get("STEER_DIAG_MAX", "40"))
+        self.diag_n = 0
+        if self.diag:
+            import os as _os
+            _os.makedirs(self.diag_frames, exist_ok=True)
+            print(f"[bestofn] STEER_DIAG on -> {self.diag_path} (max {self.diag_max})", flush=True)
         self.n_queries = 0
         self.n_fallback_hold = 0
         self.rejection_hist: dict[str, int] = {}   # aggregated CBF rejections
@@ -167,6 +181,32 @@ class BestOfNService:
             phys = self.flow.decode_to_physical(x)
             arm = np.asarray(phys["single_arm"], dtype=np.float32)[:, :REAL_STEPS, :]   # (K,16,6)
             grip = np.asarray(phys["gripper"], dtype=np.float32)[:, :REAL_STEPS, 0]     # (K,16)
+
+            # Render-gap diagnostic: capture the PURE head-mean chunk (arm[0] =
+            # decoded undithered mean) pinch-vs-target + the browser frames, so an
+            # offline pass can replay the same states on dataset frames.
+            if self.diag and self.diag_n < self.diag_max and steer_head_used:
+                import base64 as _b64
+                i = self.diag_n
+                mean_pinch = np.asarray(self._fk_batch(arm[0]), float).reshape(-1, 3)  # (16,3)
+                tgt_arr = np.asarray(cfg.get("grasp_target") or cfg.get("vial")
+                                     or state10[7:10], float).reshape(3)
+                dd = np.linalg.norm(mean_pinch - tgt_arr[None], axis=1)
+                for tag, b64 in (("ext", req["image_b64"]),
+                                 ("wrist", req.get("image_b64_wrist") or req["image_b64"])):
+                    with open(f"{self.diag_frames}/{i:03d}_{tag}.png", "wb") as fh:
+                        fh.write(_b64.b64decode(b64))
+                with open(self.diag_path, "a") as fh:
+                    fh.write(json.dumps({
+                        "i": i, "phase": int(cfg.get("phase", 0)),
+                        "state10": [float(v) for v in state10],
+                        "target": [float(v) for v in tgt_arr],
+                        "pooled_norm": float(np.linalg.norm(self._pool(cache)[0])),
+                        "mean_pinch_first": [float(v) for v in mean_pinch[0]],
+                        "mean_to_tgt_cm_first": float(dd[0] * 100.0),
+                        "mean_to_tgt_cm_min": float(dd.min() * 100.0),
+                    }) + "\n")
+                self.diag_n += 1
 
             # Per-request shaping config (powered runs pin these explicitly)
             import clf_reward_ur5e as clfmod
