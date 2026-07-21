@@ -120,6 +120,20 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--server_device", default="cuda:0")
     ap.add_argument("--server_ready_timeout", type=int, default=900)
     ap.add_argument("--server_denoising_steps", type=int, default=0)
+    # --- multi-agent coordination (opt-in; needs a SPECIALIST in the loadout) ---
+    ap.add_argument("--coordination", default="",
+                    help="'' (single-agent) | planning | delegation. Drives the "
+                         "SPECIALIST + a chunk-aware Planned/DelegatedEvalRuntime.")
+    ap.add_argument("--specialist_model", default="",
+                    help="SPECIALIST HF model id (e.g. google/gemma-4-E2B-it).")
+    ap.add_argument("--specialist_quantization", default="")
+    ap.add_argument("--specialist_python", default="",
+                    help="interpreter with the SPECIALIST stack (ODYSSEY_SPECIALIST_PYTHON).")
+    ap.add_argument("--phase_strategy", default="fixed_steps",
+                    help="fixed_steps | timeout | completion_gated (planning arm).")
+    ap.add_argument("--steps_per_phase", type=int, default=50)
+    ap.add_argument("--phase_check_every", type=int, default=10)
+    ap.add_argument("--phase_max_steps", type=int, default=100)
     return ap
 
 
@@ -213,6 +227,73 @@ def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
 
+def _build_coordination_runtime(args, client, instruction):
+    """Build a chunk-aware multi-agent runtime (planning|delegation) over GR00T.
+
+    The GR00T ``PolicyClient`` is wrapped in a ``ChunkPilotAdapter`` (satisfies
+    ``PilotRuntime`` — buffers a chunk, drains per step, re-queries on phase change);
+    the SPECIALIST is the out-of-process ``RemotePlanner`` (plan/check/ground over one
+    loaded model). Returns ``(runtime, adapter)``; the caller drives
+    ``runtime.get_action(image)`` and pushes each raw obs via ``adapter.set_obs(obs)``.
+    """
+    import functools
+
+    from odyssey.runners.agents.remote_planner import RemotePlanner
+    from odyssey.runners.evals.chunk_pilot_adapter import ChunkPilotAdapter
+
+    t = _transforms()
+    adapter = ChunkPilotAdapter(
+        client,
+        obs_builder=functools.partial(
+            _build_obs,
+            image_key=args.image_key,
+            wrist_image_key=args.wrist_image_key,
+            flip=args.flip_images,
+        ),
+        action_mapper=functools.partial(
+            t.gr00t_action_to_libero, translation_only=args.translation_only
+        ),
+        n_action_steps=args.n_action_steps,
+    )
+    if not args.specialist_model:
+        raise SystemExit("--coordination requires --specialist_model (a SPECIALIST agent).")
+    specialist = RemotePlanner(
+        args.specialist_model,
+        args.specialist_quantization or None,
+        python_path=args.specialist_python or None,
+    )
+    cfg = {
+        "phase_strategy": args.phase_strategy,
+        "steps_per_phase": args.steps_per_phase,
+        "phase_check_every": args.phase_check_every,
+        "phase_max_steps": args.phase_max_steps,
+    }
+    coordination = args.coordination.strip().lower()
+    if coordination == "delegation":
+        from odyssey.runners.agents.delegated import DelegatedEvalRuntime, DelegationConfig
+
+        runtime = DelegatedEvalRuntime(
+            pilot=adapter,
+            grounder=specialist,
+            config=DelegationConfig.from_config(cfg),
+            task_fallback=instruction,
+        )
+    elif coordination == "planning":
+        from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+
+        runtime = PlannedEvalRuntime(
+            pilot=adapter,
+            planner=specialist,
+            phase_config=PhaseConfig.from_config(cfg),
+            fallback_instruction=instruction,
+        )
+    else:
+        raise SystemExit(
+            f"unknown coordination {args.coordination!r}; allowed: planning, delegation"
+        )
+    return runtime, adapter
+
+
 def run_eval(args: argparse.Namespace) -> dict:
     from odyssey.runners.evals.libero import (
         _make_libero_env,
@@ -240,6 +321,13 @@ def run_eval(args: argparse.Namespace) -> dict:
         host=args.host, port=args.port, timeout_ms=args.timeout_ms
     )
 
+    coordination = (args.coordination or "").strip().lower()
+    runtime = adapter = None
+    if coordination:
+        runtime, adapter = _build_coordination_runtime(args, client, instruction)
+        log.info("multi-agent coordination=%s (SPECIALIST=%s)",
+                 coordination, args.specialist_model)
+
     successes, returns = 0, []
     video_dir = args.video_dir or None
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
@@ -254,26 +342,23 @@ def run_eval(args: argparse.Namespace) -> dict:
         frames: list = []
         step = 0
         try:
-            while step < args.max_steps_per_episode and not success:
-                observation = _build_obs(
-                    obs, instruction,
-                    image_key=args.image_key,
-                    wrist_image_key=args.wrist_image_key,
-                    flip=args.flip_images,
+            if runtime is not None:
+                # Multi-agent: the runtime feeds phase sub-instructions to the chunk
+                # adapter (which buffers/flushes chunks); one env.step per get_action.
+                runtime.begin_episode(
+                    instruction, _frame(obs, args.image_key, flip=args.flip_images)
                 )
-                result = client.get_action(observation)
-                chunk = result[0] if isinstance(result, tuple) else result
-                for k in range(args.n_action_steps):
-                    if step >= args.max_steps_per_episode:
-                        break
-                    action = t.gr00t_action_to_libero(
-                        chunk, k, translation_only=args.translation_only,
+                adapter.reset()
+                while step < args.max_steps_per_episode and not success:
+                    adapter.set_obs(obs)
+                    action = runtime.get_action(
+                        _frame(obs, args.image_key, flip=args.flip_images)
                     )
                     obs, reward, done, _info = env.step(action.tolist())
                     ep_return += float(reward)
+                    for ev in runtime.drain_phase_events():
+                        log.info("episode %d phase: %s", ep, ev)
                     if video_dir is not None:
-                        # match the pilot's orientation: LIBERO's agentview is stored
-                        # 180°-rotated, so flip the video frame too (else it's upside down).
                         frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
                         if frame is not None:
                             frames.append(frame)
@@ -281,6 +366,35 @@ def run_eval(args: argparse.Namespace) -> dict:
                     if done:  # LIBERO sets done=True when the task is solved
                         success = True
                         break
+            else:
+                # Single-agent: replay each GR00T chunk open-loop.
+                while step < args.max_steps_per_episode and not success:
+                    observation = _build_obs(
+                        obs, instruction,
+                        image_key=args.image_key,
+                        wrist_image_key=args.wrist_image_key,
+                        flip=args.flip_images,
+                    )
+                    result = client.get_action(observation)
+                    chunk = result[0] if isinstance(result, tuple) else result
+                    for k in range(args.n_action_steps):
+                        if step >= args.max_steps_per_episode:
+                            break
+                        action = t.gr00t_action_to_libero(
+                            chunk, k, translation_only=args.translation_only,
+                        )
+                        obs, reward, done, _info = env.step(action.tolist())
+                        ep_return += float(reward)
+                        if video_dir is not None:
+                            # match the pilot's orientation: LIBERO's agentview is stored
+                            # 180°-rotated, so flip the video frame too (else upside down).
+                            frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
+                            if frame is not None:
+                                frames.append(frame)
+                        step += 1
+                        if done:  # LIBERO sets done=True when the task is solved
+                            success = True
+                            break
         except Exception as ep_exc:
             # A flaky get_action()/env.step() must not abort the whole sweep (that
             # would drop the remaining episodes AND the final ODYSSEY_RESULT line).
@@ -298,6 +412,8 @@ def run_eval(args: argparse.Namespace) -> dict:
             tag = "PASS" if success else "FAIL"
             save_rollout_video(frames, Path(video_dir) / f"episode_{ep:02d}_{tag}.mp4", 24)
 
+    if runtime is not None:
+        runtime.close()  # shut down the SPECIALIST subprocess (reused across episodes)
     env.close()
     n = max(args.num_episodes, 1)
     success_rate = successes / n
@@ -309,6 +425,7 @@ def run_eval(args: argparse.Namespace) -> dict:
             "episode_returns": [round(r, 4) for r in returns],
             "benchmark": f"{args.task}[task={args.task_id}]",
             "instruction": instruction,
+            "coordination": coordination or "single-agent",
         },
     }
     _emit(result_line(**summary))
