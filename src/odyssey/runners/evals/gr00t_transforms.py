@@ -204,7 +204,10 @@ def build_gr00t_libero_obs(*, image, wrist_image, eef_pos, eef_quat_xyzw,
     obs = {
         "video.image": img[None, None],          # (1,1,H,W,3) uint8
         "video.wrist_image": wrist[None, None],  # (1,1,H,W,3) uint8
-        "annotation.human.action.task_description": [[str(instruction)]],
+        # sim-policy-wrapper validates a BATCH of strings — one level, not [[str]]:
+        # each batch item must be a str (a nested [str] fails "Language batch item
+        # must be a string. Got <class 'list'>").
+        "annotation.human.action.task_description": [str(instruction)],
         "state.gripper": grip.reshape(1, 1, 2),  # both finger joints
     }
     for i, axis in enumerate(LIBERO_POSE_AXES):
