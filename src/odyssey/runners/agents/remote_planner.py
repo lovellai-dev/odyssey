@@ -32,6 +32,8 @@ import time
 from collections.abc import Sequence
 from typing import IO, Any
 
+from odyssey.runners.agents.runtime import RouteDecision
+
 logger = logging.getLogger(__name__)
 
 _SERVER_MODULE = "odyssey.runners.agents.planner_server"
@@ -112,6 +114,7 @@ class RemotePlanner:
         request_timeout: float = 120.0,
         check_timeout: float = 5.0,
         ground_timeout: float = 15.0,
+        route_timeout: float = 15.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
     ) -> None:
         self._model_base = model_base
@@ -121,6 +124,7 @@ class RemotePlanner:
         self._request_timeout = request_timeout
         self._check_timeout = check_timeout
         self._ground_timeout = ground_timeout
+        self._route_timeout = route_timeout
         self._launch_args = list(launch_args)
         self._proc: subprocess.Popen[str] | None = None
         # A background thread drains stdout into this queue. We avoid
@@ -297,6 +301,52 @@ class RemotePlanner:
                 target_query,
             )
         return target_query
+
+    def route(
+        self, task_instruction: str, image: Any, history: list[str]
+    ) -> RouteDecision:
+        """Ask the out-of-process ORCHESTRATOR for the next sub-instruction.
+
+        Satisfies ``OrchestratorRuntime``. Reuses the same loaded model over the
+        same channel; runs at phase boundaries (not every step), so it uses
+        ``route_timeout``. Fails safe: any error, timeout, missing frame, or a
+        server that doesn't support routing (``{"error": ...}``) returns
+        ``RouteDecision(subtask=task_instruction, done=False)`` — the episode
+        never terminates on a bad route and the pilot still gets an instruction.
+        """
+        if image is None:
+            return RouteDecision(subtask=task_instruction, done=False)
+        try:
+            self._ensure_started()
+            proc = self._proc
+            assert proc is not None and proc.stdin is not None
+            request = {
+                "route": {
+                    "task": task_instruction,
+                    "history": list(history),
+                    "image": _encode_image(image),
+                }
+            }
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+            msg = self._read_message(self._route_timeout) or {}
+            if bool(msg.get("done")):
+                return RouteDecision(subtask="", done=True)
+            subtask = msg.get("subtask")
+            if isinstance(subtask, str) and subtask.strip():
+                return RouteDecision(subtask=subtask.strip(), done=False)
+            logger.warning(
+                "RemotePlanner: bad/empty route %r for %r — using task",
+                msg,
+                task_instruction,
+            )
+        except Exception as e:
+            logger.warning(
+                "RemotePlanner.route failed (%s) for %r — using task",
+                e,
+                task_instruction,
+            )
+        return RouteDecision(subtask=task_instruction, done=False)
 
     def close(self) -> None:
         """Shut down the server process. Idempotent; also runs at exit."""

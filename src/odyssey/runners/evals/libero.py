@@ -460,18 +460,20 @@ def build_gr00t_libero_argv(
 # ---------------------------------------------------------------------------
 
 def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
-    """The SPECIALIST's ``(model base, quantization)`` from the loadout — forwarded
-    to the GR00T recipe so it can build the out-of-process planner for the
-    multi-agent arms."""
+    """The out-of-process agent's ``(model base, quantization)`` from the loadout —
+    forwarded to the GR00T recipe so it can build the planner/grounder/router for
+    the multi-agent arms. Matches a SPECIALIST (planning/delegation) or an
+    ORCHESTRATOR (orchestration); both are the same reused Gemma."""
     from odyssey.spec.agents import AgentRole
     from odyssey.spec.refs import HFModelRef
 
+    roles = (AgentRole.SPECIALIST, AgentRole.ORCHESTRATOR)
     for agent in context.agents or context.mission.spec.robot.agents:
-        if agent.role == AgentRole.SPECIALIST:
+        if agent.role in roles:
             model = agent.model
             if not isinstance(model, HFModelRef):
                 raise ValueError(
-                    f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model."
+                    f"{agent.role.value} agent {agent.id!r} uses a non-HuggingFace model."
                 )
             return model.base, model.quantization
-    raise ValueError("No SPECIALIST agent found in the loadout")
+    raise ValueError("No SPECIALIST or ORCHESTRATOR agent found in the loadout")

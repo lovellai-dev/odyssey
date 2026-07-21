@@ -19,6 +19,10 @@ from odyssey.runners.agents.delegated import (
     DelegatedEvalRuntime,
     DelegationConfig,
 )
+from odyssey.runners.agents.orchestrated import (
+    OrchestratedEvalRuntime,
+    OrchestrationConfig,
+)
 from odyssey.runners.agents.planned import (
     PhaseConfig,
     PhaseStrategy,
@@ -34,8 +38,10 @@ from odyssey.runners.agents.planner import (
 from odyssey.runners.agents.runtime import (
     CompletionDetector,
     GroundingProvider,
+    OrchestratorRuntime,
     PilotRuntime,
     PlannerRuntime,
+    RouteDecision,
     TextGenerator,
 )
 
@@ -764,3 +770,136 @@ def test_delegated_close_calls_grounder_close() -> None:
     rt = DelegatedEvalRuntime(FakePilot(), grounder)
     rt.close()
     assert grounder.closed is True
+
+
+# ---------------------------------------------------------------------------
+# OrchestratedEvalRuntime — regime-D LLM router
+# ---------------------------------------------------------------------------
+
+class FakeOrchestrator:
+    """Emits a scripted subtask sequence, then DONE; also gates via check_done.
+
+    ``route`` returns the next scripted subtask per call; once exhausted it
+    returns ``done=True``. ``check_done`` returns True from the ``done_after``-th
+    call onward (drives semantic hand-back). Records all calls.
+    """
+
+    def __init__(
+        self, subtasks: list[str], *, done_after: int | None = None, raises: bool = False
+    ) -> None:
+        self._subtasks = list(subtasks)
+        self._i = 0
+        self.route_calls: list[tuple[str, tuple[str, ...]]] = []
+        self.check_calls: list[tuple[str, Any]] = []
+        self._done_after = done_after
+        self._raises = raises
+
+    def route(self, task_instruction: str, image: Any, history: list[str]) -> RouteDecision:
+        self.route_calls.append((task_instruction, tuple(history)))
+        if self._raises:
+            raise RuntimeError("route boom")
+        if self._i < len(self._subtasks):
+            sub = self._subtasks[self._i]
+            self._i += 1
+            return RouteDecision(subtask=sub, done=False)
+        return RouteDecision(subtask="", done=True)
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        self.check_calls.append((instruction, image))
+        return self._done_after is not None and len(self.check_calls) >= self._done_after
+
+
+def test_fake_orchestrator_satisfies_protocol() -> None:
+    assert isinstance(FakeOrchestrator(["a"]), OrchestratorRuntime)
+
+
+def test_orchestrated_begin_episode_returns_empty() -> None:
+    rt = OrchestratedEvalRuntime(FakePilot(), FakeOrchestrator(["pick up the mug"]))
+    assert rt.begin_episode("do the task", _IMG) == []  # no plan up front
+
+
+def test_orchestrated_routes_then_drives_pilot() -> None:
+    pilot = FakePilot()
+    orch = FakeOrchestrator(["pick up the mug"])
+    rt = OrchestratedEvalRuntime(pilot, orch)
+    rt.begin_episode("do the task", _IMG)
+    rt.get_action(_IMG)
+    assert len(orch.route_calls) == 1                 # routed the first sub-task
+    assert pilot.calls[-1][1] == "pick up the mug"    # pilot drives the routed sub-task
+
+
+def test_orchestrated_hand_back_reroutes_and_tracks_history() -> None:
+    pilot = FakePilot()
+    orch = FakeOrchestrator(["pick up the mug", "place it in the basket"], done_after=1)
+    rt = OrchestratedEvalRuntime(
+        pilot, orch, config=OrchestrationConfig(check_every=2, max_steps_per_phase=100)
+    )
+    rt.begin_episode("do the task", _IMG)
+    for _ in range(4):
+        rt.get_action(_IMG)
+    # completion fired at step 2 -> handback -> re-routed the 2nd sub-task
+    assert len(orch.route_calls) == 2
+    assert orch.route_calls[1][1] == ("pick up the mug",)   # history passed to route
+    seen = [instr for _, instr in pilot.calls]
+    assert "pick up the mug" in seen and "place it in the basket" in seen
+
+
+def test_orchestrated_done_completes_and_holds() -> None:
+    pilot = FakePilot()
+    orch = FakeOrchestrator(["pick up the mug"], done_after=1)  # 1 sub-task then DONE
+    rt = OrchestratedEvalRuntime(
+        pilot, orch, config=OrchestrationConfig(check_every=1, max_steps_per_phase=100)
+    )
+    rt.begin_episode("finish it", _IMG)
+    for _ in range(5):
+        rt.get_action(_IMG)
+    # after the sub-task completes, route returns DONE -> runtime holds (keeps acting)
+    assert rt.current_instruction in ("pick up the mug", "")  # holds, doesn't crash
+    assert len(pilot.calls) == 5  # still produced an action every step
+
+
+def test_orchestrated_max_phases_caps_routing() -> None:
+    pilot = FakePilot()
+    # never says done; check confirms every phase -> would route forever without the cap
+    orch = FakeOrchestrator(["a", "b", "c", "d", "e"], done_after=1)
+    rt = OrchestratedEvalRuntime(
+        pilot, orch, config=OrchestrationConfig(check_every=1, max_steps_per_phase=100, max_phases=2)
+    )
+    rt.begin_episode("t", _IMG)
+    for _ in range(10):
+        rt.get_action(_IMG)
+    assert len(orch.route_calls) == 2  # capped at max_phases routes
+
+
+def test_orchestrated_cap_hand_back() -> None:
+    pilot = FakePilot()
+    orch = FakeOrchestrator(["a", "b"])  # check never fires (done_after=None)
+    rt = OrchestratedEvalRuntime(
+        pilot, orch, config=OrchestrationConfig(check_every=10, max_steps_per_phase=3)
+    )
+    rt.begin_episode("t", _IMG)
+    for _ in range(4):
+        rt.get_action(_IMG)
+    events = rt.drain_phase_events()
+    assert any(e["reason"] == "cap" and e["capability"] == "handback" for e in events)
+    assert len(orch.route_calls) == 2  # cap hand-back re-routed
+
+
+def test_orchestrated_route_failure_falls_back_to_task() -> None:
+    pilot = FakePilot()
+    rt = OrchestratedEvalRuntime(pilot, FakeOrchestrator(["x"], raises=True))
+    rt.begin_episode("pick up the can", _IMG)
+    rt.get_action(_IMG)  # route raises -> fail-safe to the task instruction
+    assert pilot.calls[-1][1] == "pick up the can"
+
+
+def test_orchestrated_drain_events_schema() -> None:
+    orch = FakeOrchestrator(["a"], done_after=2)
+    rt = OrchestratedEvalRuntime(
+        FakePilot(), orch, config=OrchestrationConfig(check_every=2, max_steps_per_phase=100)
+    )
+    rt.begin_episode("t", _IMG)
+    rt.get_action(_IMG)
+    events = rt.drain_phase_events()
+    assert events and events[0]["capability"] == "routing" and events[0]["reason"] == "route"
+    assert rt.drain_phase_events() == []  # drained

@@ -287,9 +287,24 @@ def _build_coordination_runtime(args, client, instruction):
             phase_config=PhaseConfig.from_config(cfg),
             fallback_instruction=instruction,
         )
+    elif coordination == "orchestration":
+        from odyssey.runners.agents.orchestrated import (
+            OrchestratedEvalRuntime,
+            OrchestrationConfig,
+        )
+
+        # Regime D: the SPECIALIST/ORCHESTRATOR (same Gemma) routes the next
+        # sub-instruction dynamically + gates hand-back via check_done.
+        runtime = OrchestratedEvalRuntime(
+            pilot=adapter,
+            orchestrator=specialist,
+            config=OrchestrationConfig.from_config(cfg),
+            task_fallback=instruction,
+        )
     else:
         raise SystemExit(
-            f"unknown coordination {args.coordination!r}; allowed: planning, delegation"
+            f"unknown coordination {args.coordination!r}; "
+            "allowed: planning, delegation, orchestration"
         )
     return runtime, adapter
 

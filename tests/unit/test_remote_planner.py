@@ -213,6 +213,49 @@ def test_serve_ground_unsupported_when_planner_lacks_ground() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# serve() — route requests (regime-D orchestration; additive)
+# --------------------------------------------------------------------------- #
+
+def test_serve_route_returns_subtask() -> None:
+    planner = LLMPlanner(_FakeVLMGen("place it in the basket"))
+    out = _run_serve(
+        planner,
+        [
+            {"route": {"task": "do it", "history": ["pick"], "image": _tiny_png_b64()}},
+            {"shutdown": True},
+        ],
+    )
+    assert out[1] == {"subtask": "place it in the basket", "done": False}
+
+
+def test_serve_route_done() -> None:
+    planner = LLMPlanner(_FakeVLMGen("DONE"))
+    out = _run_serve(
+        planner,
+        [{"route": {"task": "do it", "history": [], "image": _tiny_png_b64()}}, {"shutdown": True}],
+    )
+    assert out[1] == {"subtask": "", "done": True}
+
+
+def test_serve_route_missing_task() -> None:
+    planner = LLMPlanner(_FakeVLMGen("x"))
+    out = _run_serve(planner, [{"route": {"image": _tiny_png_b64()}}, {"shutdown": True}])
+    assert any(m.get("error") == "route missing 'task' string" for m in out)
+
+
+def test_serve_route_unsupported_when_planner_lacks_route() -> None:
+    class _PlanOnly:
+        def plan(self, instruction: str, image: object = None) -> list[str]:
+            return ["a"]
+
+    out = _run_serve(  # type: ignore[arg-type]
+        _PlanOnly(),
+        [{"route": {"task": "x", "image": _tiny_png_b64()}}, {"shutdown": True}],
+    )
+    assert any(m.get("error") == "route unsupported" for m in out)
+
+
+# --------------------------------------------------------------------------- #
 # RemotePlanner — the client, against a fake server subprocess
 # --------------------------------------------------------------------------- #
 
@@ -503,5 +546,72 @@ def test_remote_planner_ground_echoes_query_against_old_server(tmp_path: Path) -
     try:
         img = np.zeros((2, 2, 3), dtype=np.uint8)
         assert planner.ground("the mug", img) == "the mug"
+    finally:
+        planner.close()
+
+
+# --------------------------------------------------------------------------- #
+# RemotePlanner.route — the client, against a fake orchestrator server
+# --------------------------------------------------------------------------- #
+
+# Answers route requests: echoes the task as the next subtask; done once history
+# is non-empty (models "one sub-task then finished").
+_FAKE_SERVER_ROUTE = """
+import json, sys
+sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    if isinstance(req.get("route"), dict):
+        r = req["route"]
+        if r.get("history"):
+            sys.stdout.write(json.dumps({"subtask": "", "done": True}) + "\\n")
+        else:
+            sys.stdout.write(json.dumps({"subtask": "next: " + r.get("task", ""), "done": False}) + "\\n")
+        sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"plan": ["p0"]}) + "\\n"); sys.stdout.flush()
+"""
+
+
+def test_remote_planner_route_roundtrip(tmp_path: Path) -> None:
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_ROUTE, tmp_path)
+    try:
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        d = planner.route("pick the can", img, [])
+        assert d.subtask == "next: pick the can" and d.done is False
+        d2 = planner.route("pick the can", img, ["did something"])
+        assert d2.done is True and d2.subtask == ""
+    finally:
+        planner.close()
+
+
+def test_remote_planner_route_falls_back_without_image(tmp_path: Path) -> None:
+    # image=None short-circuits to the task without starting the subprocess.
+    planner = _planner_for(_FAKE_SERVER_ROUTE, tmp_path)
+    try:
+        d = planner.route("the task", None, [])
+        assert d.subtask == "the task" and d.done is False
+        assert planner._proc is None  # never launched
+    finally:
+        planner.close()
+
+
+def test_remote_planner_route_falls_back_against_old_server(tmp_path: Path) -> None:
+    # An old server that doesn't understand {"route": ...} replies with a plan;
+    # the client fails safe to the task (never a spurious done).
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
+    try:
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        d = planner.route("the task", img, [])
+        assert d.subtask == "the task" and d.done is False
     finally:
         planner.close()

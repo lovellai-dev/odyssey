@@ -16,6 +16,7 @@ right methods satisfies the protocol without explicit inheritance.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -157,5 +158,55 @@ class GroundingProvider(Protocol):
         splicing into a pilot instruction. Must fail safe: return the query
         unchanged (never empty) when uncertain or on any error, so the pilot
         always receives an actionable instruction.
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    """One routing decision from an ORCHESTRATOR: the next pilot sub-instruction.
+
+    ``subtask`` is the next sub-instruction for the pilot to execute; ``done`` is
+    True when the orchestrator judges the whole task already accomplished (then
+    ``subtask`` is ignored). Fail-safe construction should prefer ``done=False``
+    with a sensible ``subtask`` so an episode never terminates on a bad route.
+    """
+
+    subtask: str
+    done: bool = False
+
+
+@runtime_checkable
+class OrchestratorRuntime(Protocol):
+    """Decides, on demand, the next sub-instruction — the regime-D LLM router.
+
+    Unlike ``PlannerRuntime`` (which authors the whole sequence up front) or a
+    fixed ``pick -> place`` template (``DelegatedEvalRuntime``), an orchestrator
+    owns the sequence **dynamically**: given the task, the current frame, and the
+    sub-instructions already completed, it emits the single next sub-instruction
+    (or signals done). The out-of-process SPECIALIST/ORCHESTRATOR satisfies this
+    alongside ``CompletionDetector`` from the same loaded model — no extra VRAM.
+    """
+
+    def route(
+        self, task_instruction: str, image: Any, history: list[str]
+    ) -> RouteDecision:
+        """Return the next sub-instruction (or ``done``) for ``task_instruction``.
+
+        Parameters
+        ----------
+        task_instruction:
+            The overall task.
+        image:
+            The current scene frame (RGB) to ground the decision in.
+        history:
+            Sub-instructions already completed this episode, so the orchestrator
+            doesn't repeat them.
+
+        Returns
+        -------
+        A ``RouteDecision``. Must fail safe: on any error return a decision that
+        keeps the episode progressing (``done=False`` with the task as subtask),
+        never a spurious ``done`` (which would end the episode early).
         """
         ...

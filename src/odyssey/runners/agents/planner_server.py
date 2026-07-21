@@ -13,6 +13,8 @@ then answers planning requests over a JSON-lines stdin/stdout protocol:
     <- {"done": true|false}                  (is the sub-instruction satisfied?)
     -> {"ground": {"query": "...", "image": "<base64 PNG>"}}  (target grounding)
     <- {"target": "..."}                     (scene-grounded phrase for the query)
+    -> {"route": {"task": "...", "history": [...], "image": "<base64 PNG>"}}  (next sub-task)
+    <- {"subtask": "...", "done": false}     (the ORCHESTRATOR's next sub-instruction)
     <- {"error": "..."}                      (on failure; the client falls back)
     -> {"shutdown": true}                    (client asks the server to exit)
 
@@ -119,6 +121,28 @@ def serve(
                 _emit(outstream, {"target": str(grounder(query, ground_image))})
             except BaseException as e:
                 _emit(outstream, {"error": f"ground failed: {type(e).__name__}: {e}"})
+            continue
+        routing = req.get("route")
+        if isinstance(routing, dict):
+            try:
+                task = routing.get("task")
+                if not isinstance(task, str):
+                    _emit(outstream, {"error": "route missing 'task' string"})
+                    continue
+                router = getattr(planner, "route", None)
+                if not callable(router):
+                    _emit(outstream, {"error": "route unsupported"})
+                    continue
+                route_image = None
+                raw_route_image = routing.get("image")
+                if isinstance(raw_route_image, str):
+                    route_image = _decode_image(raw_route_image)
+                hist = routing.get("history")
+                history = [str(h) for h in hist] if isinstance(hist, list) else []
+                decision = router(task, route_image, history)
+                _emit(outstream, {"subtask": str(decision.subtask), "done": bool(decision.done)})
+            except BaseException as e:
+                _emit(outstream, {"error": f"route failed: {type(e).__name__}: {e}"})
             continue
         instruction = req.get("instruction")
         if not isinstance(instruction, str):

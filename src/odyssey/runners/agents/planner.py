@@ -16,7 +16,7 @@ import logging
 import re
 from typing import Any
 
-from odyssey.runners.agents.runtime import TextGenerator
+from odyssey.runners.agents.runtime import RouteDecision, TextGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,17 @@ _GROUNDING_PROMPT = (
     "distinguishing visual feature or position (e.g. 'the red mug on the left', "
     "'the top drawer', 'the black bowl'). Output ONLY that phrase — no full "
     "sentence, no explanation, no quotes."
+)
+
+_ROUTE_PROMPT = (
+    "You are a robot task orchestrator. You are given the current scene image, "
+    "the overall task, and the sub-instructions already completed. Decide the "
+    "SINGLE next sub-instruction the robot arm should execute now to make "
+    "progress, grounded in what you can see. If the overall task is already fully "
+    "accomplished in the image, answer with EXACTLY the word DONE. Otherwise "
+    "answer with ONLY that one sub-instruction — a single atomic action naming "
+    "the visible objects (e.g. 'pick up the red mug', 'place it in the basket') — "
+    "no numbering, no explanation, no quotes."
 )
 
 _NUMBERED_LINE = re.compile(r"^\s*\d+[\.\)]\s*(.+)$")
@@ -97,6 +108,21 @@ def _parse_grounding(text: str) -> str:
         if cleaned:
             return cleaned
     return ""
+
+
+def _parse_route(text: str) -> tuple[str, bool]:
+    """Parse a routing reply into ``(subtask, done)``.
+
+    Reuses ``_parse_grounding`` to pull a clean first phrase. ``DONE`` (case-
+    insensitive, alone) → ``("", True)``; an empty/unusable reply → ``("", False)``
+    so ``route`` fails safe to the task (never a spurious done).
+    """
+    phrase = _parse_grounding(text)
+    if not phrase:
+        return "", False
+    if phrase.strip().upper() == "DONE":
+        return "", True
+    return phrase, False
 
 
 class LLMPlanner:
@@ -188,3 +214,35 @@ class LLMPlanner:
         text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
         logger.debug("ground(%r) raw output: %r", target_query, text)
         return _parse_grounding(text) or target_query
+
+    def route(
+        self, task_instruction: str, image: Any, history: list[str]
+    ) -> RouteDecision:
+        """Decide the next sub-instruction (or done) for ``task_instruction``.
+
+        Satisfies ``OrchestratorRuntime``. Requires a multimodal generator and a
+        frame; without either, routing is impossible, so it fails safe to the raw
+        task (``done=False``) — the pilot still gets an actionable instruction and
+        the episode never terminates on a missing route.
+        """
+        if not self._accepts_image or image is None:
+            logger.debug(
+                "route unavailable (accepts_image=%s, image=%s) — using task",
+                self._accepts_image,
+                image is not None,
+            )
+            return RouteDecision(subtask=task_instruction, done=False)
+        done_note = "\n\nAlready completed: " + "; ".join(history) if history else ""
+        messages = [
+            {
+                "role": "user",
+                "content": f"{_ROUTE_PROMPT}\n\nTask: {task_instruction}{done_note}",
+            },
+        ]
+        text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
+        logger.debug("route(%r) raw output: %r", task_instruction, text)
+        subtask, done = _parse_route(text)
+        if done:
+            return RouteDecision(subtask="", done=True)
+        # Empty/unusable parse -> fail safe to the task so the pilot keeps acting.
+        return RouteDecision(subtask=subtask or task_instruction, done=False)
