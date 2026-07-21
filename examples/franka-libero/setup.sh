@@ -142,12 +142,14 @@ echo "$LIBERO_DIR" > "$SP/libero_src.pth"
 echo "[setup] registered $LIBERO_DIR on the path via $SP/libero_src.pth"
 
 # --- pre-initialize ~/.libero/config.yaml NON-interactively ---
-# The first `import libero` prompts on stdin ("custom dataset path? (Y/N)") and would
-# otherwise BLOCK `odyssey run` AND the verify below. `yes N` answers EVERY prompt
-# (a single `echo n` isn't enough if LIBERO asks more than once — that EOF'd the
-# verify), writing the default config. Skip if already initialized.
+# The config init prompts on stdin ("custom dataset path? (Y/N)") and would otherwise
+# BLOCK `odyssey run` AND the verify below. Two subtleties, both learned the hard way:
+#   * `libero` is an EMPTY PEP 420 namespace package — importing it is a no-op and does
+#     NOT trigger the init. The prompt fires on `libero.libero`, so import THAT.
+#   * `yes N` answers EVERY prompt (a single `echo n` isn't enough if it asks twice).
+# Together they write the default config. Skip if already initialized.
 if [ ! -f "$HOME/.libero/config.yaml" ]; then
-  yes N | python -c "import libero" >/dev/null 2>&1 || true
+  yes N | python -c "import libero.libero" >/dev/null 2>&1 || true
 fi
 
 # --- mp4 encoder for capture_video ---
