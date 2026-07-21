@@ -231,16 +231,19 @@ def invert_gripper_action(g) -> float:
 def _libero_action_vec(chunk, k) -> np.ndarray:
     """Step k of a GR00T LIBERO action chunk as a raw 7-vec [x,y,z,roll,pitch,yaw,gripper].
 
-    Accepts either per-axis keys (mirrors the Isaac path's bare modality keys) or a
-    single composed ``action`` array. ⚠ VERIFY which the sim-policy-wrapped server
-    returns on the first smoke and drop the branch that doesn't apply.
+    The sim-policy-wrapped server returns modality.json's ``action`` group as DOTTED
+    keys — ``action.x`` … ``action.gripper`` (NOT bare ``x`` — that KeyError'd) — or a
+    single composed ``action`` array. Prefer the dotted keys; fall back to bare.
     """
     if "action" in chunk:                        # composed (H,7) fallback
         return np.asarray(chunk["action"], np.float64).reshape(-1, 7)[k]
     axes = (*LIBERO_POSE_AXES, "gripper")
-    return np.array(
-        [float(np.asarray(chunk[a]).reshape(-1)[k]) for a in axes], np.float64
-    )
+
+    def _axis(a: str) -> float:
+        key = f"action.{a}" if f"action.{a}" in chunk else a
+        return float(np.asarray(chunk[key]).reshape(-1)[k])
+
+    return np.array([_axis(a) for a in axes], np.float64)
 
 
 def gr00t_action_to_libero(chunk, k, *, translation_only=False,
