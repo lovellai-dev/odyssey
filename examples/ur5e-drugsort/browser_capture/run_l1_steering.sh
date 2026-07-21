@@ -78,6 +78,11 @@ $SSH "$VM" "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 timeout 3
   --model-out $HEAD_OUT --out /home/ubuntu/l1_train_$TAG.json" || fail "train"
 scp -q -o StrictHostKeyChecking=no "$VM:/home/ubuntu/l1_train_$TAG.json" "$HOME/l1_train.json" 2>/dev/null || true
 log "train: $("$PYUR5E" -c "import json;d=json.load(open('$HOME/l1_train.json'));print({k:d.get(k) for k in ('val_mse','val_mse_by_source')})" 2>/dev/null || echo '?')"
+# Durable BASE-TAGGED copy so this head survives a later retrain for a DIFFERENT
+# base overwriting the single deployed path. Losing the obscond head to exactly
+# this clobber cost a full retrain; keep a per-base archive to restore from.
+$SSH "$VM" "cp -f $HEAD_OUT /home/ubuntu/steering_net_v4_$TAG.npz" && \
+  log "archived head -> steering_net_v4_$TAG.npz" || log "head archive copy failed (non-fatal)"
 
 # ---- 5. base-fidelity gate (informational; the loop's browser eval is the gate) -
 log "STEP4 base gate (decode + fk)"
