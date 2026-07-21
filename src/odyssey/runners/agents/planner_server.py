@@ -9,6 +9,10 @@ then answers planning requests over a JSON-lines stdin/stdout protocol:
     -> {"instruction": "pick up the cube"}   (one request per line, on stdin)
     -> {"instruction": "...", "image": "<base64 PNG>"}   (multimodal request)
     <- {"plan": ["...", "..."]}              (one response per line, on stdout)
+    -> {"check": {"instruction": "...", "image": "<base64 PNG>"}}  (completion check)
+    <- {"done": true|false}                  (is the sub-instruction satisfied?)
+    -> {"ground": {"query": "...", "image": "<base64 PNG>"}}  (target grounding)
+    <- {"target": "..."}                     (scene-grounded phrase for the query)
     <- {"error": "..."}                      (on failure; the client falls back)
     -> {"shutdown": true}                    (client asks the server to exit)
 
@@ -78,6 +82,44 @@ def serve(
             continue
         if req.get("shutdown"):
             break
+        check = req.get("check")
+        if isinstance(check, dict):
+            try:
+                check_instruction = check.get("instruction")
+                if not isinstance(check_instruction, str):
+                    _emit(outstream, {"error": "check missing 'instruction' string"})
+                    continue
+                checker = getattr(planner, "check_done", None)
+                if not callable(checker):
+                    _emit(outstream, {"error": "check unsupported"})
+                    continue
+                check_image = None
+                raw_check_image = check.get("image")
+                if isinstance(raw_check_image, str):
+                    check_image = _decode_image(raw_check_image)
+                _emit(outstream, {"done": bool(checker(check_instruction, check_image))})
+            except BaseException as e:
+                _emit(outstream, {"error": f"check failed: {type(e).__name__}: {e}"})
+            continue
+        grounding = req.get("ground")
+        if isinstance(grounding, dict):
+            try:
+                query = grounding.get("query")
+                if not isinstance(query, str):
+                    _emit(outstream, {"error": "ground missing 'query' string"})
+                    continue
+                grounder = getattr(planner, "ground", None)
+                if not callable(grounder):
+                    _emit(outstream, {"error": "ground unsupported"})
+                    continue
+                ground_image = None
+                raw_ground_image = grounding.get("image")
+                if isinstance(raw_ground_image, str):
+                    ground_image = _decode_image(raw_ground_image)
+                _emit(outstream, {"target": str(grounder(query, ground_image))})
+            except BaseException as e:
+                _emit(outstream, {"error": f"ground failed: {type(e).__name__}: {e}"})
+            continue
         instruction = req.get("instruction")
         if not isinstance(instruction, str):
             _emit(outstream, {"error": "missing 'instruction' string"})

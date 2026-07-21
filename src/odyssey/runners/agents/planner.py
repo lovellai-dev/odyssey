@@ -39,6 +39,24 @@ _SYSTEM_PROMPT_VISION = (
     "numbered list, nothing else."
 )
 
+_COMPLETION_PROMPT = (
+    "You are a robot task supervisor. You are given the current scene image and "
+    "the single sub-instruction the robot arm is currently executing. Decide "
+    "whether that sub-instruction is now FULLY completed in the image. Answer "
+    "with EXACTLY one word: YES if it is fully completed, otherwise NO. Do not "
+    "explain."
+)
+
+_GROUNDING_PROMPT = (
+    "You are a robot perception module. You are given the current scene image "
+    "and a description of a target the robot must act on. Look at the image and "
+    "identify the single concrete object or location that best matches the "
+    "description. Answer with a SHORT noun phrase naming it and, if helpful, its "
+    "distinguishing visual feature or position (e.g. 'the red mug on the left', "
+    "'the top drawer', 'the black bowl'). Output ONLY that phrase — no full "
+    "sentence, no explanation, no quotes."
+)
+
 _NUMBERED_LINE = re.compile(r"^\s*\d+[\.\)]\s*(.+)$")
 
 
@@ -50,6 +68,35 @@ def _parse_plan(text: str) -> list[str]:
         if m:
             lines.append(m.group(1).strip())
     return lines
+
+
+def _parse_yes_no(text: str) -> bool:
+    """True only when the output's first word is an explicit yes.
+
+    Takes the first alphabetic run (ignoring surrounding markdown/punctuation
+    like ``**YES**``). Conservative by design: anything ambiguous (``no``,
+    empty, ``maybe``, a sentence not starting with yes) → False, so a phase
+    never advances on an unclear answer (the runtime's step cap still
+    guarantees progress).
+    """
+    m = re.search(r"[a-zA-Z]+", text or "")
+    return m is not None and m.group(0).lower() in ("yes", "y")
+
+
+def _parse_grounding(text: str) -> str:
+    """Extract a single grounded phrase from the VLM output.
+
+    Takes the first non-empty line and strips surrounding markdown/quotes/
+    trailing punctuation, keeping a compact noun phrase. Returns "" when the
+    output has nothing usable, so ``ground`` can fall back to the raw query.
+    """
+    for line in (text or "").strip().splitlines():
+        # Drop a leading list marker ("- ", "1. ") the model may add.
+        cleaned = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+        cleaned = cleaned.strip("\"'`*.").strip()
+        if cleaned:
+            return cleaned
+    return ""
 
 
 class LLMPlanner:
@@ -98,3 +145,46 @@ class LLMPlanner:
             )
             return [task_instruction]
         return steps
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Return True if ``instruction`` looks completed in ``image``.
+
+        Satisfies ``CompletionDetector``. Requires a multimodal generator and a
+        frame — without either, the check is impossible, so it returns False
+        (never a false positive; the runtime's step cap still advances phases).
+        """
+        if not self._accepts_image or image is None:
+            logger.debug(
+                "check_done unavailable (accepts_image=%s, image=%s) — returning False",
+                self._accepts_image,
+                image is not None,
+            )
+            return False
+        messages = [
+            {"role": "user", "content": f"{_COMPLETION_PROMPT}\n\nSub-instruction: {instruction}"},
+        ]
+        text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
+        logger.debug("check_done(%r) raw output: %r", instruction, text)
+        return _parse_yes_no(text)
+
+    def ground(self, target_query: str, image: Any) -> str:
+        """Return a scene-grounded phrase for ``target_query`` in ``image``.
+
+        Satisfies ``GroundingProvider``. Requires a multimodal generator and a
+        frame; without either, grounding is impossible, so it returns
+        ``target_query`` unchanged (fail-safe — the pilot still gets an
+        actionable instruction, it just isn't scene-specialised).
+        """
+        if not self._accepts_image or image is None:
+            logger.debug(
+                "ground unavailable (accepts_image=%s, image=%s) — echoing query",
+                self._accepts_image,
+                image is not None,
+            )
+            return target_query
+        messages = [
+            {"role": "user", "content": f"{_GROUNDING_PROMPT}\n\nTarget: {target_query}"},
+        ]
+        text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
+        logger.debug("ground(%r) raw output: %r", target_query, text)
+        return _parse_grounding(text) or target_query

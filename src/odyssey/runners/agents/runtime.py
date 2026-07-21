@@ -101,3 +101,61 @@ class PlannerRuntime(Protocol):
         sequentially.
         """
         ...
+
+
+@runtime_checkable
+class CompletionDetector(Protocol):
+    """Answers whether a sub-instruction is satisfied in the current frame.
+
+    Used by ``PlannedEvalRuntime``'s ``COMPLETION_GATED`` strategy to close the
+    loop: instead of advancing phases on a blind step counter, it asks a VLM
+    whether the active sub-instruction is done before moving on. The
+    out-of-process SPECIALIST satisfies both this and ``PlannerRuntime`` from
+    the same loaded model, so no second model is loaded.
+    """
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Return True if ``instruction`` is satisfied in ``image``.
+
+        Must be conservative and fail-safe: return False when uncertain or on
+        any error, so a phase never advances on a false positive (the runtime's
+        step cap still guarantees forward progress).
+        """
+        ...
+
+
+@runtime_checkable
+class GroundingProvider(Protocol):
+    """Locates the scene target a delegated sub-task should act on.
+
+    This is the delegated capability in the *delegation-driven* runtime
+    (``DelegatedEvalRuntime``). Unlike ``PlannerRuntime`` — which authors the
+    whole task decomposition up front — a grounder owns no sequence: the
+    orchestrator invokes it on demand, once per phase, to turn a generic query
+    ("the object to pick up") into a scene-grounded phrase ("the red mug on the
+    left") that conditions the pilot's instruction. It is the open-weight
+    analogue of GR-ER's 2D pointing / spatial grounding.
+
+    The out-of-process SPECIALIST satisfies this alongside ``PlannerRuntime``
+    and ``CompletionDetector`` from the same loaded model — no extra VRAM.
+    """
+
+    def ground(self, target_query: str, image: Any) -> str:
+        """Return a scene-grounded phrase for ``target_query`` in ``image``.
+
+        Parameters
+        ----------
+        target_query:
+            A generic description of what to locate (e.g. "the object that must
+            be picked up").
+        image:
+            RGB frame (PIL Image or HWC uint8 ndarray) of the current scene.
+
+        Returns
+        -------
+        A short natural-language phrase naming the located target, suitable for
+        splicing into a pilot instruction. Must fail safe: return the query
+        unchanged (never empty) when uncertain or on any error, so the pilot
+        always receives an actionable instruction.
+        """
+        ...

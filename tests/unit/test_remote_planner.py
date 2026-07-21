@@ -124,6 +124,95 @@ def test_serve_decodes_image_and_passes_to_planner() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# serve() — completion-check requests (additive; legacy plan path untouched)
+# --------------------------------------------------------------------------- #
+
+
+def test_serve_completion_check_returns_done() -> None:
+    # Multimodal generator -> check_done runs; "YES" -> done True.
+    planner = LLMPlanner(_FakeVLMGen("YES"))
+    out = _run_serve(
+        planner,
+        [
+            {"check": {"instruction": "grasp the cube", "image": _tiny_png_b64()}},
+            {"shutdown": True},
+        ],
+    )
+    assert out[0] == {"ready": True}
+    assert out[1] == {"done": True}
+
+
+def test_serve_completion_check_returns_not_done() -> None:
+    planner = LLMPlanner(_FakeVLMGen("NO"))
+    out = _run_serve(
+        planner,
+        [
+            {"check": {"instruction": "grasp", "image": _tiny_png_b64()}},
+            {"shutdown": True},
+        ],
+    )
+    assert out[1] == {"done": False}
+
+
+def test_serve_check_unsupported_when_planner_lacks_check_done() -> None:
+    class _PlanOnly:
+        def plan(self, instruction: str, image: object = None) -> list[str]:
+            return ["a"]
+
+    out = _run_serve(  # type: ignore[arg-type]
+        _PlanOnly(),
+        [
+            {"check": {"instruction": "x", "image": _tiny_png_b64()}},
+            {"shutdown": True},
+        ],
+    )
+    assert any(m.get("error") == "check unsupported" for m in out)
+
+
+def test_serve_legacy_plan_still_works() -> None:
+    # Back-compat: an instruction request is unaffected by the new check branch.
+    planner = LLMPlanner(_FakeGen("1. a\n2. b\n"))
+    out = _run_serve(planner, [{"instruction": "task"}, {"shutdown": True}])
+    assert out[1] == {"plan": ["a", "b"]}
+
+
+# --------------------------------------------------------------------------- #
+# serve() — grounding requests (additive; legacy plan/check paths untouched)
+# --------------------------------------------------------------------------- #
+
+
+def test_serve_ground_returns_target() -> None:
+    planner = LLMPlanner(_FakeVLMGen("the red mug on the left"))
+    out = _run_serve(
+        planner,
+        [
+            {"ground": {"query": "the object to pick up", "image": _tiny_png_b64()}},
+            {"shutdown": True},
+        ],
+    )
+    assert out[0] == {"ready": True}
+    assert out[1] == {"target": "the red mug on the left"}
+
+
+def test_serve_ground_missing_query() -> None:
+    planner = LLMPlanner(_FakeVLMGen("x"))
+    out = _run_serve(planner, [{"ground": {"image": _tiny_png_b64()}}, {"shutdown": True}])
+    assert any(m.get("error") == "ground missing 'query' string" for m in out)
+
+
+def test_serve_ground_unsupported_when_planner_lacks_ground() -> None:
+    class _PlanOnly:
+        def plan(self, instruction: str, image: object = None) -> list[str]:
+            return ["a"]
+
+    out = _run_serve(  # type: ignore[arg-type]
+        _PlanOnly(),
+        [{"ground": {"query": "x", "image": _tiny_png_b64()}}, {"shutdown": True}],
+    )
+    assert any(m.get("error") == "ground unsupported" for m in out)
+
+
+# --------------------------------------------------------------------------- #
 # RemotePlanner — the client, against a fake server subprocess
 # --------------------------------------------------------------------------- #
 
@@ -158,6 +247,42 @@ sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
 for line in sys.stdin:
     if line.strip():
         sys.stdout.write(json.dumps({"plan": []}) + "\\n"); sys.stdout.flush()
+"""
+
+# Answers completion checks: done iff the instruction contains "done".
+_FAKE_SERVER_CHECK = """
+import json, sys
+sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    if isinstance(req.get("check"), dict):
+        instr = req["check"].get("instruction", "")
+        sys.stdout.write(json.dumps({"done": "done" in instr}) + "\\n"); sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"plan": ["p0", "p1"]}) + "\\n"); sys.stdout.flush()
+"""
+
+# Answers grounding requests: echoes back "grounded: <query>".
+_FAKE_SERVER_GROUND = """
+import json, sys
+sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    if isinstance(req.get("ground"), dict):
+        q = req["ground"].get("query", "")
+        sys.stdout.write(json.dumps({"target": "grounded: " + q}) + "\\n"); sys.stdout.flush()
+        continue
+    sys.stdout.write(json.dumps({"plan": ["p0", "p1"]}) + "\\n"); sys.stdout.flush()
 """
 
 # Echoes whether the request carried an "image" field (a base64 string).
@@ -289,5 +414,94 @@ def test_remote_planner_satisfies_protocol(tmp_path: Path) -> None:
     planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
     try:
         assert isinstance(planner, PlannerRuntime)
+    finally:
+        planner.close()
+
+
+def test_remote_planner_satisfies_completion_detector(tmp_path: Path) -> None:
+    from odyssey.runners.agents.runtime import CompletionDetector
+
+    planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
+    try:
+        assert isinstance(planner, CompletionDetector)
+    finally:
+        planner.close()
+
+
+def test_remote_planner_check_done_roundtrip(tmp_path: Path) -> None:
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_CHECK, tmp_path)
+    try:
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        assert planner.check_done("the task is done now", img) is True
+        assert planner.check_done("still working", img) is False
+    finally:
+        planner.close()
+
+
+def test_remote_planner_check_done_false_without_image(tmp_path: Path) -> None:
+    # image=None short-circuits to False without starting the subprocess.
+    planner = _planner_for(_FAKE_SERVER_CHECK, tmp_path)
+    try:
+        assert planner.check_done("done", None) is False
+        assert planner._proc is None  # never launched
+    finally:
+        planner.close()
+
+
+def test_remote_planner_check_done_false_against_old_server(tmp_path: Path) -> None:
+    # An old server that doesn't understand {"check": ...} replies with a plan;
+    # the client fails safe to False (no "done" key).
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
+    try:
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        assert planner.check_done("anything", img) is False
+    finally:
+        planner.close()
+
+
+def test_remote_planner_satisfies_grounding_provider(tmp_path: Path) -> None:
+    from odyssey.runners.agents.runtime import GroundingProvider
+
+    planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
+    try:
+        assert isinstance(planner, GroundingProvider)
+    finally:
+        planner.close()
+
+
+def test_remote_planner_ground_roundtrip(tmp_path: Path) -> None:
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_GROUND, tmp_path)
+    try:
+        img = np.zeros((4, 4, 3), dtype=np.uint8)
+        assert planner.ground("the object to pick up", img) == "grounded: the object to pick up"
+    finally:
+        planner.close()
+
+
+def test_remote_planner_ground_echoes_query_without_image(tmp_path: Path) -> None:
+    # image=None short-circuits to the query without starting the subprocess.
+    planner = _planner_for(_FAKE_SERVER_GROUND, tmp_path)
+    try:
+        assert planner.ground("the target", None) == "the target"
+        assert planner._proc is None  # never launched
+    finally:
+        planner.close()
+
+
+def test_remote_planner_ground_echoes_query_against_old_server(tmp_path: Path) -> None:
+    # An old server that doesn't understand {"ground": ...} replies with a plan;
+    # the client fails safe to echoing the query (no "target" key).
+    import numpy as np
+
+    planner = _planner_for(_FAKE_SERVER_OK, tmp_path)
+    try:
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        assert planner.ground("the mug", img) == "the mug"
     finally:
         planner.close()

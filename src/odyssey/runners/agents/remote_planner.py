@@ -88,6 +88,15 @@ class RemotePlanner:
         model, so this is generous.
     request_timeout:
         Seconds to wait for a single plan response.
+    check_timeout:
+        Seconds to wait for a single completion-check response. Short by design
+        (the check runs on the per-step loop, every K steps): a hung check
+        falls back to ``False`` rather than freezing the episode.
+    ground_timeout:
+        Seconds to wait for a single grounding response. Grounding runs only at
+        phase boundaries (not every step), so it can afford a longer budget than
+        the completion check; a hung grounding call falls back to echoing the
+        query rather than freezing the episode.
     launch_args:
         Argv (after ``python_path``) that starts the server. Defaults to
         ``("-m", planner_server)``; overridable for tests.
@@ -101,6 +110,8 @@ class RemotePlanner:
         python_path: str,
         startup_timeout: float = 600.0,
         request_timeout: float = 120.0,
+        check_timeout: float = 5.0,
+        ground_timeout: float = 15.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
     ) -> None:
         self._model_base = model_base
@@ -108,6 +119,8 @@ class RemotePlanner:
         self._python_path = python_path
         self._startup_timeout = startup_timeout
         self._request_timeout = request_timeout
+        self._check_timeout = check_timeout
+        self._ground_timeout = ground_timeout
         self._launch_args = list(launch_args)
         self._proc: subprocess.Popen[str] | None = None
         # A background thread drains stdout into this queue. We avoid
@@ -216,6 +229,74 @@ class RemotePlanner:
                 task_instruction,
             )
         return [task_instruction]
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        """Ask the out-of-process SPECIALIST if ``instruction`` is completed.
+
+        Satisfies ``CompletionDetector``. Reuses the same loaded model as
+        ``plan`` over the same channel; unlike ``plan`` this runs on the
+        per-step loop (every K steps), so it uses the short ``check_timeout``.
+        Fails safe: any error, timeout, missing frame, or a server that doesn't
+        support checks (``{"error": ...}``) returns ``False`` — a phase never
+        advances on a bad check (the runtime's step cap still guarantees
+        progress).
+        """
+        if image is None:
+            return False
+        try:
+            self._ensure_started()
+            proc = self._proc
+            assert proc is not None and proc.stdin is not None
+            request = {
+                "check": {"instruction": instruction, "image": _encode_image(image)}
+            }
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+            msg = self._read_message(self._check_timeout)
+            return bool((msg or {}).get("done"))
+        except Exception as e:
+            logger.warning(
+                "RemotePlanner.check_done failed (%s) for %r — treating as not done",
+                e,
+                instruction,
+            )
+            return False
+
+    def ground(self, target_query: str, image: Any) -> str:
+        """Ask the out-of-process SPECIALIST to ground ``target_query`` in ``image``.
+
+        Satisfies ``GroundingProvider``. Reuses the same loaded model as ``plan``
+        over the same channel. Runs only at phase boundaries (not every step),
+        so it uses the moderate ``ground_timeout``. Fails safe: any error,
+        timeout, missing frame, or a server that doesn't support grounding
+        (``{"error": ...}``) returns ``target_query`` unchanged — the pilot
+        always receives an actionable instruction.
+        """
+        if image is None:
+            return target_query
+        try:
+            self._ensure_started()
+            proc = self._proc
+            assert proc is not None and proc.stdin is not None
+            request = {"ground": {"query": target_query, "image": _encode_image(image)}}
+            proc.stdin.write(json.dumps(request) + "\n")
+            proc.stdin.flush()
+            msg = self._read_message(self._ground_timeout)
+            target = (msg or {}).get("target")
+            if isinstance(target, str) and target.strip():
+                return target.strip()
+            logger.warning(
+                "RemotePlanner: bad/empty grounding %r for %r — echoing query",
+                msg,
+                target_query,
+            )
+        except Exception as e:
+            logger.warning(
+                "RemotePlanner.ground failed (%s) for %r — echoing query",
+                e,
+                target_query,
+            )
+        return target_query
 
     def close(self) -> None:
         """Shut down the server process. Idempotent; also runs at exit."""
