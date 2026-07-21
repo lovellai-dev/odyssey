@@ -70,7 +70,9 @@ COND_PORT=5604
 CKPT=${CKPT_OVERRIDE:-/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000}
 STEER_SRC=/home/ubuntu/steering_net_v02.npz
 OBS_WEIGHTS=$BC/percep_weights_browser
-SEEDS=(7777 8888 9999)
+# The powered protocol is 3 fixed-seed blocks; EVAL_SEEDS overrides for a fast
+# single-block diagnostic read (e.g. EVAL_SEEDS="7777").
+SEEDS=(${EVAL_SEEDS:-7777 8888 9999})
 
 export DISPLAY=${DISPLAY:-:1}
 cd "$BC"
@@ -236,9 +238,10 @@ done
 # ---- aggregate with Wilson CIs --------------------------------------------------
 log "STEP4 aggregate (Wilson 95% CI over 45)"
 BH=$(curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health || echo '{}')
-"$PYUR5E" - "$WORK" "$RESULT" "$BH" <<'PY' || fail "aggregate"
+"$PYUR5E" - "$WORK" "$RESULT" "$BH" "${SEEDS[*]}" <<'PY' || fail "aggregate"
 import json, math, sys
 work, outp, bh = sys.argv[1], sys.argv[2], sys.argv[3]
+seeds = [int(x) for x in sys.argv[4].split()] if len(sys.argv) > 4 and sys.argv[4].strip() else [7777, 8888, 9999]
 def wilson(k, n, z=1.96):
     if n == 0: return (0.0, 0.0, 0.0)
     p = k / n
@@ -247,7 +250,7 @@ def wilson(k, n, z=1.96):
     h = z*math.sqrt(p*(1-p)/n + z*z/(4*n*n)) / d
     return (p, max(0.0, c-h), min(1.0, c+h))
 blocks, results = {}, []
-for s in (7777, 8888, 9999):
+for s in seeds:
     ev = json.load(open(f"{work}/out_{s}/eval_groot.json"))
     rs = ev.get("results") or []
     results += rs
