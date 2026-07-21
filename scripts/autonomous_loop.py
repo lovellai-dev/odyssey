@@ -156,7 +156,10 @@ def gate_result(lever: str, before: dict[str, Any], after: dict[str, Any]) -> di
 
 LEVER_TARGET_METRIC: dict[str, str] = {
     "L0_base": "reached", "L1_steering": "centered", "L2_selection": "closed",
-    "L3_dagger": "lifted", "L4_distill": "seated", "L5_servo": "closed",
+    "L3_dagger": "lifted", "L4_distill": "seated",
+    # L5 servo improves sub-cm CENTERING so the (already ~89%) close actually
+    # CAPTURES -> the measurable outcome is 'lifted', not 'closed'.
+    "L5_servo": "lifted",
     "L6_place": "seated",
 }
 
