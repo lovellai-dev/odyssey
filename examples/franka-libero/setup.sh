@@ -176,14 +176,28 @@ PY
 # --- gr00t only: build the GR00T policy-server venv + pre-download the suite ---
 if [ "$PILOT" = "gr00t" ]; then
   echo "[setup] --pilot gr00t: building the GR00T policy server + downloading '$SUITE'…"
+  # The LIBERO recipe is the ZMQ CLIENT of the GR00T server — it needs the light
+  # transport deps in THIS (pilot) venv; the server's own venv has its own copy.
+  pip install msgpack msgpack-numpy pyzmq
   [ -d "$ISAAC_GR00T_DIR/.git" ] || \
     git clone https://github.com/NVIDIA/Isaac-GR00T.git "$ISAAC_GR00T_DIR"
   # quickstart-gr00t/setup.sh step [2/4] builds $ISAAC_GR00T_DIR/.venv (py3.12); its
   # Isaac-Lab step SKIPs itself (no ISAAC_PYTHON) — LIBERO needs no Isaac Sim.
   # ODYSSEY_VENV=.venv-core so it never clobbers a pre-existing core .venv.
   ODYSSEY_VENV=.venv-core bash "$REPO_ROOT/examples/quickstart-gr00t/setup.sh"
-  # The server runs offline (gated Cosmos backbone) → pre-cache the checkpoint.
+  # The server runs offline → pre-cache BOTH the suite checkpoint AND the backbone.
   huggingface-cli download nvidia/GR00T-N1.7-LIBERO --include "$SUITE/*"
+  # Every GR00T checkpoint loads the GATED VLM backbone nvidia/Cosmos-Reason2-2B; it
+  # must be in the HF cache for the (offline) server to start. Needs prior access +
+  # auth. Non-fatal: warn clearly with the fix steps if it isn't accessible yet.
+  echo "[setup] pre-caching the gated GR00T backbone nvidia/Cosmos-Reason2-2B…"
+  if ! huggingface-cli download nvidia/Cosmos-Reason2-2B; then
+    echo "[setup] WARNING: could not fetch nvidia/Cosmos-Reason2-2B (gated) — GR00T will" >&2
+    echo "        NOT start until it is cached. To fix:" >&2
+    echo "          1) request access: https://huggingface.co/nvidia/Cosmos-Reason2-2B" >&2
+    echo "          2) huggingface-cli login" >&2
+    echo "          3) huggingface-cli download nvidia/Cosmos-Reason2-2B  (or re-run this setup)" >&2
+  fi
   cat <<EOF
 
 [setup] Done (GR00T pilot). Next:
