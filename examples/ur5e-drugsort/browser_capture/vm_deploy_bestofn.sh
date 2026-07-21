@@ -18,6 +18,11 @@ STEER_SERVO=${STEER_SERVO:-0}
 # so an offline pass can replay the same states on dataset frames. Off by default.
 STEER_DIAG=${STEER_DIAG:-0}
 STEER_DIAG_MAX=${STEER_DIAG_MAX:-40}
+# Observer->IK handoff (full-authority final-cm capture) + its tuning knobs.
+STEER_HANDOFF=${STEER_HANDOFF:-0}
+STEER_HANDOFF_ZONE=${STEER_HANDOFF_ZONE:-0.15}
+STEER_HANDOFF_CLOSE=${STEER_HANDOFF_CLOSE:-0.02}
+STEER_HANDOFF_MOVECAP=${STEER_HANDOFF_MOVECAP:-0.6}
 GROOT_PY=/home/ubuntu/Isaac-GR00T/.venv/bin/python
 EVAL_PY=/home/ubuntu/odyssey-eval-venv/bin/python
 XML=/home/ubuntu/aseptipack_description/aseptipack.xml
@@ -36,7 +41,7 @@ curl -s --max-time 3 http://127.0.0.1:$FK_PORT/health | grep -q '"ok": *true' ||
 STEER_ARG=""
 [ -n "$STEER_NET" ] && STEER_ARG="--steering-net $STEER_NET"
 tmux new-session -d -s groot_bestofn_svc \
-  "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 STEER_SERVO=$STEER_SERVO STEER_DIAG=$STEER_DIAG STEER_DIAG_MAX=$STEER_DIAG_MAX $GROOT_PY serve_groot_bestofn.py \
+  "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 STEER_SERVO=$STEER_SERVO STEER_DIAG=$STEER_DIAG STEER_DIAG_MAX=$STEER_DIAG_MAX STEER_HANDOFF=$STEER_HANDOFF STEER_HANDOFF_ZONE=$STEER_HANDOFF_ZONE STEER_HANDOFF_CLOSE=$STEER_HANDOFF_CLOSE STEER_HANDOFF_MOVECAP=$STEER_HANDOFF_MOVECAP $GROOT_PY serve_groot_bestofn.py \
    --model-path $CKPT --http-host 127.0.0.1 --http-port $HTTP_PORT \
    --fk-url http://127.0.0.1:$FK_PORT $STEER_ARG 2>&1 | tee /home/ubuntu/bestofn_svc.log"
 for i in $(seq 1 60); do

@@ -96,12 +96,18 @@ class BestOfNService:
         # L5 lever — bounded final-centimeter visual servo (STEER_SERVO=1, opt-in).
         # OFF => the V4 selection path is byte-identical (no "servo" key emitted).
         self.servo_enabled = os.environ.get("STEER_SERVO", "0") == "1"
+        # Observer->IK HANDOFF (STEER_HANDOFF=1): full-authority final-cm capture.
+        # Stronger than the bounded servo — hands the sub-cm step to the IK oracle.
+        self.handoff_enabled = os.environ.get("STEER_HANDOFF", "0") == "1"
         self.servo = None
         self.servo_kwargs: dict = {}
         self.n_servo_applied = 0
-        if self.servo_enabled:
+        self.handoff_kwargs: dict = {}
+        self.n_handoff_applied = 0
+        if self.servo_enabled or self.handoff_enabled:
             import servo_ur5e as servo
             self.servo = servo
+        if self.servo_enabled:
             self.servo_kwargs = dict(
                 radius=float(os.environ.get("STEER_SERVO_RADIUS", "0.08")),
                 gain=float(os.environ.get("STEER_SERVO_GAIN", "0.8")),
@@ -110,8 +116,16 @@ class BestOfNService:
                 max_dominance=float(os.environ.get("STEER_SERVO_DOMINANCE", "0.5")),
             )
             print(f"[bestofn] L5 servo ENABLED | {self.servo_kwargs}", flush=True)
+        if self.handoff_enabled:
+            self.handoff_kwargs = dict(
+                capture_zone=float(os.environ.get("STEER_HANDOFF_ZONE", "0.15")),
+                close_thresh=float(os.environ.get("STEER_HANDOFF_CLOSE", "0.02")),
+                move_cap=float(os.environ.get("STEER_HANDOFF_MOVECAP", "0.6")),
+            )
+            print(f"[bestofn] Observer->IK HANDOFF ENABLED | {self.handoff_kwargs}", flush=True)
         print(f"[bestofn] ready | ckpt={model_path} fk={self.fk_url} "
-              f"servo={'on' if self.servo_enabled else 'off'}", flush=True)
+              f"servo={'on' if self.servo_enabled else 'off'} "
+              f"handoff={'on' if self.handoff_enabled else 'off'}", flush=True)
 
     # -- helpers ---------------------------------------------------------------
     @staticmethod
@@ -290,7 +304,9 @@ class BestOfNService:
             # When STEER_SERVO is off, `chosen_arm` is exactly `arm[chosen]` and
             # no "servo" key is added => the response is byte-identical to V4.
             chosen_arm = arm[chosen]
+            chosen_grip = np.asarray(grip[chosen], dtype=np.float32).copy()  # (16,)
             servo_report = None
+            handoff_report = None
             if self.servo_enabled:
                 tgt = cfg.get("grasp_target") or cfg.get("vial")
                 if tgt is not None:
@@ -303,17 +319,34 @@ class BestOfNService:
                     chosen_arm = corrected
                     if servo_report.get("applied"):
                         self.n_servo_applied += 1
+            if self.handoff_enabled:
+                # Full-authority Observer->IK handoff: takes over the arm AND grip
+                # for the final centimetre once GR00T's reach is in the zone.
+                tgt = cfg.get("grasp_target") or cfg.get("vial")
+                if tgt is not None:
+                    a_ho, g_ho, handoff_report = self.servo.ik_handoff(
+                        chosen_arm, chosen_grip, self._fk_batch, tgt,
+                        int(cfg.get("phase", 0)), bool(cfg.get("grasped", False)),
+                        lim, exec_horizon=int(cfg.get("exec_horizon", 8)),
+                        **self.handoff_kwargs,
+                    )
+                    chosen_arm = a_ho
+                    chosen_grip = np.asarray(g_ho, dtype=np.float32)
+                    if handoff_report.get("applied"):
+                        self.n_handoff_applied += 1
 
             out = {
                 "q": [float(v) for v in chosen_arm[0]],
-                "grip": float(np.clip(grip[chosen, 0], 0.0, 1.0)),
+                "grip": float(np.clip(chosen_grip[0], 0.0, 1.0)),
                 "chunk_q": [[float(v) for v in row] for row in chosen_arm],
-                "chunk_grip": [float(np.clip(g, 0.0, 1.0)) for g in grip[chosen]],
+                "chunk_grip": [float(np.clip(g, 0.0, 1.0)) for g in chosen_grip],
                 "bestofn": report,
                 "steer_head": ("v4" if steer_head_used else None),
             }
             if self.servo_enabled:
                 out["servo"] = servo_report
+            if self.handoff_enabled:
+                out["handoff"] = handoff_report
             return out
 
 

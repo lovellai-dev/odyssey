@@ -252,3 +252,134 @@ def servo_correction(
     report["gated_on"] = True
     report["reason"] = "applied"
     return corrected, report
+
+
+# ---------------------------------------------------------------------------
+# Observer -> IK-oracle HANDOFF (full-authority final-centimetre capture)
+# ---------------------------------------------------------------------------
+# The servo above is a BOUNDED nudge — GR00T keeps the majority of the motion,
+# which is right for a policy that mostly works but caps how far it can fix the
+# sub-cm capture GR00T structurally can't do (Phase-1: gross reach + blind grip).
+# The handoff is the stronger move: once GR00T's gross reach has put the pinch
+# inside a small CAPTURE ZONE and the phase is REACH/GRASP, the IK ORACLE takes
+# FULL authority for the last centimetre — multi-step DLS-IK drives the pinch to
+# the Observer target and the gripper closes once aligned. This offloads the
+# precision to the component that HAS it (physics-exact IK + render-robust
+# Observer) instead of hoping the VLA learns sub-cm. Opt-in (STEER_HANDOFF=1);
+# byte-identical to the V4 path when off.
+
+
+def _ik_solve(pinch_fn: Callable[[np.ndarray], np.ndarray], q0: np.ndarray,
+              target: np.ndarray, *, max_iters: int, damping: float,
+              step_bound: float, fd_eps: float, tol: float) -> tuple[np.ndarray, float, int]:
+    """Multi-step damped-least-squares IK: drive pinch(q) -> target in joint space.
+
+    Iterates the same DLS update as :func:`_dls_step` to convergence (unlike the
+    servo's single bounded step). Returns ``(q_star, final_err_m, iters)``.
+    """
+    q = np.asarray(q0, dtype=np.float64).reshape(6).copy()
+    tgt = np.asarray(target, dtype=np.float64).reshape(3)
+    err_m = 9.99
+    for k in range(int(max_iters)):
+        jac, pinch = _fd_jacobian(pinch_fn, q, fd_eps)
+        err = tgt - pinch
+        err_m = float(np.linalg.norm(err))
+        if err_m <= tol:
+            return q, err_m, k
+        dq = np.clip(_dls_step(jac, err, damping), -step_bound, step_bound)
+        q = q + dq
+    return q, err_m, int(max_iters)
+
+
+def ik_handoff(
+    a_groot_chunk: np.ndarray,
+    grip_chunk: np.ndarray,
+    pinch_fn: Callable[[np.ndarray], np.ndarray],
+    observer_target: Sequence[float] | None,
+    phase: int,
+    grasped: bool,
+    lim: cbf.Limits | None = None,
+    *,
+    capture_zone: float = 0.15,
+    close_thresh: float = 0.02,
+    grasp_tol: float = 0.005,
+    max_iters: int = 12,
+    damping: float = 0.05,
+    step_bound: float = 0.2,
+    move_cap: float = 0.6,
+    active_phases: Sequence[int] = (REACH, GRASP),
+    exec_horizon: int = 8,
+    fd_eps: float = 1.0e-4,
+    gamma: float = 0.4,
+    tol: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Full-authority Observer->IK handoff for the final centimetre.
+
+    Gated to REACH/GRASP within ``capture_zone`` of the target and only while NOT
+    yet grasped. When it fires it REPLACES GR00T's chosen arm chunk with a DLS-IK
+    ramp toward the grasp target (per-query move-capped so it converges over
+    re-queries, closed-loop), CBF-checked, and CLOSES the gripper once the pinch
+    is within ``close_thresh``. Returns ``(arm_chunk, grip_chunk, report)``; when
+    the gate is closed both inputs are returned unchanged.
+    """
+    lim = lim or cbf.Limits()
+    arm = np.asarray(a_groot_chunk, dtype=np.float64)
+    grip = np.asarray(grip_chunk, dtype=np.float64).reshape(-1).copy()
+    report: dict[str, Any] = {
+        "handoff": True, "applied": False, "reason": "off",
+        "pinch_err_before_cm": None, "pinch_err_after_cm": None,
+        "iters": 0, "grip_close": False, "cbf_scale": 0.0,
+    }
+    if observer_target is None or arm.ndim != 2 or arm.shape[0] < 2 or arm.shape[1] != 6:
+        report["reason"] = "no_target_or_degenerate"
+        return a_groot_chunk, grip_chunk, report
+    if int(phase) not in {int(p) for p in active_phases} or bool(grasped):
+        report["reason"] = "phase_or_grasped_gate"
+        return a_groot_chunk, grip_chunk, report
+
+    tgt = np.asarray(observer_target, dtype=np.float64).reshape(3)
+    q0 = arm[0].astype(np.float64)
+    pinch0 = _batch_pinch(pinch_fn, q0[None])[0]
+    d0 = float(np.linalg.norm(tgt - pinch0))
+    report["pinch_err_before_cm"] = round(d0 * 100.0, 3)
+    if d0 > capture_zone:
+        report["reason"] = "out_of_capture_zone"        # GR00T still doing gross reach
+        return a_groot_chunk, grip_chunk, report
+
+    # --- IK oracle takes over: solve, then move-cap for closed-loop convergence -
+    q_star, _err_star, iters = _ik_solve(pinch_fn, q0, tgt, max_iters=max_iters,
+                                         damping=damping, step_bound=step_bound,
+                                         fd_eps=fd_eps, tol=grasp_tol)
+    report["iters"] = iters
+    dqt = q_star - q0
+    nrm = float(np.linalg.norm(dqt))
+    if nrm > move_cap:
+        dqt = dqt * (move_cap / nrm)
+    q_cmd = q0 + dqt
+    T = arm.shape[0]
+    ramp = np.linspace(0.0, 1.0, T)[:, None]
+
+    # CBF-safe: keep the largest feasible scale of the ramp toward q_cmd.
+    cand, scale_kept = None, 0.0
+    for scale in _SHRINK_SCALES:
+        c = q0[None, :] + scale * ramp * (q_cmd - q0)[None, :]
+        if _feasible(c, pinch_fn, observer_target=tgt, grasped=grasped, phase=int(phase),
+                     lim=lim, exec_horizon=exec_horizon, gamma=gamma, tol=tol):
+            cand, scale_kept = c, float(scale)
+            break
+    report["cbf_scale"] = scale_kept
+    if cand is None or scale_kept == 0.0:
+        report["reason"] = "cbf_infeasible"
+        return a_groot_chunk, grip_chunk, report
+
+    # Close the gripper once ALREADY aligned (a prior query drove the pinch in).
+    if d0 <= close_thresh:
+        grip[:] = 1.0
+        report["grip_close"] = True
+
+    report["pinch_err_after_cm"] = round(
+        float(np.linalg.norm(tgt - _batch_pinch(pinch_fn, cand[0][None])[0])) * 100.0, 3)
+    report["applied"] = True
+    report["reason"] = "applied"
+    corrected = cand.astype(np.asarray(a_groot_chunk).dtype, copy=False)
+    return corrected, grip, report
