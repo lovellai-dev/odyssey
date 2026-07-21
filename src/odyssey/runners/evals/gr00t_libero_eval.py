@@ -147,11 +147,23 @@ def _emit(line: str) -> None:
 def _resolve_served_path(checkpoint: str, suite: str) -> str:
     """GR00T-N1.7-LIBERO ships one subdir per suite (``libero_object/`` ...).
 
-    When ``<checkpoint>/<suite>`` exists on disk, serve that; otherwise serve the
-    checkpoint as-is (a suite-specific local dir or an HF id the server resolves).
+    Return the ``<checkpoint>/<suite>`` subdir when it exists — resolving an HF repo
+    id to its local cache snapshot first (offline). This lets the shipped mission use
+    ``checkpoint: nvidia/GR00T-N1.7-LIBERO`` and still serve the per-suite subdir: the
+    server runs ``HF_HUB_OFFLINE`` and the repo ROOT has no config (the model lives in
+    the suite subdir), so a bare repo id would fail. Falls back to the checkpoint
+    as-is (a local dir, or an id the server resolves).
     """
-    sub = os.path.join(str(checkpoint), str(suite))
-    return sub if os.path.isdir(sub) else str(checkpoint)
+    local = str(checkpoint)
+    if not os.path.isdir(local):
+        try:  # maybe an HF repo id already cached — resolve its snapshot dir offline
+            from huggingface_hub import snapshot_download
+
+            local = snapshot_download(local, local_files_only=True)
+        except Exception:
+            return str(checkpoint)
+    sub = os.path.join(local, str(suite))
+    return sub if os.path.isdir(sub) else local
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +272,9 @@ def run_eval(args: argparse.Namespace) -> dict:
                     obs, reward, done, _info = env.step(action.tolist())
                     ep_return += float(reward)
                     if video_dir is not None:
-                        frame = to_uint8_frame(obs[args.image_key])
+                        # match the pilot's orientation: LIBERO's agentview is stored
+                        # 180°-rotated, so flip the video frame too (else it's upside down).
+                        frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
                         if frame is not None:
                             frames.append(frame)
                     step += 1

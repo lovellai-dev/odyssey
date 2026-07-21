@@ -26,6 +26,24 @@ log = logging.getLogger("gr00t_server")
 _SERVER_ENTRY = "gr00t.eval.run_gr00t_server"
 
 
+def _default_server_python() -> str:
+    """Interpreter for the out-of-process GR00T server when none is configured.
+
+    GR00T's model stack lives in a SEPARATE venv (its torch/CUDA ABI clashes with the
+    eval env), so the server can't run under this process's python. Prefer the
+    ``setup.sh --pilot gr00t`` venv — ``$GR00T_VENV_PYTHON``, then
+    ``$ISAAC_GR00T_DIR/.venv/bin/python`` (default ``~/Isaac-GR00T/.venv/bin/python``).
+    Falls back to this process's python only if neither exists (gr00t must then be
+    importable here — usually it isn't, and the server will fail with a clear error).
+    """
+    cand = os.environ.get("GR00T_VENV_PYTHON")
+    if cand and os.path.exists(cand):
+        return cand
+    gdir = os.environ.get("ISAAC_GR00T_DIR", os.path.expanduser("~/Isaac-GR00T"))
+    cand = os.path.join(gdir, ".venv", "bin", "python")
+    return cand if os.path.exists(cand) else sys.executable
+
+
 def build_server_command(
     *,
     checkpoint: str,
@@ -48,7 +66,7 @@ def build_server_command(
     NVIDIA's own ``gr00t/eval/sim/LIBERO`` eval), fed the flat ``video.*``/``state.*``
     obs from ``build_gr00t_libero_obs``.
     """
-    py = server_python or sys.executable
+    py = server_python or _default_server_python()
     argv = [
         py, "-m", _SERVER_ENTRY,
         "--model-path", str(checkpoint),
