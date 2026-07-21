@@ -141,7 +141,7 @@ scp -q -o StrictHostKeyChecking=no "$ODY/scripts/serve_groot_bestofn.py" \
   vm_deploy_bestofn.sh "$VM:/home/ubuntu/" || fail "scp"
 V4NET=""; [ "$V4" = "1" ] && V4NET=/home/ubuntu/steering_net_v4.npz
 # Forward STEER_SERVO so the VM-side service launches with the L5 servo on/off.
-$SSH "$VM" "STEER_SERVO=$STEER_SERVO bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT $V4NET" || fail "vm-deploy"
+$SSH "$VM" "STEER_SERVO=$STEER_SERVO STEER_DIAG=${STEER_DIAG:-0} STEER_DIAG_MAX=${STEER_DIAG_MAX:-40} bash /home/ubuntu/vm_deploy_bestofn.sh $CKPT $HTTP_PORT $FK_PORT $V4NET" || fail "vm-deploy"
 $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$HTTP_PORT:127.0.0.1:$HTTP_PORT "$VM" || fail "tunnel"
 for i in $(seq 1 30); do curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"ok": *true' && break; sleep 5; done
 curl -s --max-time 5 http://127.0.0.1:$HTTP_PORT/health | grep -q '"bestofn": *true' || fail "bestofn-health"

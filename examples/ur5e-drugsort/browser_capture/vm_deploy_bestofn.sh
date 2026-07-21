@@ -13,6 +13,11 @@ STEER_NET=${4:-}   # optional: v4 image-conditioned head .npz (server-side mean)
 # bounded final-cm visual servo onto its selected chunk. Default 0 -> off, the
 # served response is byte-identical to the current V4 path.
 STEER_SERVO=${STEER_SERVO:-0}
+# Render-gap diagnostic: STEER_DIAG=1 makes the service dump the head-mean's
+# decoded pinch-vs-target + the received browser frames for the first N queries,
+# so an offline pass can replay the same states on dataset frames. Off by default.
+STEER_DIAG=${STEER_DIAG:-0}
+STEER_DIAG_MAX=${STEER_DIAG_MAX:-40}
 GROOT_PY=/home/ubuntu/Isaac-GR00T/.venv/bin/python
 EVAL_PY=/home/ubuntu/odyssey-eval-venv/bin/python
 XML=/home/ubuntu/aseptipack_description/aseptipack.xml
@@ -31,7 +36,7 @@ curl -s --max-time 3 http://127.0.0.1:$FK_PORT/health | grep -q '"ok": *true' ||
 STEER_ARG=""
 [ -n "$STEER_NET" ] && STEER_ARG="--steering-net $STEER_NET"
 tmux new-session -d -s groot_bestofn_svc \
-  "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 STEER_SERVO=$STEER_SERVO $GROOT_PY serve_groot_bestofn.py \
+  "cd /home/ubuntu && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 STEER_SERVO=$STEER_SERVO STEER_DIAG=$STEER_DIAG STEER_DIAG_MAX=$STEER_DIAG_MAX $GROOT_PY serve_groot_bestofn.py \
    --model-path $CKPT --http-host 127.0.0.1 --http-port $HTTP_PORT \
    --fk-url http://127.0.0.1:$FK_PORT $STEER_ARG 2>&1 | tee /home/ubuntu/bestofn_svc.log"
 for i in $(seq 1 60); do
