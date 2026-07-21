@@ -1,0 +1,69 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-multiagent
+  description: >-
+    Multi-agent eval — a GR00T-N1.7 PILOT driven by an out-of-process Gemma
+    SPECIALIST over the LIBERO object suite (Franka, sim). The SPECIALIST
+    decomposes the task (planning arm) and gates phase transitions with a
+    completion check; the GR00T pilot emits action chunks that a chunk-aware
+    adapter drains and re-queries on each phase change. Set
+    `coordination: delegation` to run the delegation arm instead.
+  tags: [gr00t, nvidia, libero, robosuite, franka, multi-agent, eval-only]
+
+objective: |
+  Evaluate GR00T-N1.7 on LIBERO object with a SPECIALIST-in-the-loop
+  (planner + completion-gated phase transitions), and compare against the
+  single-agent GR00T baseline (mission-gr00t.yaml).
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, the SPECIALIST plans + gates phases,
+  chunks execute in LIBERO, and the run reports a non-trivial success_rate.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+    - id: task-planner
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal        # sees the frame to plan + check completion
+
+tasks:
+  - name: eval-libero-object-gr00t-ma
+    kind: evaluation
+    evaluation_type: libero
+    description: Multi-agent pick-and-place of task_id=0 (LIBERO object), GR00T pilot.
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t                      # -> gr00t_libero_eval.py + GR00T policy server
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      # --- multi-agent coordination (the SPECIALIST is required in the loadout) ---
+      coordination: planning            # planning | delegation
+      phase_strategy: completion_gated  # planning arm: advance on the SPECIALIST's yes
+      phase_check_every: 10             # poll the completion check every N steps
+      phase_max_steps: 100              # safety cap so a phase never wedges
+      # NOTE: run with ODYSSEY_SPECIALIST_PYTHON set (the Gemma venv) — the runner
+      # forwards it to the recipe so the out-of-process planner can boot.
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+
+      # --- action chunk (LIBERO action is ABSOLUTE 7-DoF; no pos/rot scaling) ---
+      n_action_steps: 16
+
+      capture_video: true
