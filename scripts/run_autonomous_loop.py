@@ -513,23 +513,25 @@ def _driver_spec(name: str, cfg: dict[str, Any]) -> dict[str, Any]:
             "parse": "checkpoint",   # benign: result has no 'checkpoint' -> base ckpt kept
         }
     if name == "powered_eval":
-        # Mirror run_powered_eval.sh's SUF exactly: v4 -> _v4 ; v4+servo ->
-        # _v4_servo. Servo evals MUST read a distinct result/log so they never
-        # reuse the v4 candidate's completed blocks (RESUME=1) — otherwise the
-        # servo is never actually run and its gate compares a config to itself.
+        # Key the eval WORK/result/log dir by the FULL candidate config_hash, not
+        # by mode. RESUME=1 keeps completed blocks across infra hiccups; sharing a
+        # dir across candidates (different base ckpt, steering head, or servo)
+        # makes RESUME reuse the WRONG candidate's blocks. That bug fed 4-day-old
+        # obscond blocks into fresh dr-base evals and produced bogus gates. The
+        # config_hash encodes ckpt+mode, so every distinct candidate gets its own
+        # dir and RESUME can only ever reuse the SAME candidate's partial blocks.
         env = _eval_env(cfg)
-        suf = "_v4" if env.get("V4") == "1" else ""
-        if env.get("STEER_SERVO") == "1":
-            suf += "_servo"
+        chash = _config_hash(cfg)
+        env["EVAL_TAG"] = chash
         return {
             "cmd": ["bash", str(BC / "run_powered_eval.sh")],
-            "env": _eval_env(cfg),
-            "log": str(HOME / f"powered_eval{suf}.log"),
+            "env": env,
+            "log": str(HOME / f"powered_eval_{chash}.log"),
             "marker_done": "POWERED_EVAL DONE",
             "marker_fail": "POWERED_EVAL FAILED",
-            "result": str(HOME / f"powered_eval{suf}_result.json"),
+            "result": str(HOME / f"powered_eval_{chash}_result.json"),
             "parse": "funnel",
-            "config_hash": _config_hash(cfg),
+            "config_hash": chash,
         }
     raise ValueError(f"unknown driver {name}")
 

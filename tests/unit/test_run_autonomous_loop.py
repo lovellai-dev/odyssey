@@ -364,16 +364,26 @@ def test_l5_driver_spec_marker_and_script():
     assert spec["env"].get("CKPT_OVERRIDE") == "/vm/ckpt"
 
 
-def test_powered_eval_servo_uses_distinct_result_path_from_v4():
-    # REGRESSION: the servo eval MUST read a different result/log than the v4
-    # eval. Sharing them (both '_v4') let RESUME=1 reuse the v4 candidate's
-    # completed blocks, so the servo was never actually run and its gate
-    # compared L1's funnel to itself. servo -> _v4_servo, v4 -> _v4.
-    v4 = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckpt", "mode": "v4"})
-    servo = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckpt", "mode": "servo"})
-    assert v4["result"] != servo["result"], "servo must not share the v4 result file"
-    assert v4["log"] != servo["log"], "servo must not share the v4 log file"
-    assert servo["result"].endswith("powered_eval_v4_servo_result.json")
-    assert v4["result"].endswith("powered_eval_v4_result.json")
-    # the STATE_DIR funnel cache is already distinct (config_hash includes mode)
-    assert v4["config_hash"] != servo["config_hash"]
+def test_powered_eval_workdir_keyed_by_full_candidate_not_mode():
+    # REGRESSION: RESUME=1 keeps completed blocks across infra hiccups; if two
+    # DIFFERENT candidates share a WORK/result dir it reuses the WRONG blocks.
+    # That fed 4-day-old obscond blocks into fresh dr-base evals (bogus gates).
+    # Every distinct candidate — different base ckpt, different mode, servo on/off
+    # — MUST get its own config_hash-tagged result/log AND pass EVAL_TAG so the
+    # driver's WORK dir is candidate-unique.
+    v4_a = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckptA", "mode": "v4"})
+    v4_b = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckptB", "mode": "v4"})
+    servo = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckptA", "mode": "servo"})
+    bare = rl._driver_spec("powered_eval", {"policy_ckpt": "/vm/ckptA", "mode": "bare"})
+    specs = [v4_a, v4_b, servo, bare]
+    # all four candidates must have pairwise-distinct result/log/tag
+    results = {s["result"] for s in specs}
+    logs = {s["log"] for s in specs}
+    tags = {s["env"]["EVAL_TAG"] for s in specs}
+    assert len(results) == 4, "each candidate needs its own result file"
+    assert len(logs) == 4, "each candidate needs its own log file"
+    assert len(tags) == 4, "each candidate needs its own EVAL_TAG (WORK dir)"
+    # the result path is tagged by the same hash the driver keys its WORK dir on
+    for s in specs:
+        assert s["env"]["EVAL_TAG"] == s["config_hash"]
+        assert s["result"].endswith(f"powered_eval_{s['config_hash']}_result.json")

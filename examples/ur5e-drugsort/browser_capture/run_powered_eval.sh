@@ -37,18 +37,29 @@ BARE=${BARE:-0}
 # servo onto its selected chunk (arm dims only). Default 0 keeps the served
 # response byte-identical to the current V4 path (backward compatible).
 STEER_SERVO=${STEER_SERVO:-0}
-# SUF distinguishes candidate configs so their blocks never cross-contaminate.
-# Critical: servo runs MUST NOT reuse the v4 blocks (RESUME=1 would skip them),
-# or the servo is never actually evaluated (the L5 gate would compare a config
-# to itself). v4 -> _v4 ; v4+servo -> _v4_servo.
-SUF=""; [ "$V4" = "1" ] && SUF="_v4"
-[ "$STEER_SERVO" = "1" ] && SUF="${SUF}_servo"
-WORK=$HOME/powered_eval$SUF
-LOG=$HOME/powered_eval$SUF.log
-RESULT=$HOME/powered_eval${SUF}_result.json
+# The WORK dir MUST be keyed by the FULL candidate identity, never just the
+# mode. RESUME=1 (below) keeps completed blocks across infra hiccups; if two
+# DIFFERENT candidates (a different base ckpt, a different steering head, or
+# servo on/off) share a WORK dir, RESUME silently reuses the WRONG candidate's
+# blocks. That exact bug substituted 4-day-old obscond blocks for fresh dr-base
+# evals and produced bogus gate verdicts. EVAL_TAG (the loop passes the driver
+# config_hash) gives every distinct candidate its own dir, so RESUME can only
+# ever reuse the SAME candidate's partial blocks. The SUF scheme is retained
+# only as a human-readable fallback for manual, tag-less invocations.
+if [ -n "${EVAL_TAG:-}" ]; then
+  WORK=$HOME/powered_eval_$EVAL_TAG
+  LOG=$HOME/powered_eval_$EVAL_TAG.log
+  RESULT=$HOME/powered_eval_${EVAL_TAG}_result.json
+else
+  SUF=""; [ "$V4" = "1" ] && SUF="_v4"
+  [ "$STEER_SERVO" = "1" ] && SUF="${SUF}_servo"
+  WORK=$HOME/powered_eval$SUF
+  LOG=$HOME/powered_eval$SUF.log
+  RESULT=$HOME/powered_eval${SUF}_result.json
+fi
 # RESUME=1 keeps completed blocks (out_<seed>/eval_groot.json = block marker) —
 # a mid-run infrastructure failure (e.g. a half-dead SSH tunnel) never costs
-# finished blocks.
+# finished blocks. Safe now that WORK is candidate-unique (EVAL_TAG).
 [ "${RESUME:-0}" = "1" ] || rm -rf "$WORK"
 mkdir -p "$WORK"
 
