@@ -186,27 +186,34 @@ class BestOfNService:
             # decoded undithered mean) pinch-vs-target + the browser frames, so an
             # offline pass can replay the same states on dataset frames.
             if self.diag and self.diag_n < self.diag_max and steer_head_used:
-                import base64 as _b64
-                i = self.diag_n
-                mean_pinch = np.asarray(self._fk_batch(arm[0]), float).reshape(-1, 3)  # (16,3)
-                tgt_arr = np.asarray(cfg.get("grasp_target") or cfg.get("vial")
-                                     or state10[7:10], float).reshape(3)
-                dd = np.linalg.norm(mean_pinch - tgt_arr[None], axis=1)
-                for tag, b64 in (("ext", req["image_b64"]),
-                                 ("wrist", req.get("image_b64_wrist") or req["image_b64"])):
-                    with open(f"{self.diag_frames}/{i:03d}_{tag}.png", "wb") as fh:
-                        fh.write(_b64.b64decode(b64))
-                with open(self.diag_path, "a") as fh:
-                    fh.write(json.dumps({
-                        "i": i, "phase": int(cfg.get("phase", 0)),
-                        "state10": [float(v) for v in state10],
-                        "target": [float(v) for v in tgt_arr],
-                        "pooled_norm": float(np.linalg.norm(self._pool(cache)[0])),
-                        "mean_pinch_first": [float(v) for v in mean_pinch[0]],
-                        "mean_to_tgt_cm_first": float(dd[0] * 100.0),
-                        "mean_to_tgt_cm_min": float(dd.min() * 100.0),
-                    }) + "\n")
-                self.diag_n += 1
+                # Diagnostics must NEVER break serving — swallow any error.
+                try:
+                    import base64 as _b64
+                    i = self.diag_n
+                    mean_pinch = np.asarray(self._fk_batch(arm[0]), float).reshape(-1, 3)  # (16,3)
+                    tgt_arr = np.asarray(cfg.get("grasp_target") or cfg.get("vial")
+                                         or state10[7:10], float).reshape(3)
+                    dd = np.linalg.norm(mean_pinch - tgt_arr[None], axis=1)
+                    for tag, b64 in (("ext", req["image_b64"]),
+                                     ("wrist", req.get("image_b64_wrist") or req["image_b64"])):
+                        # Browser frames arrive as data URLs ("data:image/png;base64,..");
+                        # strip the header before decoding the raw base64 payload.
+                        raw = b64.split(",", 1)[-1] if isinstance(b64, str) else b64
+                        with open(f"{self.diag_frames}/{i:03d}_{tag}.png", "wb") as fh:
+                            fh.write(_b64.b64decode(raw))
+                    with open(self.diag_path, "a") as fh:
+                        fh.write(json.dumps({
+                            "i": i, "phase": int(cfg.get("phase", 0)),
+                            "state10": [float(v) for v in state10],
+                            "target": [float(v) for v in tgt_arr],
+                            "pooled_norm": float(np.linalg.norm(self._pool(cache)[0])),
+                            "mean_pinch_first": [float(v) for v in mean_pinch[0]],
+                            "mean_to_tgt_cm_first": float(dd[0] * 100.0),
+                            "mean_to_tgt_cm_min": float(dd.min() * 100.0),
+                        }) + "\n")
+                    self.diag_n += 1
+                except Exception as _e:
+                    print(f"[bestofn] STEER_DIAG capture skipped: {_e}", flush=True)
 
             # Per-request shaping config (powered runs pin these explicitly)
             import clf_reward_ur5e as clfmod
