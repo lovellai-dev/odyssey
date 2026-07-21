@@ -120,7 +120,9 @@ def test_build_gr00t_libero_obs_flat_keys_and_shapes():
     assert obs["state.x"].shape == (1, 1, 1) and obs["state.gripper"].shape == (1, 1, 2)
     assert np.allclose(obs["state.x"].reshape(-1), [0.1])
     assert np.allclose(obs["state.roll"].reshape(-1), [0.0])   # identity quat -> 0 axis-angle
-    assert obs["annotation.human.action.task_description"] == [["pick up the can"]]
+    # sim-policy-wrapper wants a batch of strings (one level), not [[str]] — the
+    # nested form is rejected by the live server ("Language batch item must be a string").
+    assert obs["annotation.human.action.task_description"] == ["pick up the can"]
 
 
 def test_gr00t_action_to_libero_passthrough_pose_and_gripper_open():

@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 # When launched as a script (python …/runners/evals/gr00t_libero_eval.py), sys.path[0]
 # is THIS file's directory — which also holds libero.py (the odyssey LiberoRunner).
@@ -281,7 +282,7 @@ def run_eval(args: argparse.Namespace) -> dict:
         if video_dir and frames:
             os.makedirs(video_dir, exist_ok=True)
             tag = "PASS" if success else "FAIL"
-            save_rollout_video(frames, os.path.join(video_dir, f"episode_{ep:02d}_{tag}.mp4"), 24)
+            save_rollout_video(frames, Path(video_dir) / f"episode_{ep:02d}_{tag}.mp4", 24)
 
     env.close()
     n = max(args.num_episodes, 1)
