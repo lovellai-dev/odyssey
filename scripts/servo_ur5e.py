@@ -300,56 +300,89 @@ def ik_handoff(
     grasped: bool,
     lim: cbf.Limits | None = None,
     *,
-    capture_zone: float = 0.15,
-    close_thresh: float = 0.02,
-    grasp_tol: float = 0.005,
+    capture_zone: float = 0.10,     # x-y proximity that says "GR00T's gross reach is done"
+    descend_offset: float = 0.05,   # grasp_z = observer_z - this (correct the ~4cm-high observer + 1cm below vial)
+    grasp_z: float | None = None,   # if set, use this fixed FK-frame grasp height instead of observer_z-descend
+    grasp_tol: float = 0.015,       # pinch within this of the grasp point => close + hold
+    xy_from_groot: bool = True,     # use GR00T's reached x-y (accurate) vs the coarse observer x-y
     max_iters: int = 12,
     damping: float = 0.05,
     step_bound: float = 0.2,
-    move_cap: float = 0.6,
+    move_cap: float = 0.4,
     active_phases: Sequence[int] = (REACH, GRASP),
     exec_horizon: int = 8,
     fd_eps: float = 1.0e-4,
     gamma: float = 0.4,
     tol: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
-    """Full-authority Observer->IK handoff for the final centimetre.
+    """Grasp-strategy-aware Observer->IK handoff — descend, close, HOLD, carry.
 
-    Gated to REACH/GRASP within ``capture_zone`` of the target and only while NOT
-    yet grasped. When it fires it REPLACES GR00T's chosen arm chunk with a DLS-IK
-    ramp toward the grasp target (per-query move-capped so it converges over
-    re-queries, closed-loop), CBF-checked, and CLOSES the gripper once the pinch
-    is within ``close_thresh``. Returns ``(arm_chunk, grip_chunk, report)``; when
-    the gate is closed both inputs are returned unchanged.
+    The playground grasp only binds (MuJoCo weld) when the fingers hold >0.5N for
+    5 consecutive steps, and the grasp point is ~1cm BELOW the vial (fingers
+    straddle the body). GR00T reaches decent x-y but stops ~4cm TOO HIGH and never
+    holds. This mimics the expert FSM:
+
+    * **descend** — once GR00T's pinch x-y is within ``capture_zone`` of the vial,
+      IK-drive the pinch straight down to the grasp point ``[x-y, grasp_z]`` with
+      the gripper OPEN. ``grasp_z`` is deterministic (vials on the table): default
+      = ``observer_z - descend_offset`` (corrects the observer's high z bias), or a
+      fixed FK-frame height. x-y = GR00T's reached pinch (more accurate than the
+      Observer) by default.
+    * **close + HOLD** — once the pinch is within ``grasp_tol`` of the grasp point,
+      command the SAME pose (no motion) and CLOSE the gripper, so contact persists
+      the >=5 steps the weld needs.
+    * **carry** — once ``grasped`` (weld formed), keep the gripper CLOSED through
+      GRASP/TRANSPORT (don't let GR00T drop the vial); release at PLACE.
+
+    Returns ``(arm_chunk, grip_chunk, report)``; unchanged inputs when gated off.
     """
     lim = lim or cbf.Limits()
     arm = np.asarray(a_groot_chunk, dtype=np.float64)
     grip = np.asarray(grip_chunk, dtype=np.float64).reshape(-1).copy()
     report: dict[str, Any] = {
-        "handoff": True, "applied": False, "reason": "off",
-        "pinch_err_before_cm": None, "pinch_err_after_cm": None,
+        "handoff": True, "applied": False, "reason": "off", "stage": None,
+        "pinch_err_before_cm": None, "grasp_z": None,
         "iters": 0, "grip_close": False, "cbf_scale": 0.0,
     }
-    if observer_target is None or arm.ndim != 2 or arm.shape[0] < 2 or arm.shape[1] != 6:
-        report["reason"] = "no_target_or_degenerate"
-        return a_groot_chunk, grip_chunk, report
-    if int(phase) not in {int(p) for p in active_phases} or bool(grasped):
-        report["reason"] = "phase_or_grasped_gate"
+    if arm.ndim != 2 or arm.shape[0] < 2 or arm.shape[1] != 6:
+        report["reason"] = "degenerate"
         return a_groot_chunk, grip_chunk, report
 
+    # --- CARRY: already grasped -> hold the gripper closed through the lift, ------
+    #     let GR00T own the arm; release at PLACE.
+    if bool(grasped):
+        if int(phase) >= PLACE:
+            report["reason"] = "place_release"
+            return a_groot_chunk, grip_chunk, report
+        grip[:] = 1.0
+        report.update(applied=True, stage="carry_hold", reason="grip_hold")
+        return a_groot_chunk, grip, report
+
+    # --- pre-grasp gate --------------------------------------------------------
+    if observer_target is None or int(phase) not in {int(p) for p in active_phases}:
+        report["reason"] = "phase_gate"
+        return a_groot_chunk, grip_chunk, report
     tgt = np.asarray(observer_target, dtype=np.float64).reshape(3)
     q0 = arm[0].astype(np.float64)
     pinch0 = _batch_pinch(pinch_fn, q0[None])[0]
-    d0 = float(np.linalg.norm(tgt - pinch0))
-    report["pinch_err_before_cm"] = round(d0 * 100.0, 3)
-    if d0 > capture_zone:
-        report["reason"] = "out_of_capture_zone"        # GR00T still doing gross reach
+    # GR00T must have done the gross reach (x-y near the vial); z is expected high.
+    dxy = float(np.linalg.norm(pinch0[:2] - tgt[:2]))
+    report["pinch_err_before_cm"] = round(dxy * 100.0, 3)
+    if dxy > capture_zone:
+        report["reason"] = "out_of_capture_zone"
         return a_groot_chunk, grip_chunk, report
 
-    # --- IK oracle takes over: solve, then move-cap for closed-loop convergence -
-    q_star, _err_star, iters = _ik_solve(pinch_fn, q0, tgt, max_iters=max_iters,
-                                         damping=damping, step_bound=step_bound,
-                                         fd_eps=fd_eps, tol=grasp_tol)
+    # --- grasp point: accurate x-y + deterministic grasp depth -----------------
+    gz = float(grasp_z) if grasp_z is not None else float(tgt[2] - descend_offset)
+    gx, gy = (float(pinch0[0]), float(pinch0[1])) if xy_from_groot else (float(tgt[0]), float(tgt[1]))
+    grasp_point = np.array([gx, gy, gz], dtype=np.float64)
+    report["grasp_z"] = round(gz, 4)
+    d_gp = float(np.linalg.norm(pinch0 - grasp_point))     # dominated by the descend (z) gap
+
+    # --- descend: IK toward the grasp point, move-capped for closed-loop --------
+    q_star, _e, iters = _ik_solve(pinch_fn, q0, grasp_point, max_iters=max_iters,
+                                  damping=damping, step_bound=step_bound,
+                                  fd_eps=fd_eps, tol=0.003)
     report["iters"] = iters
     dqt = q_star - q0
     nrm = float(np.linalg.norm(dqt))
@@ -359,11 +392,10 @@ def ik_handoff(
     T = arm.shape[0]
     ramp = np.linspace(0.0, 1.0, T)[:, None]
 
-    # CBF-safe: keep the largest feasible scale of the ramp toward q_cmd.
     cand, scale_kept = None, 0.0
     for scale in _SHRINK_SCALES:
         c = q0[None, :] + scale * ramp * (q_cmd - q0)[None, :]
-        if _feasible(c, pinch_fn, observer_target=tgt, grasped=grasped, phase=int(phase),
+        if _feasible(c, pinch_fn, observer_target=grasp_point, grasped=False, phase=int(phase),
                      lim=lim, exec_horizon=exec_horizon, gamma=gamma, tol=tol):
             cand, scale_kept = c, float(scale)
             break
@@ -372,13 +404,16 @@ def ik_handoff(
         report["reason"] = "cbf_infeasible"
         return a_groot_chunk, grip_chunk, report
 
-    # Close the gripper once ALREADY aligned (a prior query drove the pinch in).
-    if d0 <= close_thresh:
+    # --- close + HOLD once at grasp depth (fingers straddle the vial body) ------
+    if d_gp <= grasp_tol:
         grip[:] = 1.0
         report["grip_close"] = True
+        report["stage"] = "close_hold"
+        # already at the grasp pose -> `cand` is ~a hold; the closed grip persists
+        # across the executed steps so the weld's 5-step contact window is met.
+    else:
+        report["stage"] = "descend"
 
-    report["pinch_err_after_cm"] = round(
-        float(np.linalg.norm(tgt - _batch_pinch(pinch_fn, cand[0][None])[0])) * 100.0, 3)
     report["applied"] = True
     report["reason"] = "applied"
     corrected = cand.astype(np.asarray(a_groot_chunk).dtype, copy=False)

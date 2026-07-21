@@ -118,11 +118,16 @@ class BestOfNService:
             print(f"[bestofn] L5 servo ENABLED | {self.servo_kwargs}", flush=True)
         if self.handoff_enabled:
             self.handoff_kwargs = dict(
-                capture_zone=float(os.environ.get("STEER_HANDOFF_ZONE", "0.15")),
-                close_thresh=float(os.environ.get("STEER_HANDOFF_CLOSE", "0.02")),
-                move_cap=float(os.environ.get("STEER_HANDOFF_MOVECAP", "0.6")),
+                capture_zone=float(os.environ.get("STEER_HANDOFF_ZONE", "0.10")),
+                descend_offset=float(os.environ.get("STEER_HANDOFF_DESCEND", "0.05")),
+                grasp_tol=float(os.environ.get("STEER_HANDOFF_GRASPTOL", "0.015")),
+                move_cap=float(os.environ.get("STEER_HANDOFF_MOVECAP", "0.4")),
+                xy_from_groot=os.environ.get("STEER_HANDOFF_XY", "groot") == "groot",
             )
-            print(f"[bestofn] Observer->IK HANDOFF ENABLED | {self.handoff_kwargs}", flush=True)
+            _gz = os.environ.get("STEER_HANDOFF_GRASPZ")   # optional fixed FK-frame grasp height
+            if _gz:
+                self.handoff_kwargs["grasp_z"] = float(_gz)
+            print(f"[bestofn] Observer->IK HANDOFF (grasp-aware) ENABLED | {self.handoff_kwargs}", flush=True)
         print(f"[bestofn] ready | ckpt={model_path} fk={self.fk_url} "
               f"servo={'on' if self.servo_enabled else 'off'} "
               f"handoff={'on' if self.handoff_enabled else 'off'}", flush=True)
