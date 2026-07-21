@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 #
-# Setup for the LIBERO eval examples (single- and multi-agent).
+# Setup for the LIBERO eval examples (single- and multi-agent) — OpenVLA or GR00T pilot.
 #
 # It ONLY sets things up — it does NOT run a mission. It clones LIBERO, installs the
-# subset of its deps that co-exists with the OpenVLA stack, registers the LIBERO
+# subset of its deps that co-exists with the pilot stack, registers the LIBERO
 # source on the venv path, and installs the imageio[ffmpeg] mp4 encoder.
 #
-# EVAL-ONLY: the published OpenVLA-LIBERO checkpoint auto-downloads from HF on first
-# `odyssey run`. You do NOT need a dataset on disk — the 10.2 GB
-# `openvla/modified_libero_rlds` is only for fine-tuning, not for evaluating.
+# With --pilot gr00t it is END-TO-END (one command): it installs the system build/
+# render deps, builds the pilot venv if missing, builds the GR00T policy-server venv
+# (~/Isaac-GR00T/.venv via quickstart-gr00t/setup.sh — NO Isaac Sim, LIBERO = MuJoCo),
+# and pre-downloads the requested LIBERO suite checkpoint.
+#
+# EVAL-ONLY: the published checkpoints auto-download from HF on first `odyssey run`.
+# You do NOT need a training dataset on disk.
 #
 # ─── WHY THIS IS NOT A ONE-LINER (validated on a GCP L4, 2026-07-13) ───────────────
 #  * LIBERO ships NO top-level `libero/__init__.py` — it's a PEP 420 namespace package
@@ -25,46 +29,76 @@
 #    DEDICATED venv but would break the RobosuiteRunner eval in a shared env_pilot —
 #    so install into `env_pilot_libero`, not `env_pilot` (use --venv, see below).
 #  * `robomimic` pulls `egl_probe`, which builds from C source and needs system
-#    `cmake` + a compiler + GL/EGL headers. Install those with apt first (see below).
+#    `cmake` + a compiler + GL/EGL headers + Python.h. Install those with apt first.
 #
-# Prerequisites:
+# Prerequisites (openvla pilot; --pilot gr00t installs these for you):
 #   * System build + render deps (needs sudo):
-#       sudo apt-get update && sudo apt-get install -y cmake build-essential \
+#       sudo apt-get update && sudo apt-get install -y cmake build-essential python3-dev python3.10-dev \
 #         libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libosmesa6-dev
-#   * A dedicated venv with the OpenVLA stack, e.g. env_pilot_libero:
+#   * A dedicated venv with the pilot stack, e.g. env_pilot_libero:
 #       examples/multiagent-openvla-gemma/setup.sh --pilot-venv "$PWD/env_pilot_libero"
 #   * (multi-agent only) `source examples/multiagent-openvla-gemma/.env` for
 #     ODYSSEY_SPECIALIST_PYTHON
 #
 # Usage:
+#   # OpenVLA pilot (needs an active / --venv pilot venv):
 #   source env_pilot_libero/bin/activate && examples/franka-libero/setup.sh
-#   examples/franka-libero/setup.sh [--venv PATH]
+#   # GR00T pilot — END-TO-END, one command (installs deps, builds venvs, downloads):
+#   examples/franka-libero/setup.sh --pilot gr00t
 #
-#   --venv PATH   target venv (default: <repo>/env_pilot). Point it at a DEDICATED venv
-#                 (e.g. <repo>/env_pilot_libero) so the robosuite 1.4.0 downgrade can't
-#                 disturb the validated env_pilot (OpenVLA + robosuite 1.5.2 eval).
+#   --venv PATH   target venv (default: <repo>/env_pilot; gr00t: <repo>/env_pilot_libero).
+#                 A DEDICATED venv keeps the robosuite 1.4.0 downgrade from disturbing
+#                 the validated env_pilot (OpenVLA + robosuite 1.5.2 eval).
+#   --pilot NAME  openvla (default, LIBERO only) | gr00t (end-to-end: system deps +
+#                 pilot venv + GR00T policy-server venv + suite checkpoint download)
+#   --suite NAME  (gr00t only) LIBERO suite checkpoint to download (default: libero_object)
 #   An already-active venv ($VIRTUAL_ENV) always wins over --venv.
 #
-# Env overrides: LIBERO_DIR (default: $HOME/LIBERO)
+# Env overrides: LIBERO_DIR (default: $HOME/LIBERO), ISAAC_GR00T_DIR (default: $HOME/Isaac-GR00T)
 #
-# Linux + NVIDIA GPU assumed (GCP L4). Re-runnable.
+# Linux + NVIDIA GPU assumed (GCP L4). Re-runnable / idempotent.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIBERO_DIR="${LIBERO_DIR:-$HOME/LIBERO}"
+ISAAC_GR00T_DIR="${ISAAC_GR00T_DIR:-$HOME/Isaac-GR00T}"
 
-# --- venv selection (default env_pilot; --venv overrides for isolation) ---
-VENV="${VENV:-$REPO_ROOT/env_pilot}"
+# --- venv + pilot selection ---
+VENV="${VENV:-}"
+PILOT="${PILOT:-openvla}"          # openvla (LIBERO only) | gr00t (end-to-end)
+SUITE="${SUITE:-libero_object}"    # gr00t: which suite checkpoint to download
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --venv) VENV="$2"; shift 2 ;;
+    --pilot) PILOT="$2"; shift 2 ;;
+    --suite) SUITE="$2"; shift 2 ;;
     -h|--help)
       grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+# gr00t isolates LIBERO's robosuite 1.4.0 downgrade in its own venv by default
+if [ -z "$VENV" ]; then
+  [ "$PILOT" = "gr00t" ] && VENV="$REPO_ROOT/env_pilot_libero" || VENV="$REPO_ROOT/env_pilot"
+fi
+
+# --- gr00t only: system deps + build the pilot venv if missing (end-to-end) ---
+if [ "$PILOT" = "gr00t" ]; then
+  echo "[setup] --pilot gr00t: installing system build + render deps (sudo)…"
+  sudo apt-get update && sudo apt-get install -y cmake build-essential python3-dev python3.10-dev \
+    libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libosmesa6-dev
+  command -v uv >/dev/null || {
+    echo "[setup] ERROR: 'uv' not found — install then re-run:" >&2
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.bashrc" >&2
+    exit 1
+  }
+  if [ ! -f "$VENV/bin/activate" ] && [ -z "${VIRTUAL_ENV:-}" ]; then
+    echo "[setup] building pilot venv at $VENV…"
+    "$REPO_ROOT/examples/multiagent-openvla-gemma/setup.sh" --pilot-venv "$VENV"
+  fi
+fi
 
 # --- activate the target venv if none is already active ---
 if [ -z "${VIRTUAL_ENV:-}" ]; then
@@ -82,7 +116,7 @@ fi
 if ! command -v cmake >/dev/null 2>&1; then
   echo "[setup] ERROR: 'cmake' not found. LIBERO's egl_probe (via robomimic) builds from" >&2
   echo "        source and needs it. Install the system build + render deps first:" >&2
-  echo "          sudo apt-get update && sudo apt-get install -y cmake build-essential \\" >&2
+  echo "          sudo apt-get update && sudo apt-get install -y cmake build-essential python3-dev python3.10-dev \\" >&2
   echo "            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev libosmesa6-dev" >&2
   exit 1
 fi
@@ -108,9 +142,15 @@ echo "$LIBERO_DIR" > "$SP/libero_src.pth"
 echo "[setup] registered $LIBERO_DIR on the path via $SP/libero_src.pth"
 
 # --- pre-initialize ~/.libero/config.yaml NON-interactively ---
-# The first `import libero` prompts on stdin ("custom dataset path? (Y/N)") and would
-# otherwise BLOCK `odyssey run`. Answer 'n' once here to write the default config.
-echo "n" | python -c "import libero" >/dev/null 2>&1 || true
+# The config init prompts on stdin ("custom dataset path? (Y/N)") and would otherwise
+# BLOCK `odyssey run` AND the verify below. Two subtleties, both learned the hard way:
+#   * `libero` is an EMPTY PEP 420 namespace package — importing it is a no-op and does
+#     NOT trigger the init. The prompt fires on `libero.libero`, so import THAT.
+#   * `yes N` answers EVERY prompt (a single `echo n` isn't enough if it asks twice).
+# Together they write the default config. Skip if already initialized.
+if [ ! -f "$HOME/.libero/config.yaml" ]; then
+  yes N | python -c "import libero.libero" >/dev/null 2>&1 || true
+fi
 
 # --- mp4 encoder for capture_video ---
 if ! python -c "import imageio_ffmpeg" >/dev/null 2>&1; then
@@ -132,6 +172,44 @@ except Exception as e:  # noqa: BLE001
     print(f"[setup] VERIFY FAILED: {e}", file=sys.stderr)
     sys.exit(1)
 PY
+
+# --- gr00t only: build the GR00T policy-server venv + pre-download the suite ---
+if [ "$PILOT" = "gr00t" ]; then
+  echo "[setup] --pilot gr00t: building the GR00T policy server + downloading '$SUITE'…"
+  # The LIBERO recipe is the ZMQ CLIENT of the GR00T server — it needs the light
+  # transport deps in THIS (pilot) venv; the server's own venv has its own copy.
+  pip install msgpack msgpack-numpy pyzmq
+  [ -d "$ISAAC_GR00T_DIR/.git" ] || \
+    git clone https://github.com/NVIDIA/Isaac-GR00T.git "$ISAAC_GR00T_DIR"
+  # quickstart-gr00t/setup.sh step [2/4] builds $ISAAC_GR00T_DIR/.venv (py3.12); its
+  # Isaac-Lab step SKIPs itself (no ISAAC_PYTHON) — LIBERO needs no Isaac Sim.
+  # ODYSSEY_VENV=.venv-core so it never clobbers a pre-existing core .venv.
+  ODYSSEY_VENV=.venv-core bash "$REPO_ROOT/examples/quickstart-gr00t/setup.sh"
+  # The server runs offline → pre-cache BOTH the suite checkpoint AND the backbone.
+  huggingface-cli download nvidia/GR00T-N1.7-LIBERO --include "$SUITE/*"
+  # Every GR00T checkpoint loads the GATED VLM backbone nvidia/Cosmos-Reason2-2B; it
+  # must be in the HF cache for the (offline) server to start. Needs prior access +
+  # auth. Non-fatal: warn clearly with the fix steps if it isn't accessible yet.
+  echo "[setup] pre-caching the gated GR00T backbone nvidia/Cosmos-Reason2-2B…"
+  if ! huggingface-cli download nvidia/Cosmos-Reason2-2B; then
+    echo "[setup] WARNING: could not fetch nvidia/Cosmos-Reason2-2B (gated) — GR00T will" >&2
+    echo "        NOT start until it is cached. To fix:" >&2
+    echo "          1) request access: https://huggingface.co/nvidia/Cosmos-Reason2-2B" >&2
+    echo "          2) huggingface-cli login" >&2
+    echo "          3) huggingface-cli download nvidia/Cosmos-Reason2-2B  (or re-run this setup)" >&2
+  fi
+  cat <<EOF
+
+[setup] Done (GR00T pilot). Next:
+  1. In examples/franka-libero/mission-gr00t.yaml, under task config, set:
+       server_python: $ISAAC_GR00T_DIR/.venv/bin/python
+  2. source $VENV/bin/activate
+     export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
+     odyssey run examples/franka-libero/mission-gr00t.yaml
+  3. server log (source of truth): tail -n 60 /tmp/gr00t_server_5555.log
+EOF
+  exit 0
+fi
 
 cat <<'EOF'
 

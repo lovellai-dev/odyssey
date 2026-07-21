@@ -38,6 +38,8 @@ from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
 from odyssey.runners.evals._common import build_eval_summary, resolve_eval_checkpoint
+from odyssey.runners.evals.isaac_lab import EvalProtocolCollector, summarize
+from odyssey.runners.subprocess import TrainingProcessSpec, run_training_subprocess
 from odyssey.runners.video import save_rollout_video, to_uint8_frame
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
@@ -200,6 +202,15 @@ class LiberoRunner(Runner):
             )
 
         cfg = spec.config or {}
+
+        # Pilot backend. Default: the in-process OpenVLA policy / multi-agent
+        # runtime below. ``pilot: gr00t`` swaps to a GR00T pilot driven
+        # out-of-process via a policy server — its own subprocess recipe (same
+        # pattern as IsaacLabRunner), because GR00T inference is server-based,
+        # not in-process. Action chunking + a smaller footprint is why it exists.
+        if str(cfg.get("pilot", "openvla")).lower() == "gr00t":
+            return await self._run_gr00t_pilot(context, spec)
+
         suite_name = spec.benchmark_name
         task_id = int(cfg.get("task_id", 0))
         image_key = cfg.get("image_key", "agentview_image")
@@ -367,6 +378,86 @@ class LiberoRunner(Runner):
         summary["metrics"]["instruction"] = instruction
         summary["artifacts"] = {"videos": video_paths}
         return summary
+
+    async def _run_gr00t_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a GR00T pilot on LIBERO via the subprocess + policy-server recipe.
+
+        Mirrors ``IsaacLabRunner.run``: launch the eval script, collect the
+        ``ODYSSEY_*`` protocol, summarize. The GR00T model runs in a separate
+        policy server (booted by the script in ``--serve_checkpoint`` mode); this
+        process only orchestrates and scores.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "gr00t_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=gr00t",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_gr00t_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(gr00t) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"gr00t_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
+
+# Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
+# to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
+# the resolved --video_dir, not the raw capture_video/*_fps/*_format keys.
+_GR00T_HANDLED_CONFIG_KEYS = {
+    "pilot", "checkpoint", "runner", "capture_video", "video_fps", "video_format",
+}
+
+
+def build_gr00t_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``gr00t_libero_eval.py`` argv: contract flags + config passthrough.
+
+    The eval script uses argparse snake_case flags, so ``task.config`` keys pass
+    through verbatim (``n_action_steps`` → ``--n_action_steps``), like the Isaac
+    Lab contract.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _GR00T_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
 
 
 # ---------------------------------------------------------------------------
