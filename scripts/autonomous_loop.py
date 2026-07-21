@@ -77,47 +77,50 @@ def funnel_transitions(funnel: dict[str, dict[str, Any]]) -> list[tuple[str, flo
     return out
 
 
-def diagnose(funnel: dict[str, dict[str, Any]], ladder: LadderState) -> dict[str, Any]:
+def diagnose(funnel: dict[str, dict[str, Any]], ladder: LadderState,
+             wired: set[str] | None = None) -> dict[str, Any]:
     """SPECIALIST: pick the next lever + rationale from the funnel + ladder.
 
-    Strategy: attack the LARGEST funnel drop with its highest-preference lever
-    that is (a) unlocked and (b) not retired; if that transition's levers are
-    all exhausted, fall through to the next-largest drop. If the ladder hasn't
-    unlocked the needed lever yet, advance the ladder one rung (unlock it).
+    Strategy: attack the LARGEST funnel drop with the highest-preference lever
+    FOR THAT TRANSITION that is not retired and — when ``wired`` is given — is
+    actually BUILT. If the chosen lever isn't unlocked yet, jump the ladder
+    straight to it (unlock everything up to and including it; unbuilt rungs in
+    between are simply skipped — the funnel, not the rung order, dictates what to
+    run). Only if a transition's levers are all retired/unbuilt do we fall
+    through to the next-largest drop; if none remain, escalate.
     """
     trans = sorted(funnel_transitions(funnel), key=lambda t: -t[1])
     considered = []
     for name, drop in trans:
-        levers = TRANSITION_LEVERS.get(name, [])
-        for lev in levers:
+        for lev in TRANSITION_LEVERS.get(name, []):
             considered.append((name, drop, lev))
             if ladder.retired(lev):
                 continue
+            if wired is not None and lev not in wired:
+                continue  # can't run a lever with no driver — try the next pref
+            unlock_to = LEVER_ORDER.index(lev)
             if not ladder.unlocked(lev):
-                # advance the ladder to unlock this lever (the loop hasn't tried
-                # the prior rungs' *superstructure* yet — unlock in order)
-                nxt = LEVER_ORDER[min(ladder.reached_lever_idx + 1, len(LEVER_ORDER) - 1)]
                 return {
                     "bottleneck": name, "drop": round(drop, 3),
-                    "lever": nxt, "action": "unlock+run",
+                    "lever": lev, "action": "unlock+run", "unlock_to": unlock_to,
                     "rationale": (f"Largest funnel loss is {name} ({drop:.0%} of episodes). "
-                                  f"The lever for it ({lev}) is not yet unlocked; advancing the "
-                                  f"ladder to {nxt} and running it."),
+                                  f"{lev} is the built lever that attacks it; jumping the ladder "
+                                  f"to it (skipping unbuilt intermediate rungs)."),
                 }
             return {
                 "bottleneck": name, "drop": round(drop, 3),
-                "lever": lev, "action": "run",
+                "lever": lev, "action": "run", "unlock_to": unlock_to,
                 "rationale": (f"Largest funnel loss is {name} ({drop:.0%} of episodes lost there). "
                               f"{lev} directly attacks that transition; unlocked and not retired."),
             }
-    # everything retired -> escalate
+    # every applicable lever is retired or unbuilt -> escalate
     return {
         "bottleneck": trans[0][0] if trans else None,
         "drop": round(trans[0][1], 3) if trans else 0.0,
         "lever": None, "action": "escalate",
-        "rationale": ("All applicable levers for the bottleneck transitions are retired "
-                      "(each failed its gate twice). No cheap lever remains — escalate to a "
-                      "human/architectural decision with the funnel as evidence."),
+        "rationale": ("No BUILT, non-retired lever remains for the bottleneck transitions "
+                      "(unbuilt levers can't run; retired ones failed their gate twice). "
+                      "Escalate to a human/architectural decision with the funnel as evidence."),
         "considered": [f"{n}:{l}" for n, _, l in considered],
     }
 

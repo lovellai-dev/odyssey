@@ -307,7 +307,12 @@ def advance(state: dict[str, Any], probe: dict[str, Any]) -> tuple[dict[str, Any
             iteration=state["ladder"]["iteration"],
         )
         funnel = state.get("funnel_before") or {}
-        d = al.diagnose(funnel, ladder)
+        # Only BUILT levers can run — the Specialist skips unbuilt rungs and
+        # picks the highest-preference WIRED lever for the bottleneck transition
+        # (so it jumps straight to e.g. L5_servo for a capture bottleneck rather
+        # than stalling at an unbuilt intermediate rung).
+        wired = {lev for lev, drv in LEVER_DRIVER.items() if drv is not None}
+        d = al.diagnose(funnel, ladder, wired=wired)
         record = {
             "ts": now, "iso": time.strftime("%FT%TZ", time.gmtime(now)),
             "iteration": state["iteration"], "phase": "diagnose",

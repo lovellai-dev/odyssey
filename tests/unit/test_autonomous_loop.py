@@ -96,3 +96,38 @@ def test_target_met_on_seated_lower_bound():
     lo_lo = _funnel(seated=0.3)
     assert al.target_met(lo_hi, 0.5) is True
     assert al.target_met(lo_lo, 0.5) is False
+
+
+def test_diagnose_wired_skips_unbuilt_lever_for_capture():
+    # capture bottleneck (closed 89%, lifted 9%); L3_dagger is highest-pref but
+    # UNBUILT; L5_servo is built -> pick L5_servo, jumping the ladder to it.
+    f = _funnel(reached=0.93, centered=0.24, closed=0.89, lifted=0.09, seated=0.044)
+    ladder = al.LadderState(reached_lever_idx=1)  # only L0/L1 unlocked
+    d = al.diagnose(f, ladder, wired={"L0_base", "L1_steering", "L5_servo"})
+    assert d["bottleneck"] == "closed->lifted"
+    assert d["lever"] == "L5_servo" and d["action"] == "unlock+run"
+    assert d["unlock_to"] == al.LEVER_ORDER.index("L5_servo")
+
+
+def test_diagnose_wired_falls_through_to_next_bottleneck_when_top_unbuilt():
+    # top bottleneck (closed->lifted) has no built lever -> fall through to the
+    # next drop (reached->centered) and pick its built lever (L1_steering).
+    f = _funnel(reached=0.93, centered=0.24, closed=0.89, lifted=0.09, seated=0.044)
+    ladder = al.LadderState(reached_lever_idx=1)
+    d = al.diagnose(f, ladder, wired={"L0_base", "L1_steering"})  # no capture lever built
+    assert d["bottleneck"] == "reached->centered" and d["lever"] == "L1_steering"
+
+
+def test_diagnose_escalates_when_every_bottleneck_lever_retired():
+    f = _funnel(reached=0.93, centered=0.24, closed=0.89, lifted=0.09, seated=0.044)
+    ladder = al.LadderState(reached_lever_idx=len(al.LEVER_ORDER) - 1,
+                            failures={lev: 2 for lev in al.LEVER_ORDER})
+    d = al.diagnose(f, ladder, wired=set(al.LEVER_ORDER))
+    assert d["action"] == "escalate" and d["lever"] is None
+
+
+def test_diagnose_wired_none_is_backward_compatible():
+    f = _funnel(reached=0.05, centered=0.0, seated=0.0)
+    ladder = al.LadderState(reached_lever_idx=len(al.LEVER_ORDER) - 1)
+    d = al.diagnose(f, ladder)  # no wired arg
+    assert d["lever"] == "L0_base"
