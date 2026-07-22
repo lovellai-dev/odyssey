@@ -30,8 +30,14 @@ env-/pilot-agnostic.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
+
+# Same opt-in trace logger the runtimes use (see agents/runtime.py::AGENT_TRACE);
+# fetched by name to keep this module import-light. Silent unless the recipe's
+# `--trace` bumps it to INFO.
+_TRACE = logging.getLogger("odyssey.agents.trace")
 
 
 class ChunkPilotAdapter:
@@ -96,6 +102,7 @@ class ChunkPilotAdapter:
             or self._cursor >= self._n
             or instruction != self._chunk_instruction
         ):
+            _TRACE.info("[PILOT] GR00T chunk re-query for %r", instruction)
             server_obs = self._obs_builder(self._obs, instruction)
             result = self._client.get_action(server_obs)
             self._chunk = result[0] if isinstance(result, tuple) else result

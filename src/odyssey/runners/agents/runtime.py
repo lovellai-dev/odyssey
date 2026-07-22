@@ -16,11 +16,17 @@ right methods satisfies the protocol without explicit inheritance.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
+
+# Opt-in "who acted when" trace (PILOT / SPECIALIST / ORCHESTRATOR). Silent by
+# default even under root INFO; the eval recipe bumps it to INFO on `config.trace`.
+AGENT_TRACE = logging.getLogger("odyssey.agents.trace")
+AGENT_TRACE.setLevel(logging.WARNING)
 
 
 @runtime_checkable

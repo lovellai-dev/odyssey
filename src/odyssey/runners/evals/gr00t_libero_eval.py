@@ -37,6 +37,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # When launched as a script (python …/runners/evals/gr00t_libero_eval.py), sys.path[0]
 # is THIS file's directory — which also holds libero.py (the odyssey LiberoRunner).
@@ -134,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--steps_per_phase", type=int, default=50)
     ap.add_argument("--phase_check_every", type=int, default=10)
     ap.add_argument("--phase_max_steps", type=int, default=100)
+    ap.add_argument("--max_phases", type=int, default=8,
+                    help="orchestration: cap on routed sub-tasks per episode.")
+    ap.add_argument("--trace", type=_bool, default=False,
+                    help="verbose per-action trace: log each PILOT/SPECIALIST/"
+                         "ORCHESTRATOR action as it happens.")
     return ap
 
 
@@ -227,6 +233,51 @@ def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
 
+_AGENT_TRACE = logging.getLogger("odyssey.agents.trace")
+
+
+class _TracingAgent:
+    """Wraps the out-of-process agent to log each plan/ground/check/route call.
+
+    Enabled by ``--trace``; delegates to the real ``RemotePlanner`` and logs the
+    actor (SPECIALIST / ORCHESTRATOR) + result, so a run shows *who acted when*.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def plan(self, task_instruction: str, image: Any = None) -> Any:
+        steps = self._inner.plan(task_instruction, image)
+        _AGENT_TRACE.info(
+            "[SPECIALIST] plan(%r) -> %d step(s): %s", task_instruction, len(steps), steps
+        )
+        return steps
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        done = bool(self._inner.check_done(instruction, image))
+        _AGENT_TRACE.info(
+            "[SPECIALIST] check(%r) -> %s", instruction, "YES" if done else "no"
+        )
+        return done
+
+    def ground(self, target_query: str, image: Any) -> str:
+        target = self._inner.ground(target_query, image)
+        _AGENT_TRACE.info("[SPECIALIST] ground(%r) -> %r", target_query, target)
+        return target
+
+    def route(self, task_instruction: str, image: Any, history: list) -> Any:
+        decision = self._inner.route(task_instruction, image, history)
+        _AGENT_TRACE.info(
+            "[ORCHESTRATOR] route -> %r (done=%s)", decision.subtask, decision.done
+        )
+        return decision
+
+    def close(self) -> None:
+        closer = getattr(self._inner, "close", None)
+        if callable(closer):
+            closer()
+
+
 def _build_coordination_runtime(args, client, instruction):
     """Build a chunk-aware multi-agent runtime (planning|delegation) over GR00T.
 
@@ -257,16 +308,20 @@ def _build_coordination_runtime(args, client, instruction):
     )
     if not args.specialist_model:
         raise SystemExit("--coordination requires --specialist_model (a SPECIALIST agent).")
-    specialist = RemotePlanner(
+    specialist: Any = RemotePlanner(
         args.specialist_model,
         args.specialist_quantization or None,
         python_path=args.specialist_python or None,
     )
+    if args.trace:
+        _AGENT_TRACE.setLevel(logging.INFO)
+        specialist = _TracingAgent(specialist)  # log each SPECIALIST/ORCHESTRATOR call
     cfg = {
         "phase_strategy": args.phase_strategy,
         "steps_per_phase": args.steps_per_phase,
         "phase_check_every": args.phase_check_every,
         "phase_max_steps": args.phase_max_steps,
+        "max_phases": args.max_phases,
     }
     coordination = args.coordination.strip().lower()
     if coordination == "delegation":
