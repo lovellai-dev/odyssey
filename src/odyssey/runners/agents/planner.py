@@ -40,11 +40,15 @@ _SYSTEM_PROMPT_VISION = (
 )
 
 _COMPLETION_PROMPT = (
-    "You are a robot task supervisor. You are given the current scene image and "
-    "the single sub-instruction the robot arm is currently executing. Decide "
-    "whether that sub-instruction is now FULLY completed in the image. Answer "
-    "with EXACTLY one word: YES if it is fully completed, otherwise NO. Do not "
-    "explain."
+    "You are a robot task supervisor watching a Franka arm in a tabletop "
+    "simulation. You see the current frame and the sub-instruction the arm is "
+    "executing right now. Judge whether that specific sub-instruction is ACHIEVED "
+    "in THIS frame, using these criteria:\n"
+    "- a 'pick up' / 'grasp' / 'lift' step is achieved once the gripper is holding "
+    "the object OR the object is already off the surface;\n"
+    "- a 'place' / 'put' / 'drop' step is achieved once the object is resting at "
+    "the target location.\n"
+    "Answer with EXACTLY one word: YES if achieved, otherwise NO. Do not explain."
 )
 
 _GROUNDING_PROMPT = (
