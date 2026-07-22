@@ -1,6 +1,6 @@
 """Agent runtime protocols for multi-agent evaluation.
 
-Three runtime protocols define the interfaces between components:
+Four runtime protocols define the interfaces between components:
 
   * ``TextGenerator`` — wraps any text generation model. Maps chat
     messages to generated text. Lives at the model layer.
@@ -9,6 +9,10 @@ Three runtime protocols define the interfaces between components:
   * ``PlannerRuntime`` — wraps a task-planner. Decomposes a high-level
     task instruction into an ordered list of sub-instructions the pilot
     executes sequentially.
+  * ``CompletionDetector`` — wraps a completion judge (e.g. a VLM like
+    Gemma int4). Answers "is the current sub-instruction done?" so the
+    orchestrator can advance the phase (closed-loop *hand-back*) instead
+    of relying on a fixed step budget.
 
 These are ``typing.Protocol`` classes — any object that implements the
 right methods satisfies the protocol without explicit inheritance.
@@ -74,6 +78,36 @@ class PilotRuntime(Protocol):
         Returns
         -------
         7-DoF action array (end-effector delta + gripper).
+        """
+        ...
+
+
+@runtime_checkable
+class CompletionDetector(Protocol):
+    """Judges whether the current sub-instruction has been completed.
+
+    This is the closed-loop counterpart to a fixed step/timeout budget:
+    a completion judge (typically a VLM such as Gemma int4, or GR00T's
+    ``cosmos_reason``) looks at the current observation and the active
+    sub-instruction and answers whether the pilot has finished it, so the
+    orchestrator can *hand back* control and advance the phase.
+
+    Kept deliberately minimal so any fake/heuristic detector satisfies it
+    structurally. The polling cadence (once per action chunk, not per step)
+    is the ``ChunkCompletionGate``'s job, not the detector's — the detector
+    only answers the yes/no question when asked.
+    """
+
+    def is_complete(self, observation: Any, instruction: str) -> bool:
+        """Return ``True`` when ``instruction`` is judged complete.
+
+        Parameters
+        ----------
+        observation:
+            The current observation the judge grounds its decision in —
+            typically the camera image (PIL Image or HWC uint8 ndarray).
+        instruction:
+            The active sub-instruction whose completion is being judged.
         """
         ...
 
