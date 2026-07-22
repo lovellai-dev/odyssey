@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--check_image_key", default="",
                     help="frame for the completion check (default: --image_key / agentview; "
                          "the wrist cam is top-down + occluded at grasp time, worse for judging).")
+    ap.add_argument("--check_crop", type=float, default=0.0,
+                    help="center-crop this fraction of the check frame then upscale — the "
+                         "objects are ~20px in the 256px agentview, too small for the VLM. "
+                         "0 = off; e.g. 0.6 zooms into the central 60%.")
+    ap.add_argument("--check_upscale", type=int, default=384,
+                    help="upscale the cropped check frame to NxN (more pixels on the object).")
     ap.add_argument("--check_debug", type=_bool, default=False,
                     help="dump the frames the completion check sees to "
                          "/tmp/gr00t_check_frames (to inspect what the VLM judges).")
@@ -212,6 +218,31 @@ def _frame(obs, key: str, *, flip: bool):
     if flip:
         img = img[::-1, ::-1]
     return np.ascontiguousarray(img).astype(np.uint8)
+
+
+def _zoom_frame(frame: Any, crop_frac: float, upscale: int):
+    """Center-crop ``crop_frac`` of the frame, then upscale to ``upscale``x``upscale``.
+
+    The manipulated object is only ~20px in the 256px agentview — too small for the
+    int4 VLM completion check. Cropping the central region (where the workspace sits)
+    and upscaling makes the object fill the frame ("zoom" + more pixels on target).
+    Pure image op on the existing render — no camera/sim change. ``crop_frac<=0`` or
+    ``>=1`` disables the crop; ``upscale<=0`` keeps the crop's native size.
+    """
+    import numpy as np
+    from PIL import Image
+
+    arr = np.asarray(frame)
+    h, w = arr.shape[:2]
+    if 0.0 < crop_frac < 1.0:
+        ch, cw = max(1, int(h * crop_frac)), max(1, int(w * crop_frac))
+        y0, x0 = (h - ch) // 2, (w - cw) // 2
+        arr = arr[y0:y0 + ch, x0:x0 + cw]
+    if upscale and upscale > 0:
+        arr = np.asarray(
+            Image.fromarray(arr.astype(np.uint8)).resize((upscale, upscale), Image.LANCZOS)
+        )
+    return np.ascontiguousarray(arr).astype(np.uint8)
 
 
 def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
@@ -477,8 +508,11 @@ def run_eval(args: argparse.Namespace) -> dict:
                 adapter.reset()
                 while step < args.max_steps_per_episode and not success:
                     adapter.set_obs(obs)
-                    if check_detector is not None:  # completion check sees the wrist cam
-                        check_detector.set_frame(_frame(obs, check_key, flip=args.flip_images))
+                    if check_detector is not None:  # completion check sees the agentview cam
+                        cframe = _frame(obs, check_key, flip=args.flip_images)
+                        if args.check_crop > 0 or args.check_upscale > 0:
+                            cframe = _zoom_frame(cframe, args.check_crop, args.check_upscale)
+                        check_detector.set_frame(cframe)
                     action = runtime.get_action(
                         _frame(obs, args.image_key, flip=args.flip_images)
                     )

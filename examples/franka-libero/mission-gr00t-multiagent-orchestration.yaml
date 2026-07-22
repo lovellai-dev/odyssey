@@ -57,6 +57,13 @@ tasks:
       max_phases: 8                     # cap on routed sub-tasks per episode
       # NOTE: run with ODYSSEY_SPECIALIST_PYTHON set (the Gemma venv).
 
+      # --- completion-check framing (issue #78): the manipulated object is ~20px in
+      # the 256px agentview — too small for the int4 VLM judge. Crop the central
+      # region + upscale so it fills the frame ("zoom" + more pixels on target). ---
+      check_crop: 0.6                   # center-crop 60% of the check frame, then...
+      check_upscale: 384                # ...upscale the crop to 384x384
+      check_debug: true                 # dump the frames the check sees (/tmp/gr00t_check_frames)
+
       # --- GR00T policy server (closed-loop auto-serve) ---
       serve_checkpoint: true
       embodiment_tag: LIBERO_PANDA
