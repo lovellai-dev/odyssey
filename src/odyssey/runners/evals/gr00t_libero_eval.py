@@ -140,6 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--check_image_key", default="",
                     help="frame for the completion check (default: --wrist_image_key — "
                          "a close-up of the grasp; agentview often occludes it).")
+    ap.add_argument("--check_debug", type=_bool, default=False,
+                    help="dump the frames the completion check sees to "
+                         "/tmp/gr00t_check_frames (to inspect what the VLM judges).")
     ap.add_argument("--trace", type=_bool, default=False,
                     help="verbose per-action trace: log each PILOT/SPECIALIST/"
                          "ORCHESTRATOR action as it happens.")
@@ -290,16 +293,32 @@ class _CheckFrameDetector:
     agent answers ``check_done`` from the same loaded model, just on a better view.
     """
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, *, debug_dir: str | None = None) -> None:
         self._inner = inner
         self._frame: Any = None
+        self._debug_dir = debug_dir  # if set, dump the frames the check actually sees
+        self._saved = 0
 
     def set_frame(self, frame: Any) -> None:
         self._frame = frame
 
     def check_done(self, instruction: str, image: Any) -> bool:
         frame = self._frame if self._frame is not None else image
+        if self._debug_dir is not None and frame is not None and self._saved < 60:
+            self._dump(frame)
         return bool(self._inner.check_done(instruction, frame))
+
+    def _dump(self, frame: Any) -> None:
+        try:  # never break the eval for a debug dump
+            import numpy as _np
+            from PIL import Image
+
+            os.makedirs(self._debug_dir, exist_ok=True)  # type: ignore[arg-type]
+            path = os.path.join(self._debug_dir, f"check_{self._saved:03d}.png")  # type: ignore[arg-type]
+            Image.fromarray(_np.asarray(frame, dtype=_np.uint8)).save(path)
+            self._saved += 1
+        except Exception as e:
+            log.warning("check frame dump failed: %s", e)
 
 
 def _build_coordination_runtime(args, client, instruction):
@@ -342,7 +361,10 @@ def _build_coordination_runtime(args, client, instruction):
         specialist = _TracingAgent(specialist)  # log each SPECIALIST/ORCHESTRATOR call
     # The completion check runs on a close-up (wrist cam by default) — the agentview
     # angle often occludes the grasp. route/ground/plan still use the scene frame.
-    check_detector = _CheckFrameDetector(specialist)
+    check_detector = _CheckFrameDetector(
+        specialist,
+        debug_dir="/tmp/gr00t_check_frames" if args.check_debug else None,
+    )
     cfg = {
         "phase_strategy": args.phase_strategy,
         "steps_per_phase": args.steps_per_phase,

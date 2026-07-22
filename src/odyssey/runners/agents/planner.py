@@ -39,16 +39,11 @@ _SYSTEM_PROMPT_VISION = (
     "numbered list, nothing else."
 )
 
+# Criteria appended to the completion question (kept separate for reuse/testing).
 _COMPLETION_PROMPT = (
-    "You are a robot task supervisor watching a Franka arm in a tabletop "
-    "simulation. You see the current frame and the sub-instruction the arm is "
-    "executing right now. Judge whether that specific sub-instruction is ACHIEVED "
-    "in THIS frame, using these criteria:\n"
-    "- a 'pick up' / 'grasp' / 'lift' step is achieved once the gripper is holding "
-    "the object OR the object is already off the surface;\n"
-    "- a 'place' / 'put' / 'drop' step is achieved once the object is resting at "
-    "the target location.\n"
-    "Answer with EXACTLY one word: YES if achieved, otherwise NO. Do not explain."
+    "A 'pick up'/'grasp'/'lift' counts as completed once the gripper is clearly "
+    "holding the object OR the object is off the table; a 'place'/'put'/'drop' counts "
+    "as completed once the object is resting at the target location."
 )
 
 _GROUNDING_PROMPT = (
@@ -192,7 +187,14 @@ class LLMPlanner:
             )
             return False
         messages = [
-            {"role": "user", "content": f"{_COMPLETION_PROMPT}\n\nSub-instruction: {instruction}"},
+            {
+                "role": "user",
+                "content": (
+                    f'Look at this camera frame of a robot arm on a tabletop. Has the '
+                    f'robot completed this action: "{instruction}"? {_COMPLETION_PROMPT} '
+                    f"Answer with ONE word: YES or NO."
+                ),
+            },
         ]
         text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
         logger.debug("check_done(%r) raw output: %r", instruction, text)
