@@ -14,11 +14,14 @@ HuggingFace, so you do **not** need a dataset on disk (the 10.2 GB
 |---|---|---|
 | `mission.yaml` | 1 — OpenVLA **pilot** | Baseline single-agent eval (OpenVLA) on the LIBERO `object` suite. |
 | `mission-gr00t.yaml` | 1 — GR00T **pilot** | Single-agent eval with the chunk-emitting GR00T-N1.7 pilot (out-of-process policy server). |
-| `mission-gr00t-multiagent.yaml` | 2 — GR00T pilot + Gemma **specialist** | Multi-agent: a Gemma SPECIALIST plans + completion-gates phases; the GR00T pilot executes chunks (`coordination: planning\|delegation`). |
+| `mission-gr00t-multiagent-planning.yaml` | 2 — GR00T pilot + Gemma **specialist** | Multi-agent, **planning** arm: the SPECIALIST authors the plan up front + completion-gates phases. |
+| `mission-gr00t-multiagent-delegation.yaml` | 2 — GR00T pilot + Gemma **specialist** | Multi-agent, **delegation** arm: a fixed `pick → place` template; the SPECIALIST grounds each phase's target. |
+| `mission-gr00t-multiagent-orchestration.yaml` | 2 — GR00T pilot + Gemma **orchestrator** | Multi-agent, **orchestration** arm (regime D): an LLM ORCHESTRATOR routes the next sub-instruction dynamically. |
 
 > All are eval-only (no training task). **Multi-agent runs on the GR00T pilot** —
-> OpenVLA is single-agent only (its per-step latency is unviable for MA). See the
-> top of each YAML for the config knobs.
+> OpenVLA is single-agent only (its per-step latency is unviable for MA). See
+> [`docs/multiagent-execution-flow.md`](../../docs/multiagent-execution-flow.md) for
+> the per-arm flow diagrams, and set `config.trace: true` to log who acts when.
 
 > **No `task_instruction` — that's intentional.** LIBERO is a *language-conditioned*
 > benchmark: every task in a suite ships its own natural-language instruction (keyed
@@ -82,9 +85,11 @@ odyssey run      examples/franka-libero/mission.yaml
 #   bash examples/franka-libero/setup.sh --pilot gr00t   (see examples/quickstart-gr00t)
 odyssey run examples/franka-libero/mission-gr00t.yaml
 
-# multi-agent (GR00T pilot + Gemma specialist) — also load the specialist venv
+# multi-agent (GR00T pilot + Gemma) — also load the specialist venv. Pick an arm:
 source examples/multiagent-openvla-gemma/.env       # sets ODYSSEY_SPECIALIST_PYTHON
-odyssey run examples/franka-libero/mission-gr00t-multiagent.yaml
+odyssey run examples/franka-libero/mission-gr00t-multiagent-planning.yaml        # planner
+# odyssey run examples/franka-libero/mission-gr00t-multiagent-delegation.yaml    # delegation
+# odyssey run examples/franka-libero/mission-gr00t-multiagent-orchestration.yaml # orchestration
 
 # per-episode videos
 find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;

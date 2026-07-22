@@ -8,14 +8,14 @@ metadata:
     as an on-demand grounding tool (not a planner). A deterministic pick -> place
     template owns the sequence; per phase the SPECIALIST grounds the target
     ("where is the object to pick up?") and completion-gates the hand-back. The
-    counterpart to mission-gr00t-multiagent.yaml (planning arm) — same pilot, same
+    counterpart to mission-gr00t-multiagent-planning.yaml (planning arm) — same pilot, same
     SPECIALIST, only the SPECIALIST's role differs.
   tags: [gr00t, nvidia, libero, robosuite, franka, multi-agent, delegation, eval-only]
 
 objective: |
   Evaluate GR00T-N1.7 on LIBERO object with the SPECIALIST as a grounding tool
   (delegation), for the planner-vs-delegation comparison against
-  mission-gr00t-multiagent.yaml.
+  mission-gr00t-multiagent-planning.yaml.
 
 acceptance_criteria: |
   The GR00T server serves the checkpoint, the SPECIALIST grounds each phase target
