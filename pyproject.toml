@@ -174,4 +174,9 @@ ignore_errors = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Resolve `import odyssey` from THIS tree's src/ (front of sys.path), so tests run
+# against the working copy — not whatever an editable-install .pth happens to point
+# at. Essential when developing in a git worktree whose src/ differs from the
+# globally-installed checkout (e.g. new modules not yet in the editable file map).
+pythonpath = ["src"]
 addopts = ["-ra", "--strict-markers"]
