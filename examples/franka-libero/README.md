@@ -81,8 +81,15 @@ export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 odyssey validate examples/franka-libero/mission.yaml
 odyssey run      examples/franka-libero/mission.yaml
 
-# GR00T missions (single- and multi-agent) need the GR00T policy-server venv first:
+# GR00T missions need the policy-server venv:
 #   bash examples/franka-libero/setup.sh --pilot gr00t   (see examples/quickstart-gr00t)
+# ...and access to the GATED backbone nvidia/Cosmos-Reason2-2B (every GR00T checkpoint
+# loads it): request it once at https://huggingface.co/nvidia/Cosmos-Reason2-2B, then
+# `huggingface-cli login`.
+# Run ONLINE — the server does an online metadata check for the backbone, so a forced
+# offline mode breaks server startup with recent transformers (OfflineModeIsEnabled at
+# Qwen3VLProcessor/is_base_mistral). The weights still come from the HF cache.
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
 odyssey run examples/franka-libero/mission-gr00t.yaml
 
 # multi-agent (GR00T pilot + Gemma) — also load the specialist venv. Pick an arm:
