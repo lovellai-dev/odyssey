@@ -137,6 +137,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--phase_max_steps", type=int, default=100)
     ap.add_argument("--max_phases", type=int, default=8,
                     help="orchestration: cap on routed sub-tasks per episode.")
+    ap.add_argument("--check_image_key", default="",
+                    help="frame for the completion check (default: --wrist_image_key — "
+                         "a close-up of the grasp; agentview often occludes it).")
     ap.add_argument("--trace", type=_bool, default=False,
                     help="verbose per-action trace: log each PILOT/SPECIALIST/"
                          "ORCHESTRATOR action as it happens.")
@@ -278,6 +281,27 @@ class _TracingAgent:
             closer()
 
 
+class _CheckFrameDetector:
+    """Run the completion check on a DIFFERENT frame than route/ground/plan.
+
+    The agentview angle often occludes the grasp, so ``check_done`` reads a close-up
+    (the wrist camera by default) instead of the scene frame the runtime passes. The
+    recipe stashes the current check frame each step via ``set_frame``; the wrapped
+    agent answers ``check_done`` from the same loaded model, just on a better view.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._frame: Any = None
+
+    def set_frame(self, frame: Any) -> None:
+        self._frame = frame
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        frame = self._frame if self._frame is not None else image
+        return bool(self._inner.check_done(instruction, frame))
+
+
 def _build_coordination_runtime(args, client, instruction):
     """Build a chunk-aware multi-agent runtime (planning|delegation) over GR00T.
 
@@ -316,6 +340,9 @@ def _build_coordination_runtime(args, client, instruction):
     if args.trace:
         _AGENT_TRACE.setLevel(logging.INFO)
         specialist = _TracingAgent(specialist)  # log each SPECIALIST/ORCHESTRATOR call
+    # The completion check runs on a close-up (wrist cam by default) — the agentview
+    # angle often occludes the grasp. route/ground/plan still use the scene frame.
+    check_detector = _CheckFrameDetector(specialist)
     cfg = {
         "phase_strategy": args.phase_strategy,
         "steps_per_phase": args.steps_per_phase,
@@ -331,6 +358,7 @@ def _build_coordination_runtime(args, client, instruction):
             pilot=adapter,
             grounder=specialist,
             config=DelegationConfig.from_config(cfg),
+            detector=check_detector,
             task_fallback=instruction,
         )
     elif coordination == "planning":
@@ -340,6 +368,7 @@ def _build_coordination_runtime(args, client, instruction):
             pilot=adapter,
             planner=specialist,
             phase_config=PhaseConfig.from_config(cfg),
+            detector=check_detector,
             fallback_instruction=instruction,
         )
     elif coordination == "orchestration":
@@ -354,6 +383,7 @@ def _build_coordination_runtime(args, client, instruction):
             pilot=adapter,
             orchestrator=specialist,
             config=OrchestrationConfig.from_config(cfg),
+            detector=check_detector,
             task_fallback=instruction,
         )
     else:
@@ -361,7 +391,7 @@ def _build_coordination_runtime(args, client, instruction):
             f"unknown coordination {args.coordination!r}; "
             "allowed: planning, delegation, orchestration"
         )
-    return runtime, adapter
+    return runtime, adapter, check_detector
 
 
 def run_eval(args: argparse.Namespace) -> dict:
@@ -392,11 +422,14 @@ def run_eval(args: argparse.Namespace) -> dict:
     )
 
     coordination = (args.coordination or "").strip().lower()
-    runtime = adapter = None
+    runtime = adapter = check_detector = None
+    check_key = args.check_image_key or args.wrist_image_key
     if coordination:
-        runtime, adapter = _build_coordination_runtime(args, client, instruction)
-        log.info("multi-agent coordination=%s (SPECIALIST=%s)",
-                 coordination, args.specialist_model)
+        runtime, adapter, check_detector = _build_coordination_runtime(
+            args, client, instruction
+        )
+        log.info("multi-agent coordination=%s (SPECIALIST=%s, check_frame=%s)",
+                 coordination, args.specialist_model, check_key)
 
     successes, returns = 0, []
     video_dir = args.video_dir or None
@@ -421,6 +454,8 @@ def run_eval(args: argparse.Namespace) -> dict:
                 adapter.reset()
                 while step < args.max_steps_per_episode and not success:
                     adapter.set_obs(obs)
+                    if check_detector is not None:  # completion check sees the wrist cam
+                        check_detector.set_frame(_frame(obs, check_key, flip=args.flip_images))
                     action = runtime.get_action(
                         _frame(obs, args.image_key, flip=args.flip_images)
                     )
