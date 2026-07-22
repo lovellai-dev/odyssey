@@ -143,6 +143,7 @@ class LLMPlanner:
 
     def __init__(self, generator: TextGenerator) -> None:
         self._generator = generator
+        self._last_check_raw: str = ""  # raw text of the last check_done (diagnostics)
         # A multimodal generator (e.g. GemmaVLMGenerator) accepts an ``image``
         # argument on ``generate``; a text-only one does not. Detect once so
         # ``plan`` forwards the scene image only when it's supported.
@@ -195,6 +196,7 @@ class LLMPlanner:
         ]
         text = self._generator.generate(messages, image=image)  # type: ignore[call-arg]
         logger.debug("check_done(%r) raw output: %r", instruction, text)
+        self._last_check_raw = text
         return _parse_yes_no(text)
 
     def ground(self, target_query: str, image: Any) -> str:

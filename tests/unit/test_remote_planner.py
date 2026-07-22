@@ -139,7 +139,7 @@ def test_serve_completion_check_returns_done() -> None:
         ],
     )
     assert out[0] == {"ready": True}
-    assert out[1] == {"done": True}
+    assert out[1]["done"] is True
 
 
 def test_serve_completion_check_returns_not_done() -> None:
@@ -151,7 +151,7 @@ def test_serve_completion_check_returns_not_done() -> None:
             {"shutdown": True},
         ],
     )
-    assert out[1] == {"done": False}
+    assert out[1]["done"] is False
 
 
 def test_serve_check_unsupported_when_planner_lacks_check_done() -> None:

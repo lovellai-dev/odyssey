@@ -99,7 +99,8 @@ def serve(
                 raw_check_image = check.get("image")
                 if isinstance(raw_check_image, str):
                     check_image = _decode_image(raw_check_image)
-                _emit(outstream, {"done": bool(checker(check_instruction, check_image))})
+                done = bool(checker(check_instruction, check_image))
+                _emit(outstream, {"done": done, "raw": getattr(planner, "_last_check_raw", None)})
             except BaseException as e:
                 _emit(outstream, {"error": f"check failed: {type(e).__name__}: {e}"})
             continue

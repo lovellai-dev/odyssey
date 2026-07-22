@@ -256,8 +256,13 @@ class RemotePlanner:
             }
             proc.stdin.write(json.dumps(request) + "\n")
             proc.stdin.flush()
-            msg = self._read_message(self._check_timeout)
-            return bool((msg or {}).get("done"))
+            msg = self._read_message(self._check_timeout) or {}
+            raw = msg.get("raw")
+            if raw:  # surfaces on the opt-in agent trace (diagnose no vs mis-parse)
+                logging.getLogger("odyssey.agents.trace").info(
+                    "[SPECIALIST] check(%r) raw reply: %r", instruction, raw
+                )
+            return bool(msg.get("done"))
         except Exception as e:
             logger.warning(
                 "RemotePlanner.check_done failed (%s) for %r — treating as not done",
