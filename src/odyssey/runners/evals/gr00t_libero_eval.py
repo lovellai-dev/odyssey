@@ -37,6 +37,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 # When launched as a script (python …/runners/evals/gr00t_libero_eval.py), sys.path[0]
 # is THIS file's directory — which also holds libero.py (the odyssey LiberoRunner).
@@ -120,6 +121,37 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--server_device", default="cuda:0")
     ap.add_argument("--server_ready_timeout", type=int, default=900)
     ap.add_argument("--server_denoising_steps", type=int, default=0)
+    # --- multi-agent coordination (opt-in; needs a SPECIALIST in the loadout) ---
+    ap.add_argument("--coordination", default="",
+                    help="'' (single-agent) | planning | delegation. Drives the "
+                         "SPECIALIST + a chunk-aware Planned/DelegatedEvalRuntime.")
+    ap.add_argument("--specialist_model", default="",
+                    help="SPECIALIST HF model id (e.g. google/gemma-4-E2B-it).")
+    ap.add_argument("--specialist_quantization", default="")
+    ap.add_argument("--specialist_python", default="",
+                    help="interpreter with the SPECIALIST stack (ODYSSEY_SPECIALIST_PYTHON).")
+    ap.add_argument("--phase_strategy", default="fixed_steps",
+                    help="fixed_steps | timeout | completion_gated (planning arm).")
+    ap.add_argument("--steps_per_phase", type=int, default=50)
+    ap.add_argument("--phase_check_every", type=int, default=10)
+    ap.add_argument("--phase_max_steps", type=int, default=100)
+    ap.add_argument("--max_phases", type=int, default=8,
+                    help="orchestration: cap on routed sub-tasks per episode.")
+    ap.add_argument("--check_image_key", default="",
+                    help="frame for the completion check (default: --image_key / agentview; "
+                         "the wrist cam is top-down + occluded at grasp time, worse for judging).")
+    ap.add_argument("--check_crop", type=float, default=0.0,
+                    help="center-crop this fraction of the check frame then upscale — the "
+                         "objects are ~20px in the 256px agentview, too small for the VLM. "
+                         "0 = off; e.g. 0.6 zooms into the central 60%.")
+    ap.add_argument("--check_upscale", type=int, default=384,
+                    help="upscale the cropped check frame to NxN (more pixels on the object).")
+    ap.add_argument("--check_debug", type=_bool, default=False,
+                    help="dump the frames the completion check sees to "
+                         "/tmp/gr00t_check_frames (to inspect what the VLM judges).")
+    ap.add_argument("--trace", type=_bool, default=False,
+                    help="verbose per-action trace: log each PILOT/SPECIALIST/"
+                         "ORCHESTRATOR action as it happens.")
     return ap
 
 
@@ -188,6 +220,31 @@ def _frame(obs, key: str, *, flip: bool):
     return np.ascontiguousarray(img).astype(np.uint8)
 
 
+def _zoom_frame(frame: Any, crop_frac: float, upscale: int):
+    """Center-crop ``crop_frac`` of the frame, then upscale to ``upscale``x``upscale``.
+
+    The manipulated object is only ~20px in the 256px agentview — too small for the
+    int4 VLM completion check. Cropping the central region (where the workspace sits)
+    and upscaling makes the object fill the frame ("zoom" + more pixels on target).
+    Pure image op on the existing render — no camera/sim change. ``crop_frac<=0`` or
+    ``>=1`` disables the crop; ``upscale<=0`` keeps the crop's native size.
+    """
+    import numpy as np
+    from PIL import Image
+
+    arr = np.asarray(frame)
+    h, w = arr.shape[:2]
+    if 0.0 < crop_frac < 1.0:
+        ch, cw = max(1, int(h * crop_frac)), max(1, int(w * crop_frac))
+        y0, x0 = (h - ch) // 2, (w - cw) // 2
+        arr = arr[y0:y0 + ch, x0:x0 + cw]
+    if upscale and upscale > 0:
+        arr = np.asarray(
+            Image.fromarray(arr.astype(np.uint8)).resize((upscale, upscale), Image.LANCZOS)
+        )
+    return np.ascontiguousarray(arr).astype(np.uint8)
+
+
 def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
     """Build the FLAT GR00T LIBERO obs (video.*/state.*/annotation.*) from a LIBERO obs.
 
@@ -212,6 +269,184 @@ def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
 # ---------------------------------------------------------------------------
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
+
+_AGENT_TRACE = logging.getLogger("odyssey.agents.trace")
+
+
+class _TracingAgent:
+    """Wraps the out-of-process agent to log each plan/ground/check/route call.
+
+    Enabled by ``--trace``; delegates to the real ``RemotePlanner`` and logs the
+    actor (SPECIALIST / ORCHESTRATOR) + result, so a run shows *who acted when*.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def plan(self, task_instruction: str, image: Any = None) -> Any:
+        steps = self._inner.plan(task_instruction, image)
+        _AGENT_TRACE.info(
+            "[SPECIALIST] plan(%r) -> %d step(s): %s", task_instruction, len(steps), steps
+        )
+        return steps
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        done = bool(self._inner.check_done(instruction, image))
+        _AGENT_TRACE.info(
+            "[SPECIALIST] check(%r) -> %s", instruction, "YES" if done else "no"
+        )
+        return done
+
+    def ground(self, target_query: str, image: Any) -> str:
+        target = self._inner.ground(target_query, image)
+        _AGENT_TRACE.info("[SPECIALIST] ground(%r) -> %r", target_query, target)
+        return target
+
+    def route(self, task_instruction: str, image: Any, history: list) -> Any:
+        decision = self._inner.route(task_instruction, image, history)
+        _AGENT_TRACE.info(
+            "[ORCHESTRATOR] route -> %r (done=%s)", decision.subtask, decision.done
+        )
+        return decision
+
+    def close(self) -> None:
+        closer = getattr(self._inner, "close", None)
+        if callable(closer):
+            closer()
+
+
+class _CheckFrameDetector:
+    """Run the completion check on a possibly DIFFERENT frame than route/ground/plan.
+
+    Lets the check use a chosen camera (``--check_image_key``) instead of the scene
+    frame the runtime passes. Defaults to the scene frame (agentview); the wrist cam
+    was tried and is worse (top-down, occluded at grasp time — see
+    ``docs/multiagent-execution-flow.md``). The recipe stashes the current check frame
+    each step via ``set_frame``.
+    """
+
+    def __init__(self, inner: Any, *, debug_dir: str | None = None) -> None:
+        self._inner = inner
+        self._frame: Any = None
+        self._debug_dir = debug_dir  # if set, dump the frames the check actually sees
+        self._saved = 0
+
+    def set_frame(self, frame: Any) -> None:
+        self._frame = frame
+
+    def check_done(self, instruction: str, image: Any) -> bool:
+        frame = self._frame if self._frame is not None else image
+        if self._debug_dir is not None and frame is not None and self._saved < 60:
+            self._dump(frame)
+        return bool(self._inner.check_done(instruction, frame))
+
+    def _dump(self, frame: Any) -> None:
+        try:  # never break the eval for a debug dump
+            import numpy as _np
+            from PIL import Image
+
+            os.makedirs(self._debug_dir, exist_ok=True)  # type: ignore[arg-type]
+            path = os.path.join(self._debug_dir, f"check_{self._saved:03d}.png")  # type: ignore[arg-type]
+            Image.fromarray(_np.asarray(frame, dtype=_np.uint8)).save(path)
+            self._saved += 1
+        except Exception as e:
+            log.warning("check frame dump failed: %s", e)
+
+
+def _build_coordination_runtime(args, client, instruction):
+    """Build a chunk-aware multi-agent runtime (planning|delegation) over GR00T.
+
+    The GR00T ``PolicyClient`` is wrapped in a ``ChunkPilotAdapter`` (satisfies
+    ``PilotRuntime`` — buffers a chunk, drains per step, re-queries on phase change);
+    the SPECIALIST is the out-of-process ``RemotePlanner`` (plan/check/ground over one
+    loaded model). Returns ``(runtime, adapter)``; the caller drives
+    ``runtime.get_action(image)`` and pushes each raw obs via ``adapter.set_obs(obs)``.
+    """
+    import functools
+
+    from odyssey.runners.agents.remote_planner import RemotePlanner
+    from odyssey.runners.evals.chunk_pilot_adapter import ChunkPilotAdapter
+
+    t = _transforms()
+    adapter = ChunkPilotAdapter(
+        client,
+        obs_builder=functools.partial(
+            _build_obs,
+            image_key=args.image_key,
+            wrist_image_key=args.wrist_image_key,
+            flip=args.flip_images,
+        ),
+        action_mapper=functools.partial(
+            t.gr00t_action_to_libero, translation_only=args.translation_only
+        ),
+        n_action_steps=args.n_action_steps,
+    )
+    if not args.specialist_model:
+        raise SystemExit("--coordination requires --specialist_model (a SPECIALIST agent).")
+    specialist: Any = RemotePlanner(
+        args.specialist_model,
+        args.specialist_quantization or None,
+        python_path=args.specialist_python or None,
+    )
+    if args.trace:
+        _AGENT_TRACE.setLevel(logging.INFO)
+        specialist = _TracingAgent(specialist)  # log each SPECIALIST/ORCHESTRATOR call
+    # The completion check can use a different camera than route/ground/plan via
+    # --check_image_key; defaults to the scene frame (agentview).
+    check_detector = _CheckFrameDetector(
+        specialist,
+        debug_dir="/tmp/gr00t_check_frames" if args.check_debug else None,
+    )
+    cfg = {
+        "phase_strategy": args.phase_strategy,
+        "steps_per_phase": args.steps_per_phase,
+        "phase_check_every": args.phase_check_every,
+        "phase_max_steps": args.phase_max_steps,
+        "max_phases": args.max_phases,
+    }
+    coordination = args.coordination.strip().lower()
+    if coordination == "delegation":
+        from odyssey.runners.agents.delegated import DelegatedEvalRuntime, DelegationConfig
+
+        runtime = DelegatedEvalRuntime(
+            pilot=adapter,
+            grounder=specialist,
+            config=DelegationConfig.from_config(cfg),
+            detector=check_detector,
+            task_fallback=instruction,
+        )
+    elif coordination == "planning":
+        from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+
+        runtime = PlannedEvalRuntime(
+            pilot=adapter,
+            planner=specialist,
+            phase_config=PhaseConfig.from_config(cfg),
+            detector=check_detector,
+            fallback_instruction=instruction,
+        )
+    elif coordination == "orchestration":
+        from odyssey.runners.agents.orchestrated import (
+            OrchestratedEvalRuntime,
+            OrchestrationConfig,
+        )
+
+        # Regime D: the SPECIALIST/ORCHESTRATOR (same Gemma) routes the next
+        # sub-instruction dynamically + gates hand-back via check_done.
+        runtime = OrchestratedEvalRuntime(
+            pilot=adapter,
+            orchestrator=specialist,
+            config=OrchestrationConfig.from_config(cfg),
+            detector=check_detector,
+            task_fallback=instruction,
+        )
+    else:
+        raise SystemExit(
+            f"unknown coordination {args.coordination!r}; "
+            "allowed: planning, delegation, orchestration"
+        )
+    return runtime, adapter, check_detector
+
 
 def run_eval(args: argparse.Namespace) -> dict:
     from odyssey.runners.evals.libero import (
@@ -240,6 +475,16 @@ def run_eval(args: argparse.Namespace) -> dict:
         host=args.host, port=args.port, timeout_ms=args.timeout_ms
     )
 
+    coordination = (args.coordination or "").strip().lower()
+    runtime = adapter = check_detector = None
+    check_key = args.check_image_key or args.image_key
+    if coordination:
+        runtime, adapter, check_detector = _build_coordination_runtime(
+            args, client, instruction
+        )
+        log.info("multi-agent coordination=%s (SPECIALIST=%s, check_frame=%s)",
+                 coordination, args.specialist_model, check_key)
+
     successes, returns = 0, []
     video_dir = args.video_dir or None
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
@@ -254,26 +499,28 @@ def run_eval(args: argparse.Namespace) -> dict:
         frames: list = []
         step = 0
         try:
-            while step < args.max_steps_per_episode and not success:
-                observation = _build_obs(
-                    obs, instruction,
-                    image_key=args.image_key,
-                    wrist_image_key=args.wrist_image_key,
-                    flip=args.flip_images,
+            if runtime is not None:
+                # Multi-agent: the runtime feeds phase sub-instructions to the chunk
+                # adapter (which buffers/flushes chunks); one env.step per get_action.
+                runtime.begin_episode(
+                    instruction, _frame(obs, args.image_key, flip=args.flip_images)
                 )
-                result = client.get_action(observation)
-                chunk = result[0] if isinstance(result, tuple) else result
-                for k in range(args.n_action_steps):
-                    if step >= args.max_steps_per_episode:
-                        break
-                    action = t.gr00t_action_to_libero(
-                        chunk, k, translation_only=args.translation_only,
+                adapter.reset()
+                while step < args.max_steps_per_episode and not success:
+                    adapter.set_obs(obs)
+                    if check_detector is not None:  # completion check sees the agentview cam
+                        cframe = _frame(obs, check_key, flip=args.flip_images)
+                        if args.check_crop > 0 or args.check_upscale > 0:
+                            cframe = _zoom_frame(cframe, args.check_crop, args.check_upscale)
+                        check_detector.set_frame(cframe)
+                    action = runtime.get_action(
+                        _frame(obs, args.image_key, flip=args.flip_images)
                     )
                     obs, reward, done, _info = env.step(action.tolist())
                     ep_return += float(reward)
+                    for ev in runtime.drain_phase_events():
+                        log.info("episode %d phase: %s", ep, ev)
                     if video_dir is not None:
-                        # match the pilot's orientation: LIBERO's agentview is stored
-                        # 180°-rotated, so flip the video frame too (else it's upside down).
                         frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
                         if frame is not None:
                             frames.append(frame)
@@ -281,6 +528,35 @@ def run_eval(args: argparse.Namespace) -> dict:
                     if done:  # LIBERO sets done=True when the task is solved
                         success = True
                         break
+            else:
+                # Single-agent: replay each GR00T chunk open-loop.
+                while step < args.max_steps_per_episode and not success:
+                    observation = _build_obs(
+                        obs, instruction,
+                        image_key=args.image_key,
+                        wrist_image_key=args.wrist_image_key,
+                        flip=args.flip_images,
+                    )
+                    result = client.get_action(observation)
+                    chunk = result[0] if isinstance(result, tuple) else result
+                    for k in range(args.n_action_steps):
+                        if step >= args.max_steps_per_episode:
+                            break
+                        action = t.gr00t_action_to_libero(
+                            chunk, k, translation_only=args.translation_only,
+                        )
+                        obs, reward, done, _info = env.step(action.tolist())
+                        ep_return += float(reward)
+                        if video_dir is not None:
+                            # match the pilot's orientation: LIBERO's agentview is stored
+                            # 180°-rotated, so flip the video frame too (else upside down).
+                            frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
+                            if frame is not None:
+                                frames.append(frame)
+                        step += 1
+                        if done:  # LIBERO sets done=True when the task is solved
+                            success = True
+                            break
         except Exception as ep_exc:
             # A flaky get_action()/env.step() must not abort the whole sweep (that
             # would drop the remaining episodes AND the final ODYSSEY_RESULT line).
@@ -298,6 +574,8 @@ def run_eval(args: argparse.Namespace) -> dict:
             tag = "PASS" if success else "FAIL"
             save_rollout_video(frames, Path(video_dir) / f"episode_{ep:02d}_{tag}.mp4", 24)
 
+    if runtime is not None:
+        runtime.close()  # shut down the SPECIALIST subprocess (reused across episodes)
     env.close()
     n = max(args.num_episodes, 1)
     success_rate = successes / n
@@ -309,6 +587,7 @@ def run_eval(args: argparse.Namespace) -> dict:
             "episode_returns": [round(r, 4) for r in returns],
             "benchmark": f"{args.task}[task={args.task_id}]",
             "instruction": instruction,
+            "coordination": coordination or "single-agent",
         },
     }
     _emit(result_line(**summary))

@@ -18,7 +18,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from odyssey.runners.evals.isaac_lab import EvalProtocolCollector, summarize
 from odyssey.runners.evals.libero import build_gr00t_libero_argv
@@ -225,6 +228,71 @@ def test_build_argv_omits_video_dir_when_none() -> None:
     )
     assert "--video_dir" not in argv
     assert argv[argv.index("--task_id") + 1] == "1"
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent: `coordination` forwards the runner-derived SPECIALIST (from the
+# loadout + ODYSSEY_SPECIALIST_PYTHON) so the recipe can build the planner.
+# ---------------------------------------------------------------------------
+
+def _specialist_ctx(model: str = "google/gemma-4-E2B-it", quant: str | None = "int4") -> Any:
+    from odyssey.spec.agents import AgentRole, AgentSpec
+    from odyssey.spec.refs import HFModelRef
+
+    specialist = AgentSpec(
+        id="planner", role=AgentRole.SPECIALIST,
+        model=HFModelRef(base=model, quantization=quant),
+    )
+    return SimpleNamespace(agents=[specialist])
+
+
+def test_build_argv_forwards_specialist_for_coordination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ODYSSEY_SPECIALIST_PYTHON", "/venv/spec/bin/python")
+    task = _eval_task(config={"coordination": "planning",
+                              "phase_strategy": "completion_gated"})
+    argv = build_gr00t_libero_argv(
+        spec=task, checkpoint=Path("/c"), video_dir=None, context=_specialist_ctx(),
+    )
+    assert argv[argv.index("--coordination") + 1] == "planning"  # config passthrough
+    assert argv[argv.index("--specialist_model") + 1] == "google/gemma-4-E2B-it"
+    assert argv[argv.index("--specialist_quantization") + 1] == "int4"
+    assert argv[argv.index("--specialist_python") + 1] == "/venv/spec/bin/python"
+
+
+def test_build_argv_no_specialist_flags_without_coordination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ODYSSEY_SPECIALIST_PYTHON", "/venv/spec/bin/python")
+    argv = build_gr00t_libero_argv(
+        spec=_eval_task(config={"task_id": 0}), checkpoint=Path("/c"),
+        video_dir=None, context=_specialist_ctx(),
+    )
+    assert "--specialist_model" not in argv and "--specialist_python" not in argv
+
+
+def test_build_argv_coordination_requires_specialist_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ODYSSEY_SPECIALIST_PYTHON", raising=False)
+    task = _eval_task(config={"coordination": "delegation"})
+    with pytest.raises(RuntimeError, match="ODYSSEY_SPECIALIST_PYTHON"):
+        build_gr00t_libero_argv(
+            spec=task, checkpoint=Path("/c"), video_dir=None, context=_specialist_ctx(),
+        )
+
+
+def test_ma_argv_parses_back_into_recipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ODYSSEY_SPECIALIST_PYTHON", "/venv/spec/bin/python")
+    task = _eval_task(config={"coordination": "planning", "steps_per_phase": 30})
+    argv = build_gr00t_libero_argv(
+        spec=task, checkpoint=Path("/c"), video_dir=None, context=_specialist_ctx(),
+    )
+    args = E.build_parser().parse_args(argv)
+    assert args.coordination == "planning"
+    assert args.specialist_model == "google/gemma-4-E2B-it"
+    assert args.steps_per_phase == 30
 
 
 # ---------------------------------------------------------------------------

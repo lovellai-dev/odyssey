@@ -26,7 +26,11 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime
+from odyssey.runners.agents.runtime import (
+    CompletionDetector,
+    PilotRuntime,
+    PlannerRuntime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,7 @@ logger = logging.getLogger(__name__)
 class PhaseStrategy(str, Enum):
     FIXED_STEPS = "fixed_steps"
     TIMEOUT = "timeout"
+    COMPLETION_GATED = "completion_gated"
 
 
 @dataclass
@@ -43,6 +48,37 @@ class PhaseConfig:
     strategy: PhaseStrategy = PhaseStrategy.FIXED_STEPS
     steps_per_phase: int = 50
     timeout_seconds: float = 10.0
+    # COMPLETION_GATED only: poll the detector every ``check_every`` steps
+    # (never every step — a VLM round-trip costs ~1-2s), and force-advance
+    # after ``max_steps_per_phase`` as a safety cap so a phase never wedges.
+    check_every: int = 10
+    max_steps_per_phase: int = 100
+
+    @classmethod
+    def from_config(cls, cfg: dict[str, Any]) -> PhaseConfig:
+        """Build a PhaseConfig from a mission ``config:`` dict (opt-in).
+
+        Recognised keys: ``phase_strategy`` (``fixed_steps`` | ``timeout`` |
+        ``completion_gated``, default ``fixed_steps``), ``steps_per_phase``,
+        ``timeout_seconds``, ``phase_check_every``, ``phase_max_steps``. An
+        unknown ``phase_strategy`` raises ``ValueError`` (runners own config
+        validation — the spec's ``config`` is free-form).
+        """
+        raw = cfg.get("phase_strategy", PhaseStrategy.FIXED_STEPS.value)
+        try:
+            strategy = PhaseStrategy(str(raw))
+        except ValueError as exc:
+            allowed = ", ".join(s.value for s in PhaseStrategy)
+            raise ValueError(
+                f"unknown phase_strategy {raw!r}; allowed: {allowed}"
+            ) from exc
+        return cls(
+            strategy=strategy,
+            steps_per_phase=int(cfg.get("steps_per_phase", 50)),
+            timeout_seconds=float(cfg.get("timeout_seconds", 10.0)),
+            check_every=int(cfg.get("phase_check_every", 10)),
+            max_steps_per_phase=int(cfg.get("phase_max_steps", 100)),
+        )
 
 
 @dataclass
@@ -84,6 +120,11 @@ class PlannedEvalRuntime:
         Controls when to advance between sub-instructions.
     fallback_instruction:
         Used if the planner is None or returns no plan.
+    detector:
+        Optional ``CompletionDetector`` for the ``COMPLETION_GATED`` strategy.
+        If omitted, the planner is auto-adopted when it exposes a ``check_done``
+        method (the out-of-process SPECIALIST answers both ``plan`` and
+        ``check_done`` from the same loaded model — zero extra VRAM).
     """
 
     def __init__(
@@ -93,12 +134,22 @@ class PlannedEvalRuntime:
         *,
         phase_config: PhaseConfig | None = None,
         fallback_instruction: str = "complete the task",
+        detector: CompletionDetector | None = None,
     ) -> None:
         self._pilot = pilot
         self._planner = planner
         self._phase_config = phase_config or PhaseConfig()
         self._fallback = fallback_instruction
+        # Reuse the planner as the completion detector when it can answer a
+        # yes/no check (RemotePlanner / a multimodal LLMPlanner). hasattr keeps
+        # a text-only planner that lacks the method perfectly valid.
+        if detector is None and hasattr(planner, "check_done"):
+            detector = planner  # type: ignore[assignment]
+        self._detector = detector
         self._state = _PhaseState()
+        # Buffered (from, to, instruction, reason) advance records. get_action
+        # is sync but telemetry is async, so the async step loop drains these.
+        self._pending_events: list[dict[str, Any]] = []
 
     @property
     def current_phase_index(self) -> int:
@@ -133,11 +184,21 @@ class PlannedEvalRuntime:
             sub_instructions=steps,
             phase_start_time=time.monotonic(),
         )
+        self._pending_events = []
         logger.info(
             "PlannedEvalRuntime: episode plan with %d phases: %s",
             len(steps),
             steps,
         )
+        if (
+            self._phase_config.strategy == PhaseStrategy.COMPLETION_GATED
+            and self._detector is None
+        ):
+            logger.warning(
+                "COMPLETION_GATED strategy but no completion detector available; "
+                "phases will only advance at the max_steps_per_phase cap (%d).",
+                self._phase_config.max_steps_per_phase,
+            )
         return steps
 
     def get_action(self, image: Any) -> NDArray[np.floating[Any]]:
@@ -152,34 +213,76 @@ class PlannedEvalRuntime:
 
         action = self._pilot.act(image, instruction)
         self._state.steps_in_phase += 1
-        self._maybe_advance_phase()
+        self._maybe_advance_phase(image)
         return action
 
-    def _maybe_advance_phase(self) -> None:
+    def _maybe_advance_phase(self, image: Any) -> None:
         if self._state.is_complete:
             return
 
         cfg = self._phase_config
         advance = False
+        reason = ""
 
         if cfg.strategy == PhaseStrategy.FIXED_STEPS:
             if self._state.steps_in_phase >= cfg.steps_per_phase:
-                advance = True
+                advance, reason = True, "fixed_steps"
         elif cfg.strategy == PhaseStrategy.TIMEOUT:
             elapsed = time.monotonic() - self._state.phase_start_time
             if elapsed >= cfg.timeout_seconds:
-                advance = True
+                advance, reason = True, "timeout"
+        elif cfg.strategy == PhaseStrategy.COMPLETION_GATED:
+            n = self._state.steps_in_phase
+            # Cap first: a stuck phase always terminates, even if the detector
+            # is unavailable or never confirms.
+            if n >= cfg.max_steps_per_phase:
+                advance, reason = True, "cap"
+            elif (
+                self._detector is not None
+                and n > 0
+                and n % cfg.check_every == 0
+                and self._detector.check_done(self._state.current_instruction, image)
+            ):
+                advance, reason = True, "completion"
 
         if advance:
             old_idx = self._state.current_index
+            old_instruction = self._state.current_instruction
             self._state.advance()
+            next_instruction = (
+                self._state.current_instruction
+                if not self._state.is_complete
+                else old_instruction
+            )
+            self._pending_events.append(
+                {
+                    "from": old_idx,
+                    "to": self._state.current_index,
+                    "instruction": next_instruction,
+                    "reason": reason,
+                }
+            )
             if not self._state.is_complete:
                 logger.debug(
-                    "Phase %d → %d: %s",
+                    "Phase %d → %d (%s): %s",
                     old_idx,
                     self._state.current_index,
+                    reason,
                     self._state.current_instruction,
                 )
+
+    def drain_phase_events(self) -> list[dict[str, Any]]:
+        """Return and clear buffered phase-advance records.
+
+        Each record is ``{"from", "to", "instruction", "reason"}`` where reason
+        is ``fixed_steps`` | ``timeout`` | ``completion`` | ``cap``. Empty (zero
+        overhead) on non-advancing steps and the single-agent path. The async
+        step loop drains this after each ``get_action`` to emit telemetry that
+        the sync runtime cannot emit itself.
+        """
+        events = self._pending_events
+        self._pending_events = []
+        return events
 
     def close(self) -> None:
         """Release runtime resources. Closes the planner if it owns any

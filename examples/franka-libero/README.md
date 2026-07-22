@@ -12,25 +12,28 @@ HuggingFace, so you do **not** need a dataset on disk (the 10.2 GB
 
 | Mission | Agents | What it adds |
 |---|---|---|
-| `mission.yaml` | 1 — OpenVLA **pilot** | Baseline single-agent eval on the LIBERO `object` suite. |
-| `mission-multiagent.yaml` | 2 — pilot + Gemma **specialist** | Adds an out-of-process multimodal Gemma 4 planner that decomposes the instruction into phases (`PlannedEvalRuntime`). |
+| `mission.yaml` | 1 — OpenVLA **pilot** | Baseline single-agent eval (OpenVLA) on the LIBERO `object` suite. |
+| `mission-gr00t.yaml` | 1 — GR00T **pilot** | Single-agent eval with the chunk-emitting GR00T-N1.7 pilot (out-of-process policy server). |
+| `mission-gr00t-multiagent-planning.yaml` | 2 — GR00T pilot + Gemma **specialist** | Multi-agent, **planning** arm: the SPECIALIST authors the plan up front + completion-gates phases. |
+| `mission-gr00t-multiagent-delegation.yaml` | 2 — GR00T pilot + Gemma **specialist** | Multi-agent, **delegation** arm: a fixed `pick → place` template; the SPECIALIST grounds each phase's target. |
+| `mission-gr00t-multiagent-orchestration.yaml` | 2 — GR00T pilot + Gemma **orchestrator** | Multi-agent, **orchestration** arm (regime D): an LLM ORCHESTRATOR routes the next sub-instruction dynamically. |
 
-> Both are eval-only — the multi-agent one is **not** a training mission, it just
-> adds a planner. See the top of each YAML for the config knobs.
+> All are eval-only (no training task). **Multi-agent runs on the GR00T pilot** —
+> OpenVLA is single-agent only (its per-step latency is unviable for MA). See
+> [`docs/multiagent-execution-flow.md`](../../docs/multiagent-execution-flow.md) for
+> the per-arm flow diagrams, and set `config.trace: true` to log who acts when.
 
 > **No `task_instruction` — that's intentional.** LIBERO is a *language-conditioned*
 > benchmark: every task in a suite ships its own natural-language instruction (keyed
 > by `task_id`, e.g. *"pick up the alphabet soup and place it in the basket"*), which
 > the runner reads automatically from the task. So the missions set **no
 > `task_instruction`** — it would only act as a fallback if the task had no language.
-> (Contrast with the robosuite [`franka-pickplace`](../franka-pickplace/) example,
-> where the sim has no language annotation and you must supply the instruction.)
 
 ---
 
 ## Prerequisites
 
-- **GPU:** 24 GB (L4 / RTX 4090 class). Multi-agent peak ≈ 19 GB (int4 planner + bf16 pilot).
+- **GPU:** 24 GB (L4 / RTX 4090 class). GR00T multi-agent peak ≈ 12–14 GB (GR00T-3B + int4 Gemma).
 - **System build + render deps** (needs `sudo`) — LIBERO's `egl_probe` (via `robomimic`)
   compiles from C source, and MuJoCo needs a headless GL backend:
   ```bash
@@ -74,13 +77,26 @@ examples/franka-libero/setup.sh
 # headless render (OSMesa = CPU, always works on compute-only drivers; egl if NVIDIA EGL)
 export MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa
 
-# single-agent — checkpoint auto-downloads from HF on first run
+# single-agent OpenVLA — checkpoint auto-downloads from HF on first run
 odyssey validate examples/franka-libero/mission.yaml
 odyssey run      examples/franka-libero/mission.yaml
 
-# multi-agent (Gemma planner) — load the specialist venv first
+# GR00T missions need the policy-server venv:
+#   bash examples/franka-libero/setup.sh --pilot gr00t   (see examples/quickstart-gr00t)
+# ...and access to the GATED backbone nvidia/Cosmos-Reason2-2B (every GR00T checkpoint
+# loads it): request it once at https://huggingface.co/nvidia/Cosmos-Reason2-2B, then
+# `huggingface-cli login`.
+# Run ONLINE — the server does an online metadata check for the backbone, so a forced
+# offline mode breaks server startup with recent transformers (OfflineModeIsEnabled at
+# Qwen3VLProcessor/is_base_mistral). The weights still come from the HF cache.
+export HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0
+odyssey run examples/franka-libero/mission-gr00t.yaml
+
+# multi-agent (GR00T pilot + Gemma) — also load the specialist venv. Pick an arm:
 source examples/multiagent-openvla-gemma/.env       # sets ODYSSEY_SPECIALIST_PYTHON
-odyssey run examples/franka-libero/mission-multiagent.yaml
+odyssey run examples/franka-libero/mission-gr00t-multiagent-planning.yaml        # planner
+# odyssey run examples/franka-libero/mission-gr00t-multiagent-delegation.yaml    # delegation
+# odyssey run examples/franka-libero/mission-gr00t-multiagent-orchestration.yaml # orchestration
 
 # per-episode videos
 find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \;

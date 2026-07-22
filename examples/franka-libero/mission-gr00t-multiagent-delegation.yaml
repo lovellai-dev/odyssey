@@ -1,0 +1,76 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-multiagent-delegation
+  description: >-
+    Multi-agent eval, DELEGATION arm — a GR00T-N1.7 PILOT with a Gemma SPECIALIST
+    as an on-demand grounding tool (not a planner). A deterministic pick -> place
+    template owns the sequence; per phase the SPECIALIST grounds the target
+    ("where is the object to pick up?") and completion-gates the hand-back. The
+    counterpart to mission-gr00t-multiagent-planning.yaml (planning arm) — same pilot, same
+    SPECIALIST, only the SPECIALIST's role differs.
+  tags: [gr00t, nvidia, libero, robosuite, franka, multi-agent, delegation, eval-only]
+
+objective: |
+  Evaluate GR00T-N1.7 on LIBERO object with the SPECIALIST as a grounding tool
+  (delegation), for the planner-vs-delegation comparison against
+  mission-gr00t-multiagent-planning.yaml.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, the SPECIALIST grounds each phase target
+  + gates hand-back, chunks execute in LIBERO, and the run reports a non-trivial
+  success_rate.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+    - id: grounder
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: google/gemma-4-E2B-it
+        quantization: int4
+        modality: multimodal        # sees the frame to ground + check completion
+
+tasks:
+  - name: eval-libero-object-gr00t-delegation
+    kind: evaluation
+    evaluation_type: libero
+    description: Delegation pick-and-place of task_id=0 (LIBERO object), GR00T pilot.
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t                      # -> gr00t_libero_eval.py + GR00T policy server
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      # --- multi-agent coordination: DELEGATION (SPECIALIST grounds each phase) ---
+      coordination: delegation          # deterministic pick->place template + ground()
+      phase_check_every: 10             # poll the completion check every N steps
+      phase_max_steps: 100              # safety cap so a phase never wedges
+      # NOTE: run with ODYSSEY_SPECIALIST_PYTHON set (the Gemma venv).
+
+      # --- completion-check framing (issue #78): the manipulated object is ~20px in
+      # the 256px agentview — too small for the int4 VLM judge. Crop the central
+      # region + upscale so it fills the frame ("zoom" + more pixels on target). ---
+      check_crop: 0.6                   # center-crop 60% of the check frame, then...
+      check_upscale: 384                # ...upscale the crop to 384x384
+      check_debug: true                 # dump the frames the check sees (/tmp/gr00t_check_frames)
+      trace: true                       # log each PILOT/SPECIALIST/ORCHESTRATOR call + raw check reply
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+
+      # --- action chunk (LIBERO action is ABSOLUTE 7-DoF; no pos/rot scaling) ---
+      n_action_steps: 16
+
+      capture_video: true
