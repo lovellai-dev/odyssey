@@ -138,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max_phases", type=int, default=8,
                     help="orchestration: cap on routed sub-tasks per episode.")
     ap.add_argument("--check_image_key", default="",
-                    help="frame for the completion check (default: --wrist_image_key — "
-                         "a close-up of the grasp; agentview often occludes it).")
+                    help="frame for the completion check (default: --image_key / agentview; "
+                         "the wrist cam is top-down + occluded at grasp time, worse for judging).")
     ap.add_argument("--check_debug", type=_bool, default=False,
                     help="dump the frames the completion check sees to "
                          "/tmp/gr00t_check_frames (to inspect what the VLM judges).")
@@ -285,12 +285,13 @@ class _TracingAgent:
 
 
 class _CheckFrameDetector:
-    """Run the completion check on a DIFFERENT frame than route/ground/plan.
+    """Run the completion check on a possibly DIFFERENT frame than route/ground/plan.
 
-    The agentview angle often occludes the grasp, so ``check_done`` reads a close-up
-    (the wrist camera by default) instead of the scene frame the runtime passes. The
-    recipe stashes the current check frame each step via ``set_frame``; the wrapped
-    agent answers ``check_done`` from the same loaded model, just on a better view.
+    Lets the check use a chosen camera (``--check_image_key``) instead of the scene
+    frame the runtime passes. Defaults to the scene frame (agentview); the wrist cam
+    was tried and is worse (top-down, occluded at grasp time — see
+    ``docs/multiagent-execution-flow.md``). The recipe stashes the current check frame
+    each step via ``set_frame``.
     """
 
     def __init__(self, inner: Any, *, debug_dir: str | None = None) -> None:
@@ -359,8 +360,8 @@ def _build_coordination_runtime(args, client, instruction):
     if args.trace:
         _AGENT_TRACE.setLevel(logging.INFO)
         specialist = _TracingAgent(specialist)  # log each SPECIALIST/ORCHESTRATOR call
-    # The completion check runs on a close-up (wrist cam by default) — the agentview
-    # angle often occludes the grasp. route/ground/plan still use the scene frame.
+    # The completion check can use a different camera than route/ground/plan via
+    # --check_image_key; defaults to the scene frame (agentview).
     check_detector = _CheckFrameDetector(
         specialist,
         debug_dir="/tmp/gr00t_check_frames" if args.check_debug else None,
@@ -445,7 +446,7 @@ def run_eval(args: argparse.Namespace) -> dict:
 
     coordination = (args.coordination or "").strip().lower()
     runtime = adapter = check_detector = None
-    check_key = args.check_image_key or args.wrist_image_key
+    check_key = args.check_image_key or args.image_key
     if coordination:
         runtime, adapter, check_detector = _build_coordination_runtime(
             args, client, instruction
