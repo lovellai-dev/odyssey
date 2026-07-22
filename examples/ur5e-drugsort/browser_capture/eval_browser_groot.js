@@ -23,6 +23,8 @@ const puppeteer = require(process.env.PUPPETEER_CORE || 'puppeteer-core');
 
 const PLANS = JSON.parse(fs.readFileSync(process.env.PLANS || 'plans_eval.json', 'utf8'));
 const OUT = process.env.OUT || path.resolve('eval_out');
+const RAW_DUMP = process.env.RAW_DUMP === '1';   // dump policy frames+GT for Observer retrain
+const RAW = path.join(OUT, 'raw');
 const PORT = process.env.PORT || '8021';
 const AGENTS = process.env.AGENTS || 'groot';                 // groot | groot-observer
 const N = process.env.N ? parseInt(process.env.N) : PLANS.plans.length;
@@ -97,6 +99,11 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   // episode boundaries (found in the Stage-B A/B).
   const sid = (cfg.agents === 'groot-observer' ? 'obs-' : 'ep-') + Date.now() + '-' + Math.floor(Math.random() * 1e6);
 
+  // RAW_DUMP: capture the POLICY's own frame distribution (states + GT vial) for
+  // the Observer playground-retrain, so train-dist == inference-dist. Same format
+  // as browser_harness (perception_from_browser reads states + gt).
+  const DUMP = !!cfg.rawDump; const st_d = [], gt_d = []; let fi = 0, qc = 0;
+
   while (ticks < cfg.maxTicks) {
     const measured = readArm();
     const state = [measured[0], measured[1], measured[2], measured[3], measured[4], measured[5], Math.max(0, Math.min(1, gripCmd))];
@@ -104,6 +111,15 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
     const img = H.cap(v.scene, H.camExt.cam);
     G.syncMjCamera(H.camWrist.cam, pm, mj, H.camWrist.id);
     const imgWrist = H.cap(v.scene, H.camWrist.cam);
+    if (DUMP && (qc % 3 === 0)) {
+      const pad = String(fi).padStart(4, '0');
+      await window.__saveFrameEval(cfg.epRel + '/exterior/f' + pad + '.png', img.replace(/^data:image\/png;base64,/, ''));
+      await window.__saveFrameEval(cfg.epRel + '/wrist/f' + pad + '.png', imgWrist.replace(/^data:image\/png;base64,/, ''));
+      st_d.push([measured[0], measured[1], measured[2], measured[3], measured[4], measured[5], state[6]]);
+      gt_d.push({ vial: vialPose(), pocket: pocketPose(), phase: 'policy' });
+      fi++;
+    }
+    qc++;
     const body = { image_b64: img, state, instruction: 'pick up the vial and place it in the rack', image_b64_wrist: imgWrist };
     if (sid) body.sid = sid;
     let res;
@@ -134,7 +150,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   const placeDist = Math.hypot(vp[0] - pp[0], vp[1] - pp[1]);
   const lifted = (zMax - z0) > 0.02;
   const seated = placeDist < 0.05 && vp[2] > 0.20;
-  return { success: (lifted && seated), lifted, seated, lift_height: zMax - z0, place_dist: placeDist, gripMax, queries, ticks, min_pad_to_vial: (minPad === Infinity ? null : minPad), error: err };
+  return { success: (lifted && seated), lifted, seated, lift_height: zMax - z0, place_dist: placeDist, gripMax, queries, ticks, min_pad_to_vial: (minPad === Infinity ? null : minPad), error: err, states_d: st_d, gt_d: gt_d };
 };
 
 (async () => {
@@ -166,12 +182,23 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   const health = await page.evaluate(async () => { try { const r = await fetch('/api/groot/health'); return await r.json(); } catch (e) { return { error: String(e) }; } });
   console.log('HEALTH ' + JSON.stringify(health));
 
+  if (RAW_DUMP) {
+    await page.exposeFunction('__saveFrameEval', (rel, b64) => {
+      const fp = path.join(RAW, rel); fs.mkdirSync(path.dirname(fp), { recursive: true });
+      fs.writeFileSync(fp, Buffer.from(b64, 'base64'));
+    });
+  }
   const results = [];
   const t0all = Date.now();
   const plans = PLANS.plans.slice(0, N);
   for (const plan of plans) {
     const t0 = Date.now();
-    const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS });
+    const epRel = 'ep' + String(plan.episode).padStart(3, '0');
+    const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS, rawDump: RAW_DUMP, epRel });
+    if (RAW_DUMP && r.states_d && r.states_d.length) {
+      fs.writeFileSync(path.join(RAW, epRel, 'meta.json'), JSON.stringify({ episode: plan.episode, states: r.states_d, gt: r.gt_d, actions: [] }));
+    }
+    delete r.states_d; delete r.gt_d;
     const secs = (Date.now() - t0) / 1000;
     results.push({ episode: plan.episode, ...r, seconds: +secs.toFixed(1) });
     console.log(`ATT ep${String(plan.episode).padStart(3, '0')}: ${r.success ? 'SUCCESS' : (r.error ? 'ERROR:' + r.error : 'fail')} lifted=${r.lifted} seated=${r.seated} lift=${(r.lift_height * 100).toFixed(1)}cm place=${(r.place_dist * 100).toFixed(1)}cm pad=${r.min_pad_to_vial == null ? 'n/a' : (r.min_pad_to_vial * 100).toFixed(1) + 'cm'} grip=${r.gripMax.toFixed(2)} q=${r.queries} ${secs.toFixed(1)}s`);
