@@ -158,16 +158,15 @@ class Mission(BaseModel):
     @model_validator(mode="after")
     def _no_specialist_training(self) -> Mission:
         agent_roles = {a.id: a.role for a in self.robot.agents}
-        inference_only = {AgentRole.SPECIALIST, AgentRole.ORCHESTRATOR}
         for task in self.tasks:
             if not isinstance(task, TrainingTask):
                 continue
             role = agent_roles.get(task.agent_id)
-            if role in inference_only:
+            if role == AgentRole.SPECIALIST:
                 raise ValueError(
-                    f"Training task {task.name!r} targets {role.value} agent "
-                    f"{task.agent_id!r}. SPECIALIST/ORCHESTRATOR agents participate "
-                    "in evaluation only and are not trained — they use their base "
-                    "model for inference. Target a PILOT agent instead."
+                    f"Training task {task.name!r} targets SPECIALIST agent "
+                    f"{task.agent_id!r}. SPECIALISTs participate in evaluation "
+                    "only and are not trained — they use their base model for "
+                    "inference. Target a PILOT agent instead."
                 )
         return self

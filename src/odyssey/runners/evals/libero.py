@@ -8,11 +8,9 @@ it's the fastest path to seeing a VLA pilot actually *succeed* in sim (the publi
 ``openvla/openvla-7b-finetuned-libero-*`` checkpoints score ~70-90%).
 
 This runner mirrors ``RobosuiteRunner`` (same episode loop, video capture,
-``build_eval_summary``, single-agent OpenVLA policy) and only swaps the environment
-layer for LIBERO. The env/obs/action handling follows OpenVLA's reference
-``experiments/robot/libero/run_libero_eval.py``. Multi-agent runs on the
-chunk-emitting GR00T pilot (``pilot: gr00t`` + ``coordination:`` — see
-``_run_gr00t_pilot`` / ``gr00t_libero_eval.py``), not OpenVLA.
+``build_eval_summary``, single-agent OpenVLA policy + multi-agent ``PlannedEvalRuntime``)
+and only swaps the environment layer for LIBERO. The env/obs/action handling follows
+OpenVLA's reference ``experiments/robot/libero/run_libero_eval.py``.
 
 Mission wiring (eval-only, no training task needed):
 
@@ -205,11 +203,11 @@ class LiberoRunner(Runner):
 
         cfg = spec.config or {}
 
-        # Pilot backend. Default: the in-process OpenVLA policy (single-agent) below.
-        # ``pilot: gr00t`` swaps to a GR00T pilot driven out-of-process via a policy
-        # server — its own subprocess recipe (same pattern as IsaacLabRunner), and
-        # the ONLY multi-agent path (``coordination:``). Action chunking + a smaller
-        # footprint is why GR00T (not OpenVLA) carries multi-agent.
+        # Pilot backend. Default: the in-process OpenVLA policy / multi-agent
+        # runtime below. ``pilot: gr00t`` swaps to a GR00T pilot driven
+        # out-of-process via a policy server — its own subprocess recipe (same
+        # pattern as IsaacLabRunner), because GR00T inference is server-based,
+        # not in-process. Action chunking + a smaller footprint is why it exists.
         if str(cfg.get("pilot", "openvla")).lower() == "gr00t":
             return await self._run_gr00t_pilot(context, spec)
 
@@ -255,18 +253,27 @@ class LiberoRunner(Runner):
         instruction = _resolve_libero_instruction(task, cfg)
         logger.info("LIBERO task %d instruction: %r", task_id, instruction)
 
-        # OpenVLA single-agent policy. Multi-agent runs on the chunk-emitting GR00T
-        # pilot (`pilot: gr00t` + `coordination:` — see `_run_gr00t_pilot`); OpenVLA
-        # is single-agent only (its per-step latency makes it unviable for MA).
-        from odyssey.runners.models.openvla import make_openvla_policy
+        # Single-agent (OpenVLA policy) vs multi-agent (PlannedEvalRuntime + Gemma).
+        use_planned = _has_specialist(context)
+        if use_planned:
+            runtime = _build_planned_runtime(context, checkpoint, cfg, instruction)
+            await context.emit_progress(
+                "model_loading",
+                step="load_specialist",
+                step_label="PlannedEvalRuntime (PILOT + SPECIALIST)",
+            )
+            policy = None
+        else:
+            from odyssey.runners.models.openvla import make_openvla_policy
 
-        # Bake the LIBERO task's own instruction + the suite unnorm_key.
-        policy_cfg = dict(cfg)
-        policy_cfg["task_instruction"] = instruction
-        policy_cfg.setdefault("image_key", image_key)
-        policy = make_openvla_policy(
-            checkpoint, config=policy_cfg, benchmark_name=suite_name
-        )
+            # Bake the LIBERO task's own instruction + the suite unnorm_key.
+            policy_cfg = dict(cfg)
+            policy_cfg["task_instruction"] = instruction
+            policy_cfg.setdefault("image_key", image_key)
+            policy = make_openvla_policy(
+                checkpoint, config=policy_cfg, benchmark_name=suite_name
+            )
+            runtime = None
 
         num_episodes = spec.num_episodes
         successes = 0
@@ -293,6 +300,18 @@ class LiberoRunner(Runner):
             success = False
             frames: list[Any] = []
 
+            if runtime:
+                first_image = _libero_image(obs, image_key)
+                plan = runtime.begin_episode(instruction, first_image)
+                logger.info("Episode %d plan: %s", ep, plan)
+                await context.emit_progress(
+                    "executing",
+                    step="episode_plan",
+                    step_index=ep,
+                    step_total=num_episodes,
+                    step_label=f"episode {ep}: {len(plan)} phase(s): {plan}",
+                )
+
             for _step in range(max_steps):
                 if context.cancelled():
                     break
@@ -302,7 +321,11 @@ class LiberoRunner(Runner):
                     if frame is not None:
                         frames.append(frame)
 
-                raw_action = policy({image_key: image})
+                if runtime:
+                    raw_action = runtime.get_action(image)
+                else:
+                    assert policy is not None
+                    raw_action = policy({image_key: image})
 
                 action = _libero_action(raw_action)
                 obs, reward, done, _info = env.step(action.tolist())
@@ -330,6 +353,8 @@ class LiberoRunner(Runner):
                     loop.run_in_executor(None, save_rollout_video, frames, out_path, video_fps)
                 )
 
+        if runtime is not None:
+            runtime.close()
         env.close()
 
         if encode_tasks:
@@ -383,7 +408,7 @@ class LiberoRunner(Runner):
             timeout_seconds=getattr(spec, "timeout_seconds", None),
             script_path=script,
             argv_extra=build_gr00t_libero_argv(
-                spec=spec, checkpoint=checkpoint, video_dir=video_dir, context=context
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
             ),
             line_parser=collector.parse,
         )
@@ -412,17 +437,13 @@ _GR00T_HANDLED_CONFIG_KEYS = {
 
 
 def build_gr00t_libero_argv(
-    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None,
-    context: TaskContext | None = None,
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
 ) -> list[str]:
     """Build ``gr00t_libero_eval.py`` argv: contract flags + config passthrough.
 
     The eval script uses argparse snake_case flags, so ``task.config`` keys pass
     through verbatim (``n_action_steps`` → ``--n_action_steps``), like the Isaac
-    Lab contract — this covers ``coordination``/``phase_strategy``/… for free.
-    When ``coordination`` is set, the runner-derived SPECIALIST (from the loadout +
-    ``ODYSSEY_SPECIALIST_PYTHON``) is also forwarded so the recipe can build the
-    out-of-process planner.
+    Lab contract.
     """
     cfg = spec.config or {}
     argv: list[str] = [
@@ -436,18 +457,6 @@ def build_gr00t_libero_argv(
         if key in _GR00T_HANDLED_CONFIG_KEYS:
             continue
         argv += [f"--{key}", str(value)]
-    if context is not None and str(cfg.get("coordination", "")).strip():
-        model_base, quantization = _find_specialist_model(context)
-        specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
-        if not specialist_python:
-            raise RuntimeError(
-                "Multi-agent GR00T eval requires the out-of-process SPECIALIST: set "
-                "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python."
-            )
-        argv += ["--specialist_model", str(model_base)]
-        if quantization:
-            argv += ["--specialist_quantization", str(quantization)]
-        argv += ["--specialist_python", specialist_python]
     return argv
 
 
@@ -459,21 +468,59 @@ def build_gr00t_libero_argv(
 # follow-up.
 # ---------------------------------------------------------------------------
 
+def _has_specialist(context: TaskContext) -> bool:
+    from odyssey.spec.agents import AgentRole
+
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role == AgentRole.SPECIALIST:
+            return True
+    return False
+
+
 def _find_specialist_model(context: TaskContext) -> tuple[str, str | None]:
-    """The out-of-process agent's ``(model base, quantization)`` from the loadout —
-    forwarded to the GR00T recipe so it can build the planner/grounder/router for
-    the multi-agent arms. Matches a SPECIALIST (planning/delegation) or an
-    ORCHESTRATOR (orchestration); both are the same reused Gemma."""
     from odyssey.spec.agents import AgentRole
     from odyssey.spec.refs import HFModelRef
 
-    roles = (AgentRole.SPECIALIST, AgentRole.ORCHESTRATOR)
     for agent in context.agents or context.mission.spec.robot.agents:
-        if agent.role in roles:
+        if agent.role == AgentRole.SPECIALIST:
             model = agent.model
             if not isinstance(model, HFModelRef):
                 raise ValueError(
-                    f"{agent.role.value} agent {agent.id!r} uses a non-HuggingFace model."
+                    f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model."
                 )
             return model.base, model.quantization
-    raise ValueError("No SPECIALIST or ORCHESTRATOR agent found in the loadout")
+    raise ValueError("No SPECIALIST agent found in the loadout")
+
+
+def _build_planned_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    cfg: dict[str, Any],
+    instruction: str,
+) -> Any:
+    """Compose the PILOT (OpenVLA) + out-of-process SPECIALIST (Gemma) planner."""
+    from odyssey.runners.agents.planned import PhaseConfig, PlannedEvalRuntime
+    from odyssey.runners.agents.remote_planner import RemotePlanner
+    from odyssey.runners.models.openvla import VLARuntime
+
+    unnorm_key = cfg.get("unnorm_key", "bridge_orig")
+    pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
+
+    model_base, quantization = _find_specialist_model(context)
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    if not specialist_python:
+        raise RuntimeError(
+            "Multi-agent eval requires the out-of-process SPECIALIST: set "
+            "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (the multimodal "
+            "Gemma 4 planner cannot load in the OpenVLA-pinned env)."
+        )
+    logger.info("SPECIALIST out-of-process: model=%s via %s", model_base, specialist_python)
+    planner = RemotePlanner(model_base, quantization, python_path=specialist_python)
+
+    phase_config = PhaseConfig(steps_per_phase=int(cfg.get("steps_per_phase", 50)))
+    return PlannedEvalRuntime(
+        pilot=pilot,
+        planner=planner,
+        phase_config=phase_config,
+        fallback_instruction=instruction,
+    )
