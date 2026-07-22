@@ -17,6 +17,7 @@ import pytest
 from odyssey.engine.lifecycle import TaskStatus
 from odyssey.engine.records import MissionRun, TaskRun
 from odyssey.runners.base import TaskContext
+from odyssey.runners.evals import robosuite as robosuite_runner
 from odyssey.runners.evals.robosuite import RobosuiteRunner, _resolve_cameras
 from odyssey.runners.video import save_rollout_video, to_uint8_frame
 from odyssey.spec import (
@@ -284,3 +285,91 @@ async def test_video_camera_records_dedicated_camera(tmp_path: Path) -> None:
     assert len(videos) == 2
     for v in videos:
         assert _gif_frame_shape(v) == (32, 32)  # video cam, not the policy frame
+
+
+def _specialist_mission_with_video() -> MissionRun:
+    """Mission whose loadout adds a SPECIALIST, so the runner takes the
+    planned-runtime (multi-agent) path."""
+    spec = Mission(
+        metadata=MissionMetadata(name="msn-video-multiagent"),
+        objective="o",
+        acceptance_criteria="a",
+        robot=RobotSpec(
+            embodiment="franka_panda",
+            agents=[
+                AgentSpec(
+                    id="pilot",
+                    role=AgentRole.PILOT,
+                    model=HFModelRef(base="openvla/openvla-7b"),
+                ),
+                AgentSpec(
+                    id="planner",
+                    role=AgentRole.SPECIALIST,
+                    model=HFModelRef(base="google/gemma-4-E2B-it"),
+                ),
+            ],
+        ),
+        tasks=[
+            TrainingTask(
+                name="train",
+                training_type=TrainingType.DEMONSTRATION,
+                agent_id="pilot",
+            ),
+            EvaluationTask(
+                name="eval",
+                evaluation_type=EvaluationType.ROBOSUITE,
+                benchmark_name="Lift",
+                num_episodes=1,
+                config={
+                    "capture_video": True,
+                    "video_format": "gif",  # no ffmpeg in CI
+                    "image_key": "agentview_image",
+                    "video_camera": "frontview",
+                },
+            ),
+        ],
+    )
+    mission = MissionRun.from_spec(spec)
+    mission.tasks[0].status = TaskStatus.COMPLETED
+    mission.tasks[0].result_summary = {
+        "checkpoint_path": "/tmp/checkpoint",
+        "agent_id": "pilot",
+    }
+    return mission
+
+
+class _FakeRuntime:
+    """Stands in for PlannedEvalRuntime; records the pilot's input frames."""
+
+    def __init__(self) -> None:
+        self.frames_seen: list[tuple[int, ...]] = []
+
+    def begin_episode(self, instruction: str, first_image: Any = None) -> list[str]:
+        return ["do the task"]
+
+    def get_action(self, image: Any) -> Any:
+        self.frames_seen.append(tuple(image.shape))
+        return [0.0]
+
+    def close(self) -> None:
+        return
+
+
+async def test_video_camera_multiagent_keeps_policy_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The planned-runtime path must extract TWO frames: the pilot keeps the
+    policy camera while the video records the dedicated camera."""
+    mission = _specialist_mission_with_video()
+    eval_task = mission.tasks[1]
+    fake_runtime = _FakeRuntime()
+    monkeypatch.setattr(
+        robosuite_runner, "_build_planned_runtime", lambda *a, **k: fake_runtime
+    )
+    runner = RobosuiteRunner(env_factory=lambda _b, _r: _DualCamFakeEnv())
+    result = await runner.run(_ctx(mission, eval_task, tmp_path))
+
+    assert set(fake_runtime.frames_seen) == {(16, 16, 3)}  # policy input untouched
+    videos = result["artifacts"]["videos"]
+    assert len(videos) == 1
+    assert _gif_frame_shape(videos[0]) == (32, 32)

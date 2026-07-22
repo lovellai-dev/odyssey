@@ -28,7 +28,6 @@ _AGENT_ID_PATTERN = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
 class AgentRole(str, Enum):
     PILOT = "PILOT"
     SPECIALIST = "SPECIALIST"
-    ORCHESTRATOR = "ORCHESTRATOR"  # regime-D LLM router (coordination: orchestration)
 
 
 class AgentSpec(BaseModel):
