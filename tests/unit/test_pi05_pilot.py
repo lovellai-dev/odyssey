@@ -30,7 +30,6 @@ from odyssey.runners.agents.chunk_pilot import ChunkPilotAdapter
 from odyssey.runners.agents.runtime import PilotRuntime
 from odyssey.runners.models.pi05 import make_pi05_pilot
 
-
 # ---------------------------------------------------------------------------
 # Fakes — a chunk-emitting policy + a decoder, both dependency-free.
 # ---------------------------------------------------------------------------

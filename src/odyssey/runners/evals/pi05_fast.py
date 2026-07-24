@@ -102,7 +102,7 @@ class FastActionCodec:
     ``processor.decode(tokens, time_horizon=, action_dim=)`` → actions) so callers
     work one chunk at a time — the codec adds/strips the leading batch axis itself,
     mirroring openpi's ``tokenize`` / ``extract_actions``. ``time_horizon`` and
-    ``action_dim`` default the decode reshape (10×32 for ``pi05_libero``); either
+    ``action_dim`` default the decode reshape (10x32 for ``pi05_libero``); either
     can be overridden per call.
     """
 

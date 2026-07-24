@@ -1,6 +1,6 @@
 """π0.5 (openpi) action-space normalization — the analog of OpenVLA's ``unnorm_key``.
 
-See ``docs/pi05-scoping.md`` → "Mapeo de espacio de acción". The one-line summary:
+See ``docs/pi05-scoping.md`` → "Action space mapping". The one-line summary:
 
   **π0.5 has no ``unnorm_key``.** Where OpenVLA passes a string at inference time to
   pick which de-normalization statistics to apply to the 7-D action, π0.5/openpi
@@ -63,11 +63,11 @@ class NormStats:
     q99: np.ndarray | None = None
 
     @staticmethod
-    def from_mean_std(mean, std) -> "NormStats":
+    def from_mean_std(mean, std) -> NormStats:
         return NormStats(mean=_as_1d(mean), std=_as_1d(std))
 
     @staticmethod
-    def from_quantiles(q01, q99) -> "NormStats":
+    def from_quantiles(q01, q99) -> NormStats:
         return NormStats(q01=_as_1d(q01), q99=_as_1d(q99))
 
 
@@ -183,7 +183,7 @@ def assert_no_unnorm_key(config) -> None:
 
     Unlike OpenVLA, π0.5's de-normalization is self-contained in the checkpoint
     (``norm_stats``/``asset_id``), so an ``unnorm_key`` in the YAML would be inert or
-    misleading (``docs/pi05-scoping.md`` → "No añadir ``unnorm_key`` al YAML de π0.5").
+    misleading (``docs/pi05-scoping.md`` → "The exact analog of ``unnorm_key``").
     Reject it early to keep configs honest.
     """
     if isinstance(config, dict) and "unnorm_key" in config:

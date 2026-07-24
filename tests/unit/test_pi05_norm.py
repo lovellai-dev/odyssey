@@ -19,7 +19,6 @@ import pytest
 from odyssey.runners.evals import pi05_norm as n
 from odyssey.runners.evals.pi05_norm import NormStats
 
-
 # ---------------------------------------------------------------------------
 # mean/std normalization (openpi default) — matches (x-mean)/(std+eps).
 # ---------------------------------------------------------------------------

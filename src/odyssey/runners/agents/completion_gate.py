@@ -33,7 +33,7 @@ torch/VLM import and is unit-testable with a trivial fake.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 # A detector is either a bare callable or a CompletionDetector-shaped object.
 DetectorLike = Callable[[Any, str], bool] | Any
@@ -48,7 +48,7 @@ def _as_callable(detector: DetectorLike) -> Callable[[Any, str], bool]:
     """
     is_complete = getattr(detector, "is_complete", None)
     if callable(is_complete):
-        return is_complete
+        return cast("Callable[[Any, str], bool]", is_complete)
     if callable(detector):
         return detector
     raise TypeError(

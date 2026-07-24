@@ -195,11 +195,14 @@ class PlannedEvalRuntime:
             elapsed = time.monotonic() - self._state.phase_start_time
             if elapsed >= cfg.timeout_seconds:
                 advance = True
-        elif cfg.strategy == PhaseStrategy.COMPLETION:
-            # Closed-loop hand-back: the gate polls the completion detector once
-            # per action chunk and returns True when the sub-instruction is done.
-            if self._gate is not None and self._gate.update(image, instruction):
-                advance = True
+        # Closed-loop hand-back: the gate polls the completion detector once
+        # per action chunk and returns True when the sub-instruction is done.
+        elif (
+            cfg.strategy == PhaseStrategy.COMPLETION
+            and self._gate is not None
+            and self._gate.update(image, instruction)
+        ):
+            advance = True
 
         if advance:
             old_idx = self._state.current_index

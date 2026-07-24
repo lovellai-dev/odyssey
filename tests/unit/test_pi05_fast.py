@@ -39,7 +39,6 @@ from odyssey.runners.evals.pi05_fast import (
     unnormalize_from_unit,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake FAST processor — a dependency-free stand-in for the HF AutoProcessor.
 #
@@ -64,7 +63,7 @@ class _FakeFastProcessor:
         self.encode_calls.append(arr)
         out: list[list[int]] = []
         for item in arr:  # (T, D)
-            out.append([int(round(v * self.SCALE)) + self.OFFSET
+            out.append([round(v * self.SCALE) + self.OFFSET
                         for v in item.reshape(-1)])
         return out
 
@@ -124,7 +123,7 @@ def test_pi05_fast_decode_of_synthetic_tokens() -> None:
     # Hand-build tokens for a known (2, 3) chunk under the fake's fixed-point scheme.
     values = np.array([[0.0, 0.5, -0.5], [0.25, -0.25, 1.0]], dtype=np.float64)
     P = _FakeFastProcessor
-    tokens = [int(round(v * P.SCALE)) + P.OFFSET for v in values.reshape(-1)]
+    tokens = [round(v * P.SCALE) + P.OFFSET for v in values.reshape(-1)]
 
     chunk = codec.decode(tokens, time_horizon=2, action_dim=3)
 

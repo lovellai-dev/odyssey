@@ -171,6 +171,20 @@ module = [
 ]
 ignore_errors = true
 
+# The π0.5 (openpi) mirrors are the same category as the GR00T transforms above:
+# numpy-only re-implementations of openpi's server-side Normalize/Unnormalize/FAST
+# and the wire glue around the untyped ``openpi_client`` SDK. They interface with an
+# external, stub-less policy server, so they're exempt from strict checking (their
+# behaviour is pinned by the unit tests in tests/unit/test_pi05_*.py instead).
+[[tool.mypy.overrides]]
+module = [
+    "odyssey.runners.evals.pi05_norm",
+    "odyssey.runners.evals.pi05_fast",
+    "odyssey.runners.evals.pi05_transforms",
+    "odyssey.runners.models.pi05",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

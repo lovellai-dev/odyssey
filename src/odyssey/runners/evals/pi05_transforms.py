@@ -1,7 +1,7 @@
 """Pure π0.5 (openpi) obs/action transforms for the LIBERO eval recipe.
 
 π0.5-LIBERO shares the **same Franka Panda convention** as GR00T-N1.7-LIBERO and
-OpenVLA (see ``docs/pi05-scoping.md`` → "Mapeo de espacio de acción"): the 8-D
+OpenVLA (see ``docs/pi05-scoping.md`` → "Action space mapping"): the 8-D
 proprio state (eef pos + eef quat→axis-angle + 2 gripper finger qpos) and the
 7-DoF OSC_POSE action ``[dx,dy,dz,droll,dpitch,dyaw,gripper]``. So this module
 does NOT re-derive the kinematics — it **reuses** ``quat_xyzw_to_axis_angle``

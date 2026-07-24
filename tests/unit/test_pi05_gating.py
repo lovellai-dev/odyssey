@@ -37,7 +37,6 @@ from odyssey.runners.agents.planned import (
 )
 from odyssey.runners.agents.runtime import CompletionDetector
 
-
 # ---------------------------------------------------------------------------
 # Fakes — completion detectors, both a bare callable and a CompletionDetector.
 # ---------------------------------------------------------------------------
