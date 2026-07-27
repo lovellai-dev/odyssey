@@ -41,27 +41,42 @@ attempt* an inference run, not *proven*. Specifically:
 
 ## Prerequisites
 
-1. **A running openpi π0.5 policy server.** openpi lives in its own environment
-   (JAX). Install it per [Physical-Intelligence/openpi][openpi] and serve a
-   `pi05_libero` checkpoint, e.g. (check your openpi version for exact flags):
+### Automated — `setup.sh` (GCP L4 target)
+
+```bash
+bash examples/quickstart-pi05/setup.sh
+```
+
+Sets up **both** environments: the odyssey client venv (`env_pilot_pi05`: this
+repo + `openpi-client` + the LIBERO/MuJoCo stack) and the openpi server env
+(clones [Physical-Intelligence/openpi][openpi] + `uv sync`). It prints the
+two-terminal serve+run flow at the end; pass `--serve` to also exec the server.
+
+> ⚠️ The odyssey client half reuses the validated `franka-libero` LIBERO install;
+> the **openpi server half is not yet validated on hardware** — confirm the exact
+> `serve_policy.py` flags + checkpoint id against your openpi version. See the
+> script header and the *Status* section above.
+
+Flags: `--venv`, `--openpi-dir`, `--checkpoint`, `--host`, `--port`, `--serve`
+(`--help` for details).
+
+### Manual (what the script automates)
+
+1. **A running openpi π0.5 policy server.** openpi lives in its own JAX env; serve
+   a `pi05_libero` checkpoint (Apache 2.0; `docs/pi05-scoping.md` → "License and
+   weights"), e.g. (check your openpi version for exact flags):
 
    ```bash
-   # in the openpi repo/env — serves a WebsocketPolicyServer on 0.0.0.0:8000
+   # in the openpi repo/env — serves a WebsocketPolicyServer on host:port
    uv run scripts/serve_policy.py --env LIBERO
    #   (or: policy:checkpoint --policy.config=pi05_libero \
    #        --policy.dir=gs://openpi-assets/checkpoints/pi05_libero)
    ```
 
-   The checkpoint is Apache 2.0 (`docs/pi05-scoping.md` → "License and weights").
-
 2. **The openpi client + LIBERO in the odyssey env.** The eval recipe imports
-   `openpi_client` (the lightweight websocket client) and the `libero` package:
-
-   ```bash
-   pip install openpi-client            # the client only, not the JAX server stack
-   # LIBERO + robosuite/MuJoCo: see examples/franka-libero/setup.sh
-   export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl   # headless VM
-   ```
+   `openpi_client` (the lightweight websocket client, `openpi/packages/openpi-client`)
+   and the `libero` package (see `examples/franka-libero/setup.sh` for the LIBERO
+   deps). Headless render: `export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl`.
 
 [openpi]: https://github.com/Physical-Intelligence/openpi
 
