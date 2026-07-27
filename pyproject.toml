@@ -181,6 +181,7 @@ module = [
     "odyssey.runners.evals.pi05_norm",
     "odyssey.runners.evals.pi05_fast",
     "odyssey.runners.evals.pi05_transforms",
+    "odyssey.runners.evals.pi05_libero_eval",
     "odyssey.runners.models.pi05",
 ]
 ignore_errors = true
