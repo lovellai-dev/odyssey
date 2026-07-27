@@ -2,8 +2,8 @@
 #
 # Setup for the π0.5 (openpi) LIBERO eval quickstart — GCP L4 24GB target.
 #
-# It ONLY sets things up — it does NOT run a mission (and, being open-loop, it does
-# NOT boot the policy server for you unless you pass --serve). Two SEPARATE
+# It ONLY sets things up — it does NOT run a mission (and, being externally-served,
+# it does NOT boot the policy server for you unless you pass --serve). Two SEPARATE
 # environments by design (their python/CUDA/JAX-vs-torch ABIs clash); they are wired
 # by host:port, not co-installed:
 #
@@ -176,7 +176,7 @@ SERVE_CMD=( uv run --project "$OPENPI_DIR" scripts/serve_policy.py
 
 cat <<EOF
 
-[setup] Done. Two-terminal flow (open-loop):
+[setup] Done. Two-terminal flow (externally-served: you start the server):
 
   TERMINAL 1 — serve π0.5 (openpi env; downloads the checkpoint on first run):
     ${SERVE_CMD[*]}

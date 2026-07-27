@@ -3,17 +3,18 @@
 # Scores a Physical Intelligence π0.5 (pi05) checkpoint on the LIBERO object
 # suite — a Franka Panda doing language-conditioned pick-and-place in sim. π0.5
 # is a chunk-emitting generalist pilot: one policy query returns a whole action
-# chunk executed open-loop, so the pilot is queried ~an order of magnitude fewer
-# times per episode than the single-step OpenVLA pilot (issue #74).
+# chunk, replayed open-loop *within the chunk* (no re-observation until it drains),
+# so the pilot is queried ~an order of magnitude fewer times per episode than the
+# single-step OpenVLA pilot (issue #74).
 #
 # EVAL-ONLY: there is NO training task. π0.5 runs OUT-OF-PROCESS in an openpi
 # WebsocketPolicyServer (openpi/JAX, a separate env); this mission is the eval
 # half only. The server holds the weights — `config.checkpoint` below is recorded
 # in the run summary but NOT loaded on the odyssey side.
 #
-# OPEN-LOOP ONLY: unlike the GR00T quickstart (which can auto-serve its own server
-# in-process), you must START the openpi server yourself and point this mission at
-# its host:port. See examples/quickstart-pi05/README.md.
+# EXTERNALLY-SERVED: unlike the GR00T quickstart (which can self-serve its own
+# server in-process), you must START the openpi server yourself and point this
+# mission at its host:port. See examples/quickstart-pi05/README.md.
 #
 # ⚠️ UNVERIFIED ON GPU as of this PR: the odyssey-side wiring is complete and
 # CPU-tested, but no end-to-end LIBERO rollout has been run on real hardware.
@@ -35,7 +36,7 @@ metadata:
 objective: |
   Evaluate a π0.5 LIBERO checkpoint on the LIBERO object suite and confirm a real
   (non-zero) success rate in simulation, replaying the emitted action chunk
-  open-loop through the shared chunk-aware pilot adapter.
+  open-loop *within the chunk* through the shared chunk-aware pilot adapter.
 
 acceptance_criteria: |
   The openpi server serves the checkpoint, π0.5 action chunks execute in LIBERO,
@@ -68,7 +69,7 @@ tasks:
       checkpoint: gs://openpi-assets/checkpoints/pi05_libero
       task_id: 0                          # which task within the suite (0..9)
 
-      # --- openpi policy server (OPEN-LOOP: pre-started by you; see README) ---
+      # --- openpi policy server (EXTERNALLY-SERVED: pre-started by you; see README) ---
       host: 127.0.0.1
       port: 8000                          # openpi WebsocketPolicyServer default
       # api_key: "..."                    # only if your server sets one

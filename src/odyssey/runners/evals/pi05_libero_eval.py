@@ -6,11 +6,11 @@ the same LIBERO (robosuite/MuJoCo) env layer, but the pilot is **π0.5** served 
 openpi's ``WebsocketPolicyServer``. ``LiberoRunner`` launches this script
 (``pilot: pi05``) under the Odyssey interpreter, owns the ``ODYSSEY_*`` stdout
 protocol, cancellation and scoring; this script owns the π0.5 <-> LIBERO recipe:
-build the env, drive the pilot, replay the returned action *chunk* open-loop, and
-report each episode.
+build the env, drive the pilot, replay the returned action *chunk* open-loop
+(within the chunk — no re-observation until it drains), and report each episode.
 
 Unlike GR00T (which can boot its own server in-process with ``--serve_checkpoint``),
-π0.5 here is **open-loop only**: start the openpi server yourself (e.g.
+π0.5 here is **externally-served**: start the openpi server yourself (e.g.
 ``scripts/serve_policy.py`` with a ``pi05_libero`` checkpoint) and point this
 recipe at ``--host``/``--port``. ``--checkpoint`` is recorded in the summary but
 NOT loaded here — the server already holds the weights. FAST detokenization (if
@@ -192,8 +192,8 @@ def run_eval(args: argparse.Namespace) -> dict:
     instruction = args.instruction or _resolve_libero_instruction(task, cfg)
     log.info("LIBERO suite=%s task_id=%d instruction=%r", args.task, args.task_id, instruction)
 
-    # Open-loop: the openpi server is pre-started and already holds the weights;
-    # make_pi05_pilot wraps its websocket client in the ChunkPilotAdapter.
+    # Externally-served: the openpi server is pre-started and already holds the
+    # weights; make_pi05_pilot wraps its websocket client in the ChunkPilotAdapter.
     log.info("connecting to openpi π0.5 server at %s:%d (checkpoint=%r served externally)",
              args.host, args.port, args.checkpoint)
     pilot = make_pi05_pilot(

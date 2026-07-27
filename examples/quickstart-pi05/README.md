@@ -2,8 +2,9 @@
 
 Score a **π0.5 (pi05)** checkpoint on the LIBERO object suite (Franka Panda,
 sim). π0.5 is a **chunk-emitting generalist pilot**: one policy query returns a
-whole action chunk that the env replays open-loop, so the pilot is queried ~an
-order of magnitude fewer times per episode than the single-step OpenVLA pilot.
+whole action chunk that the env replays open-loop *within the chunk* (no
+re-observation until it drains), so the pilot is queried ~an order of magnitude
+fewer times per episode than the single-step OpenVLA pilot.
 This is the "fewer calls/episode" latency win tracked in [issue #74][74].
 
 This directory is the **eval half only** — there is no training task. π0.5 runs
@@ -147,7 +148,7 @@ script as flags.
 ## Troubleshooting
 
 - **Connection refused / timeout** — the openpi server isn't up (or wrong
-  `host`/`port`). This mission is open-loop: start the server first.
+  `host`/`port`). This mission is externally-served: start the server first.
 - **`NotImplementedError: … requires the openpi client ('openpi_client')`** —
   install `openpi-client` in the odyssey env.
 - **Gripper does the opposite of what it should** — the "no fix-up" assumption is
