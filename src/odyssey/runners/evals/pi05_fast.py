@@ -6,6 +6,16 @@ quantization (see ``docs/pi05-scoping.md`` → "FAST tokenizer"). To turn those
 tokens back into the ``(action_horizon, action_dim)`` chunk the LIBERO recipe
 consumes, they have to be **detokenized** with the exact same FAST codec.
 
+.. note::
+   **Reserved scaffolding — NOT on the π0.5 flow-matching inference path.** The
+   π0.5 pilot in this repo (``make_pi05_pilot``) runs *flow matching* server-side
+   via the openpi ``WebsocketPolicyServer`` and returns **continuous** action
+   chunks (``client.infer`` → ``{"actions": ...}``); this codec is never called
+   at inference. FAST tokens only matter (a) in π0.5 *training* and (b) at
+   inference for an *autoregressive* ``π0-FAST`` model. This module is kept
+   (pinned by ``tests/unit/test_pi05_fast.py``) for a future π0-FAST pilot /
+   client-side detokenization, not wired into the current eval path.
+
 FAST is a **reusable library, not something to reimplement** — Physical
 Intelligence ships it as the HF ``AutoProcessor`` checkpoint
 ``physical-intelligence/fast`` (Apache 2.0), which openpi's ``FASTTokenizer``
