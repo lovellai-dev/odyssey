@@ -243,3 +243,102 @@ def test_argv_parses_back_into_the_recipe() -> None:
     assert args.task_id == 2
     assert args.serve_checkpoint is True
     assert args.n_action_steps == 8
+
+
+# ---------------------------------------------------------------------------
+# Object-pose perturbation (Option A — OOD spatial probe). No sim/GPU: fakes.
+# ---------------------------------------------------------------------------
+
+class _FakeModel:
+    def __init__(self, addrs: dict[str, Any]) -> None:
+        self._addrs = addrs
+
+    def get_joint_qpos_addr(self, name: str) -> Any:
+        if name not in self._addrs:
+            raise ValueError(f"no joint {name!r}")
+        return self._addrs[name]
+
+
+class _FakeData:
+    def __init__(self, qpos: list[float]) -> None:
+        self.qpos = qpos
+
+
+class _FakeSim:
+    def __init__(self, addrs: dict[str, Any], qpos: list[float]) -> None:
+        self.model = _FakeModel(addrs)
+        self.data = _FakeData(qpos)
+        self.forwarded = 0
+
+    def forward(self) -> None:
+        self.forwarded += 1
+
+
+class _FakeEnv:
+    def __init__(self, sim: _FakeSim, obj_of_interest: Any = None) -> None:
+        self.sim = sim
+        if obj_of_interest is not None:
+            self.obj_of_interest = obj_of_interest
+
+
+def test_target_object_names_override_wins() -> None:
+    env = _FakeEnv(_FakeSim({}, []), obj_of_interest=["auto_obj"])
+    assert E._target_object_names(env, "a, b ,c") == ["a", "b", "c"]
+
+
+def test_target_object_names_autodetects_obj_of_interest() -> None:
+    env = _FakeEnv(_FakeSim({}, []), obj_of_interest=["cream_cheese_1"])
+    assert E._target_object_names(env, "") == ["cream_cheese_1"]
+    # empty when neither override nor obj_of_interest is available
+    assert E._target_object_names(_FakeEnv(_FakeSim({}, [])), "") == []
+
+
+def test_perturb_offsets_free_joint_xyz_and_forwards() -> None:
+    # free joint at qpos index 5, layout [x,y,z, qw,qx,qy,qz]
+    qpos = [0.0] * 12
+    qpos[5], qpos[6], qpos[7] = 1.0, 2.0, 3.0
+    sim = _FakeSim({"cheese_joint0": (5, 12)}, qpos)
+    env = _FakeEnv(sim, obj_of_interest=["cheese"])
+    moved = E._perturb_object_pose(env, dx=0.1, dy=-0.05, dz=0.2)
+    assert moved == ["cheese"]
+    assert (round(qpos[5], 3), round(qpos[6], 3), round(qpos[7], 3)) == (1.1, 1.95, 3.2)
+    assert sim.forwarded == 1  # forward() propagated the change once
+
+
+def test_perturb_skips_and_warns_when_no_target() -> None:
+    sim = _FakeSim({"x_joint0": 0}, [0.0] * 7)
+    moved = E._perturb_object_pose(_FakeEnv(sim), dx=0.1, dy=0.0, dz=0.0)
+    assert moved == []              # nothing to move -> no-op
+    assert sim.forwarded == 0       # never touch the sim if no object resolved
+
+
+def test_perturb_skips_unknown_joint_without_crashing() -> None:
+    sim = _FakeSim({}, [0.0] * 7)   # get_joint_qpos_addr raises for any name
+    moved = E._perturb_object_pose(_FakeEnv(sim, obj_of_interest=["ghost"]),
+                                   dx=0.1, dy=0.1, dz=0.0)
+    assert moved == []
+    assert sim.forwarded == 0
+
+
+def test_perturb_supports_scalar_addr() -> None:
+    # some MuJoCo builds return a scalar start addr instead of a (start,end) tuple
+    qpos = [0.0] * 10
+    sim = _FakeSim({"obj_joint0": 3}, qpos)
+    E._perturb_object_pose(_FakeEnv(sim, obj_of_interest=["obj"]), dx=1.0, dy=2.0, dz=3.0)
+    assert (qpos[3], qpos[4], qpos[5]) == (1.0, 2.0, 3.0)
+
+
+def test_parser_accepts_object_offset_flags() -> None:
+    args = E.build_parser().parse_args(
+        ["--task", "libero_object", "--object_dx", "0.1",
+         "--object_dy", "-0.05", "--object_names", "cheese,milk"])
+    assert args.object_dx == 0.1 and args.object_dy == -0.05
+    assert args.object_dz == 0.0
+    assert args.object_names == "cheese,milk"
+
+
+def test_object_offset_config_passes_through_argv() -> None:
+    task = _eval_task(config={"task_id": 0, "object_dx": 0.1, "object_dy": -0.05})
+    argv = build_gr00t_libero_argv(spec=task, checkpoint=Path("/c"), video_dir=None)
+    assert argv[argv.index("--object_dx") + 1] == "0.1"
+    assert argv[argv.index("--object_dy") + 1] == "-0.05"

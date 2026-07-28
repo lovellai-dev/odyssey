@@ -1,0 +1,60 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-object-perturbed
+  description: >-
+    OOD spatial probe (Option A) — same libero_object task 0 and GR00T-N1.7
+    checkpoint, but the target object's START pose is shifted by (dx,dy) metres
+    before each rollout. The BDDL goal predicate and instruction are unchanged, so
+    success is still scored correctly; this measures how far the policy generalises
+    to object placements outside the demo distribution.
+  tags: [gr00t, nvidia, libero, robosuite, franka, eval-only, ood, perturbation]
+
+objective: |
+  Evaluate GR00T-N1.7 on libero_object task 0 with the target object displaced
+  from its trained start pose, and report the success rate under that shift.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, the object is displaced each episode,
+  10 rollouts run, and success_rate is reported (expected to drop vs the
+  unperturbed baseline as the offset grows).
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-object-t0-perturbed
+    kind: evaluation
+    evaluation_type: libero
+    description: libero_object task 0 with the target object shifted (OOD spatial probe).
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+      n_action_steps: 16
+
+      # --- Option A: displace the target object's start pose (metres) ---
+      # Auto-detects the task's obj_of_interest; set object_names to override.
+      # Start small (a few cm) and sweep up to find where success degrades.
+      object_dx: 0.08
+      object_dy: -0.06
+      object_dz: 0.0
+      # object_names: "..."   # optional explicit target(s), comma-separated
+
+      capture_video: true

@@ -90,6 +90,17 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--camera_width", type=int, default=256)
     ap.add_argument("--max_steps_per_episode", type=int, default=520)
     ap.add_argument("--num_warmup_steps", type=int, default=10)
+    # --- object-pose perturbation (Option A: OOD spatial probe) ---
+    # After set_init_state, shift the target object's free-joint qpos by (dx,dy,dz)
+    # metres. This keeps the BDDL goal predicate & instruction intact (we only move
+    # the START pose), so success is still scored correctly — it probes how far the
+    # policy generalises to object placements outside the demo distribution.
+    ap.add_argument("--object_dx", type=float, default=0.0, help="x offset (m) for the target object.")
+    ap.add_argument("--object_dy", type=float, default=0.0, help="y offset (m) for the target object.")
+    ap.add_argument("--object_dz", type=float, default=0.0, help="z offset (m) for the target object.")
+    ap.add_argument("--object_names", default="",
+                    help="comma-separated object names to perturb; empty = auto-detect "
+                         "the task's obj_of_interest.")
     ap.add_argument("--video_dir", default="", help="if set, write one mp4 per episode here.")
     # --- GR00T server + action-chunk config ---
     ap.add_argument("--host", default="127.0.0.1")
@@ -210,6 +221,60 @@ def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
 
 
 # ---------------------------------------------------------------------------
+# Object-pose perturbation (Option A — OOD spatial probe)
+# ---------------------------------------------------------------------------
+
+def _target_object_names(env, override: str = "") -> list[str]:
+    """Names of the free-joint objects to perturb.
+
+    ``--object_names`` (comma-separated) wins if given. Otherwise auto-detect the
+    LIBERO task's ``obj_of_interest`` (the objects named by the goal predicate),
+    probing the wrapper and its inner env. Returns [] if nothing is found — the
+    caller then warns and skips (a perturbation must never abort the rollout).
+    """
+    if override.strip():
+        return [n.strip() for n in override.split(",") if n.strip()]
+    for holder in (env, getattr(env, "env", None), getattr(env, "problem", None)):
+        names = getattr(holder, "obj_of_interest", None)
+        if names:
+            return list(names)
+    return []
+
+
+def _perturb_object_pose(env, *, dx: float, dy: float, dz: float, names: str = "") -> list[str]:
+    """Shift the target object(s) by (dx,dy,dz) metres in the live sim state.
+
+    Free-joint qpos layout is ``[x, y, z, qw, qx, qy, qz]`` — we offset the first
+    three. Call AFTER ``set_init_state`` and BEFORE stepping, then ``sim.forward()``
+    to propagate. Returns the object names actually moved (for logging/tests).
+    """
+    moved: list[str] = []
+    targets = _target_object_names(env, names)
+    if not targets:
+        log.warning("object perturbation requested (dx=%.3f dy=%.3f dz=%.3f) but no "
+                    "obj_of_interest found and --object_names empty; skipping.", dx, dy, dz)
+        return moved
+    sim = env.sim
+    qpos = sim.data.qpos
+    for name in targets:
+        joint = f"{name}_joint0"
+        try:
+            addr = sim.model.get_joint_qpos_addr(joint)
+        except Exception as exc:  # unknown joint name: skip, don't crash
+            log.warning("perturb: joint %r not found (%s); skipping %r.", joint, exc, name)
+            continue
+        start = addr[0] if isinstance(addr, tuple) else int(addr)
+        qpos[start] += dx
+        qpos[start + 1] += dy
+        qpos[start + 2] += dz
+        moved.append(name)
+    if moved:
+        sim.forward()
+        log.info("perturb: moved %s by (dx=%.3f, dy=%.3f, dz=%.3f) m", moved, dx, dy, dz)
+    return moved
+
+
+# ---------------------------------------------------------------------------
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
 
@@ -244,9 +309,17 @@ def run_eval(args: argparse.Namespace) -> dict:
     video_dir = args.video_dir or None
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
 
+    perturb = bool(args.object_dx or args.object_dy or args.object_dz)
     for ep in range(1, args.num_episodes + 1):
         obs = env.reset()
         env.set_init_state(init_states[(ep - 1) % len(init_states)])
+        if perturb:
+            # shift the object, then let the warmup no-ops settle physics and
+            # refresh obs so the policy sees the new placement from step 0.
+            _perturb_object_pose(
+                env, dx=args.object_dx, dy=args.object_dy, dz=args.object_dz,
+                names=args.object_names,
+            )
         for _ in range(args.num_warmup_steps):
             obs, _, _, _ = env.step(dummy)
 
