@@ -1,0 +1,54 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-perturb-dx00
+  description: >-
+    OOD spatial-generalisation SWEEP point — libero_object task 0, GR00T-N1.7, with
+    the target object's start pose shifted +00 cm along x (object_dx=0.00 m).
+    One of 5 sweep points (dx = 0/4/8/12/16 cm) whose success_rate vs offset traces
+    the policy's generalisation boundary. dx00 is the in-distribution baseline.
+  tags: [gr00t, nvidia, libero, franka, eval-only, ood, perturbation, sweep]
+
+objective: |
+  Measure GR00T-N1.7 success on libero_object task 0 with the object displaced
+  00 cm in x, as one point on an OOD generalisation curve.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, the object is displaced 00 cm each
+  episode (except the dx00 baseline), 20 rollouts run, and success_rate is reported.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-perturb-dx00
+    kind: evaluation
+    evaluation_type: libero
+    description: libero_object task 0, object shifted +00 cm in x (OOD sweep point).
+    benchmark_name: libero_object
+    num_episodes: 20
+    config:
+      pilot: gr00t
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+      n_action_steps: 16
+
+      # --- sweep point: shift the target object +00 cm along x ---
+      object_dx: 0.00
+      object_dy: 0.0
+      object_dz: 0.0
+
+      capture_video: true
