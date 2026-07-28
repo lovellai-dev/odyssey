@@ -1,0 +1,55 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-object-perturbed-lights
+  description: >-
+    Combined OOD probe — libero_object task 0 with BOTH the target object displaced
+    AND the lighting altered before each rollout. Demonstrates the two knobs compose:
+    object_d{x,y,z} (pose) and light_* (visual) are independent and both applied.
+    The BDDL goal & instruction are untouched, so success is still scored correctly.
+  tags: [gr00t, nvidia, libero, robosuite, franka, eval-only, ood, perturbation, lights]
+
+objective: |
+  Evaluate GR00T-N1.7 on libero_object task 0 under a joint object-pose + lighting
+  shift, and report the success rate under that combined distribution shift.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, both the object pose and the lighting are
+  altered each episode, 10 rollouts run, and success_rate is reported.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-object-t0-perturbed-lights
+    kind: evaluation
+    evaluation_type: libero
+    description: libero_object task 0 with object displaced AND lighting altered.
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+      n_action_steps: 16
+
+      # --- both knobs on (independent, composed) ---
+      object_dx: 0.08
+      object_dy: -0.06
+      light_brightness: 0.4
+      light_dz: 0.3
+
+      capture_video: true

@@ -342,3 +342,60 @@ def test_object_offset_config_passes_through_argv() -> None:
     argv = build_gr00t_libero_argv(spec=task, checkpoint=Path("/c"), video_dir=None)
     assert argv[argv.index("--object_dx") + 1] == "0.1"
     assert argv[argv.index("--object_dy") + 1] == "-0.05"
+
+
+# ---------------------------------------------------------------------------
+# Lighting perturbation — independent of object pose, composable. CPU fakes.
+# ---------------------------------------------------------------------------
+
+class _FakeLightModel:
+    def __init__(self, nlight: int) -> None:
+        import numpy as np
+        self.nlight = nlight
+        self.light_diffuse = np.ones((nlight, 3), dtype=float)
+        self.light_pos = np.zeros((nlight, 3), dtype=float)
+
+
+class _FakeLightEnv:
+    def __init__(self, nlight: int = 2) -> None:
+        self.sim = type("S", (), {"model": _FakeLightModel(nlight)})()
+
+
+def test_lights_noop_when_defaults() -> None:
+    env = _FakeLightEnv()
+    assert E._perturb_lights(env, brightness=1.0, dx=0.0, dy=0.0, dz=0.0) is False
+
+
+def test_lights_scales_diffuse_and_shifts_pos() -> None:
+    env = _FakeLightEnv(nlight=2)
+    assert E._perturb_lights(env, brightness=0.5, dx=0.1, dy=-0.2, dz=0.3) is True
+    assert (env.sim.model.light_diffuse == 0.5).all()
+    assert (env.sim.model.light_pos[:, 0] == 0.1).all()
+    assert (env.sim.model.light_pos[:, 1] == -0.2).all()
+    assert (env.sim.model.light_pos[:, 2] == 0.3).all()
+
+
+def test_lights_are_idempotent_across_episodes() -> None:
+    # applying twice (as the per-episode loop does) must NOT compound: model.light_*
+    # persists across resets, so we always apply from the cached baseline.
+    env = _FakeLightEnv(nlight=1)
+    E._perturb_lights(env, brightness=0.5, dx=0.1, dy=0.0, dz=0.0)
+    E._perturb_lights(env, brightness=0.5, dx=0.1, dy=0.0, dz=0.0)
+    assert (env.sim.model.light_diffuse == 0.5).all()   # not 0.25
+    assert (env.sim.model.light_pos[:, 0] == 0.1).all()  # not 0.2
+
+
+def test_lights_skip_when_scene_has_no_lights() -> None:
+    env = _FakeLightEnv(nlight=0)
+    assert E._perturb_lights(env, brightness=2.0, dx=0.0, dy=0.0, dz=0.0) is False
+
+
+def test_lights_parser_and_passthrough() -> None:
+    args = E.build_parser().parse_args(
+        ["--task", "libero_object", "--light_brightness", "0.4", "--light_dz", "0.5"])
+    assert args.light_brightness == 0.4 and args.light_dz == 0.5
+    # composes with object perturbation in one config (both forwarded)
+    task = _eval_task(config={"object_dx": 0.1, "light_brightness": 0.4})
+    argv = build_gr00t_libero_argv(spec=task, checkpoint=Path("/c"), video_dir=None)
+    assert argv[argv.index("--object_dx") + 1] == "0.1"
+    assert argv[argv.index("--light_brightness") + 1] == "0.4"

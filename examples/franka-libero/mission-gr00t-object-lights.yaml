@@ -1,0 +1,54 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-object-lights
+  description: >-
+    OOD VISUAL probe — same libero_object task 0 and GR00T-N1.7 checkpoint, but the
+    scene lights are dimmed / shifted before each rollout (object pose UNCHANGED).
+    Independent of the object-pose knob; this isolates the effect of lighting on the
+    VLM backbone. Combine with object_d{x,y,z} for a joint pose+lighting probe.
+  tags: [gr00t, nvidia, libero, robosuite, franka, eval-only, ood, lights]
+
+objective: |
+  Evaluate GR00T-N1.7 on libero_object task 0 under altered lighting and report the
+  success rate vs the nominal-lighting baseline.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, lighting is altered each episode, 10
+  rollouts run, and success_rate is reported.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-object-t0-lights
+    kind: evaluation
+    evaluation_type: libero
+    description: libero_object task 0 under altered lighting (OOD visual probe).
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+      n_action_steps: 16
+
+      # --- lighting knob only (object pose left at nominal) ---
+      # brightness < 1 dims, > 1 brightens; light_d{x,y,z} shift every light (m).
+      light_brightness: 0.4
+      light_dz: 0.3
+
+      capture_video: true

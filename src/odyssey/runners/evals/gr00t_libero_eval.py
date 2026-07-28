@@ -101,6 +101,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--object_names", default="",
                     help="comma-separated object names to perturb; empty = auto-detect "
                          "the task's obj_of_interest.")
+    # --- lighting perturbation (independent OOD visual probe; composes with object) ---
+    # Scale the scene lights' diffuse intensity and/or shift their positions. Operates
+    # on MuJoCo's model.light_* (persists across resets → applied from a cached baseline
+    # so repeated episodes don't compound). Orthogonal to object_d{x,y,z}: run either,
+    # both, or neither.
+    ap.add_argument("--light_brightness", type=float, default=1.0,
+                    help="multiply light diffuse intensity (1.0 = unchanged; <1 dimmer, >1 brighter).")
+    ap.add_argument("--light_dx", type=float, default=0.0, help="x offset (m) for every light.")
+    ap.add_argument("--light_dy", type=float, default=0.0, help="y offset (m) for every light.")
+    ap.add_argument("--light_dz", type=float, default=0.0, help="z offset (m) for every light.")
     ap.add_argument("--video_dir", default="", help="if set, write one mp4 per episode here.")
     # --- GR00T server + action-chunk config ---
     ap.add_argument("--host", default="127.0.0.1")
@@ -274,6 +284,41 @@ def _perturb_object_pose(env, *, dx: float, dy: float, dz: float, names: str = "
     return moved
 
 
+def _perturb_lights(env, *, brightness: float = 1.0,
+                    dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> bool:
+    """Scale light intensity and/or shift light positions — a visual OOD probe.
+
+    Independent of ``_perturb_object_pose``: either, both, or neither may run.
+    Operates on MuJoCo's fixed lights (``model.light_diffuse`` / ``model.light_pos``),
+    read directly by the renderer (no ``sim.forward()`` needed). Lights live in the
+    MODEL and persist across ``reset()``, so we cache the pristine baseline on the env
+    the first time and always apply FROM it — repeated episodes never compound.
+    Returns True if the scene was changed.
+    """
+    if brightness == 1.0 and not (dx or dy or dz):
+        return False
+    import numpy as np
+    model = env.sim.model
+    nlight = int(getattr(model, "nlight", 0) or 0)
+    if nlight <= 0:
+        log.warning("light perturbation requested but the scene has no lights; skipping.")
+        return False
+    if not hasattr(env, "_odyssey_light_baseline"):
+        env._odyssey_light_baseline = (
+            np.array(model.light_diffuse, copy=True),
+            np.array(model.light_pos, copy=True),
+        )
+    base_diffuse, base_pos = env._odyssey_light_baseline
+    model.light_diffuse[:] = base_diffuse * float(brightness)
+    model.light_pos[:] = base_pos
+    model.light_pos[:, 0] += dx
+    model.light_pos[:, 1] += dy
+    model.light_pos[:, 2] += dz
+    log.info("lights: brightness x%.2f, pos offset (%.3f,%.3f,%.3f) on %d light(s)",
+             brightness, dx, dy, dz, nlight)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
@@ -310,16 +355,24 @@ def run_eval(args: argparse.Namespace) -> dict:
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
 
     perturb = bool(args.object_dx or args.object_dy or args.object_dz)
+    relight = bool(args.light_brightness != 1.0 or args.light_dx or args.light_dy or args.light_dz)
     for ep in range(1, args.num_episodes + 1):
         obs = env.reset()
         env.set_init_state(init_states[(ep - 1) % len(init_states)])
+        # Two independent, composable sim knobs: object pose (qpos, per-episode) and
+        # lighting (model, idempotent). Run either, both, or neither.
         if perturb:
-            # shift the object, then let the warmup no-ops settle physics and
-            # refresh obs so the policy sees the new placement from step 0.
             _perturb_object_pose(
                 env, dx=args.object_dx, dy=args.object_dy, dz=args.object_dz,
                 names=args.object_names,
             )
+        if relight:
+            _perturb_lights(
+                env, brightness=args.light_brightness,
+                dx=args.light_dx, dy=args.light_dy, dz=args.light_dz,
+            )
+        # warmup no-ops settle physics and refresh obs so the policy sees the
+        # perturbed scene from step 0.
         for _ in range(args.num_warmup_steps):
             obs, _, _, _ = env.step(dummy)
 
