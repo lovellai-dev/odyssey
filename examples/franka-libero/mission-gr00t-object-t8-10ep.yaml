@@ -1,0 +1,53 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-object-t8-10ep
+  description: >-
+    Eval-only — score the NVIDIA GR00T-N1.7 LIBERO checkpoint on libero_object
+    task_id 8 over 10 episodes, capturing one rollout video per episode.
+    Part of the full libero_object task sweep (task_id 0..9) on eval_gr00t_tests.
+  tags: [gr00t, nvidia, libero, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate GR00T-N1.7 on libero_object task 8 (10 episodes) and confirm the
+  success rate, capturing per-episode rollout videos.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, action chunks execute in LIBERO across
+  10 episodes, success_rate is reported, and one mp4 per episode is written.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-object-t8-10ep
+    kind: evaluation
+    evaluation_type: libero
+    description: Pick-and-place of the task_id=8 object (LIBERO object suite), GR00T pilot.
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t                           # -> gr00t_libero_eval.py subprocess + policy server
+      checkpoint: nvidia/GR00T-N1.7-LIBERO   # server loads the libero_object/ subdir
+      task_id: 8
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+
+      # --- action chunk (LIBERO action is ABSOLUTE 7-DoF; no pos/rot scaling) ---
+      n_action_steps: 16
+
+      # one mp4 per episode -> <run>/<task>/videos/episode_NN_{PASS,FAIL}.mp4
+      # (upright: agentview flipped 180°; encoded mp4 @ 24 fps by the runner).
+      capture_video: true
