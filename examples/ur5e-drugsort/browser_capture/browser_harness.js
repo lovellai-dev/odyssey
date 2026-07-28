@@ -185,7 +185,7 @@ const RUN_EPISODE = async (plan, cfg) => {
   // Stream frames straight to disk (keeps page memory bounded across ~900 frames/episode).
   await page.exposeFunction('__saveFrame', (rel, b64) => { fs.writeFileSync(path.join(RAW, rel), Buffer.from(b64, 'base64')); });
 
-  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting`;
+  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting${process.env.ARM ? `&arm=${process.env.ARM}` : ``}`;
   console.log('GOTO', url);
   await page.goto(url, { waitUntil: 'load', timeout: 120000 });
   await page.waitForFunction(() => window.viewer && window.viewer.physics && window.viewer.physics.mj && window.viewer.physics.mjModel, { timeout: 120000 });

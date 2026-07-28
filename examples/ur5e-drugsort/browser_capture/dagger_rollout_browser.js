@@ -50,7 +50,10 @@ const INSTRUCTION = process.env.INSTRUCTION || 'pick up the vial and place it in
 const CHROME = process.env.CHROME || '/usr/bin/google-chrome-stable';
 const RAW = path.join(OUT, 'raw');
 const PROFILE = path.join(OUT, 'chrome-udd-dagger-' + Date.now());
-const GL_ARGS = ['--use-gl=angle', '--use-angle=gl-egl', '--ignore-gpu-blocklist', '--enable-webgl', '--enable-gpu-rasterization'];
+// GL override args removed: on the current driver/Chrome-150 stack the
+// angle/gl-egl combination breaks WebGL context creation entirely
+// (webgl2:false -> viewer never initializes). Plain headless works (3.9s boot).
+const GL_ARGS = (process.env.GL_ARGS || '').split(' ').filter(Boolean);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // One-time in-page setup: ids (incl. gr_pinch), free arm collision, deployment
@@ -137,13 +140,30 @@ const RUN_ROLLOUT = async (plan, cfg) => {
 
     // --- query the SERVED policy per chunk (obs grip = COMMANDED, deploy convention) ---
     if (chunkQ === null || ci >= chunkLen) {
-      const obsState = [measured[0], measured[1], measured[2], measured[3], measured[4], measured[5], Math.max(0, Math.min(1, gripCmd))];
+      // 10-D deploy-matched obs: proprio7 + grasp_target3 (base frame = negated
+      // world x,y). The dr-generation checkpoints are observer-conditioned; the
+      // bridge maps state[7:10] to the grasp_target modality. GT vial stands in
+      // for the observer estimate (measured median gap 0.25-0.34cm).
+      const vpNow = vialPose();
+      const obsState = [measured[0], measured[1], measured[2], measured[3], measured[4], measured[5], Math.max(0, Math.min(1, gripCmd)),
+                        -vpNow[0], -vpNow[1], vpNow[2]];
       const body = { image_b64: ext, state: obsState, instruction: cfg.instruction, image_b64_wrist: wr, sid };
       let res;
       try {
-        const resp = await fetch('/api/groot/get_action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-        if (!resp.ok) { err = 'proxy ' + resp.status + ': ' + (await resp.text()).slice(0, 120); break; }
-        res = await resp.json();
+        // 45s abort per query + one retry: a wedged tunnel/proxy must fail the
+        // episode, never hang the whole run past the CDP protocol timeout.
+        const q = async () => {
+          const ac = new AbortController();
+          const t = setTimeout(() => ac.abort(), 45000);
+          try {
+            const resp = await fetch('/api/groot/get_action', { method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body), signal: ac.signal });
+            if (!resp.ok) throw new Error('proxy ' + resp.status + ': ' + (await resp.text()).slice(0, 120));
+            return await resp.json();
+          } finally { clearTimeout(t); }
+        };
+        try { res = await q(); } catch (e1) { res = await q(); }
       } catch (e) { err = String(e); break; }
       queries++;
       chunkQ = (res.chunk_q && res.chunk_q.length) ? res.chunk_q : [res.q];
@@ -191,14 +211,14 @@ const RUN_ROLLOUT = async (plan, cfg) => {
   page.on('console', m => { const t = m.text(); if (/\[groot\]|error|MJCF loaded/i.test(t)) console.log('  [page]', t.slice(0, 150)); });
   await page.exposeFunction('__saveFrame', (rel, b64) => { fs.writeFileSync(path.join(RAW, rel), Buffer.from(b64, 'base64')); });
 
-  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting`;
+  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting${process.env.ARM ? `&arm=${process.env.ARM}` : ``}`;
   console.log('GOTO', url);
-  await page.goto(url, { waitUntil: 'load', timeout: 120000 });
-  await page.waitForFunction(() => window.viewer && window.viewer.physics && window.viewer.physics.mj && window.viewer.physics.mjModel, { timeout: 120000 });
+  await page.goto(url, { waitUntil: "load", timeout: 300000 });
+  await page.waitForFunction(() => window.viewer && window.viewer.physics && window.viewer.physics.mj && window.viewer.physics.mjModel, { timeout: 300000 });
   await page.waitForFunction(() => {
     const pm = window.viewer.physics, mj = pm.mj; if (!pm.mjModel) return false;
     return mj.mj_name2id(pm.mjModel, 1, 'vial_0') >= 0 && !!window.MultiAgentGroot;
-  }, { timeout: 120000 });
+  }, { timeout: 300000 });
   await sleep(1200);
   const setup = await page.evaluate(SETUP);
   console.log('SETUP ' + JSON.stringify(setup));

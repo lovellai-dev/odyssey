@@ -167,7 +167,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   page.on('console', m => { const t = m.text(); if (/\[groot\]|error|observer/i.test(t)) console.log('  [page]', t.slice(0, 160)); });
   // Load WITHOUT &agents= so the page's own runGrootAgents() never auto-fires; our
   // RUN_ATTEMPT drives the /api/groot proxy directly (AGENTS only selects the endpoint).
-  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting`;
+  const url = `http://localhost:${PORT}/robot-playground.html?demo=drugsorting${process.env.ARM ? `&arm=${process.env.ARM}` : ``}`;
   console.log('GOTO', url);
   await page.goto(url, { waitUntil: 'load', timeout: 120000 });
   await page.waitForFunction(() => window.viewer && window.viewer.physics && window.viewer.physics.mj && window.viewer.physics.mjModel, { timeout: 120000 });
@@ -196,7 +196,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
     const epRel = 'ep' + String(plan.episode).padStart(3, '0');
     const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS, rawDump: RAW_DUMP, epRel });
     if (RAW_DUMP && r.states_d && r.states_d.length) {
-      fs.writeFileSync(path.join(RAW, epRel, 'meta.json'), JSON.stringify({ episode: plan.episode, states: r.states_d, gt: r.gt_d, actions: [] }));
+      fs.writeFileSync(path.join(RAW, epRel, 'meta.json'), JSON.stringify({ episode: plan.episode, success: r.success ? 1 : 0, states: r.states_d, gt: r.gt_d, actions: [] }));
     }
     delete r.states_d; delete r.gt_d;
     const secs = (Date.now() - t0) / 1000;

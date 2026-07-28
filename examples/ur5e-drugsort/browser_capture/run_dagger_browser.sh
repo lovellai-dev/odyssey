@@ -38,10 +38,10 @@ AGENT_PY=/home/daniel/LovellAI/lai-agent/agent_service/.venv/bin/python
 PYUR5E=$ODY/.venv-ur5e/bin/python
 VM=ubuntu@192.222.52.169
 SSH="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30"
-XML=/home/daniel/LovellAI/lai-agent-multiagent/src/embodiments/urdf/aseptipack_description/aseptipack.xml
-PUP=/home/daniel/.npm/_npx/23232c69e5d221f3/node_modules/puppeteer-core
+XML=${XML:-/home/daniel/LovellAI/lai-agent/src/embodiments/urdf/aseptipack_description/aseptipack.xml}
+PUP=${PUP:-$BC/node_modules/puppeteer-core}
 CHROME=/usr/bin/google-chrome-stable
-NODE=/home/daniel/.nvm/versions/node/v22.22.0/bin/node
+NODE=${NODE:-/home/daniel/.local/bin/node}
 
 WORK=$HOME/dagger_browser
 LOG=$HOME/dagger_browser.log
@@ -54,7 +54,7 @@ ZMQ_PORT=${ZMQ_PORT:-5557}
 BRIDGE_PORT=${BRIDGE_PORT:-5597}
 VM_DATASET=/home/ubuntu/ur5e_dagger_browser
 VM_CKPT_ROOT=/home/ubuntu/ckpt/ur5e_dagger_browser
-START_CKPT=/home/ubuntu/ckpt/ur5e_drugsort_browser/checkpoint-12000   # render-gap browser BC (0/15)
+START_CKPT=${START_CKPT:-/home/ubuntu/ckpt/ur5e_drugsort_dr/checkpoint-15000}   # current best (2b brain: 8/15)
 BASE_DATASET=$BC/dataset_browser_full                                 # 151 browser eps
 
 # Knobs
@@ -178,7 +178,13 @@ deploy_and_tunnel(){   # $1 = VM checkpoint dir
   scp -q -o StrictHostKeyChecking=no vm_deploy_dagger.sh "$VM:/home/ubuntu/vm_deploy_dagger.sh" || return 1
   $SSH "$VM" "bash /home/ubuntu/vm_deploy_dagger.sh $ckpt $ZMQ_PORT $BRIDGE_PORT" || return 1
   pkill -f "127.0.0.1:$BRIDGE_PORT:127.0.0.1:$BRIDGE_PORT" 2>/dev/null || true; sleep 2
+  # Kill any stale tunnel first: a leftover -f ssh from a previous round keeps
+  # :$BRIDGE_PORT bound, the new tunnel dies on ExitOnForwardFailure (swallowed
+  # below), and the stale one wedges under load — queries hang forever.
+  pkill -f "ssh.*-L 127.0.0.1:$BRIDGE_PORT:" 2>/dev/null || true
+  sleep 1
   $SSH -f -N -o ExitOnForwardFailure=yes -L 127.0.0.1:$BRIDGE_PORT:127.0.0.1:$BRIDGE_PORT "$VM" 2>/dev/null || true
+  timeout 8 bash -c "until curl -s -m3 http://127.0.0.1:$BRIDGE_PORT/health >/dev/null; do sleep 1; done" || { echo TUNNEL_DEAD; return 1; }
   for i in $(seq 1 30); do curl -s --max-time 5 http://127.0.0.1:$BRIDGE_PORT/health | grep -q ok && break; sleep 5; done
   curl -s --max-time 5 http://127.0.0.1:$BRIDGE_PORT/health | grep -q ok || return 1
   # agent-service /api/groot/health reports EITHER {"bridge_health":{"ok":true}} when
