@@ -1,0 +1,406 @@
+<mujoco model="aseptipack_ur10e_cell">
+  <!-- UR10e replica of the AseptiPack drug-sort cell (aseptipack_description/aseptipack.xml).
+       Arm defaults/body tree/inertials/collision capsules come from MuJoCo Menagerie
+       universal_robots_ur10e; everything else (Robotiq 2F-85, work table, vial contact
+       classes, pocket wells, cameras, keyframe layout) is byte-consistent with the UR5e
+       deployment cell so the capture/eval pipeline transfers unchanged. Joint, body,
+       actuator, and site NAMES are identical to the UR5e cell — the browser harness,
+       GR00T bridge, and IK expert are all keyed on names, not geometry. -->
+  <compiler angle="radian" meshdir="assets/"/>
+
+  <option integrator="implicitfast"/>
+
+  <size nkey="1"/>
+
+  <visual>
+    <global offwidth="1280" offheight="960"/>
+  </visual>
+
+  <default>
+    <default class="ur10e">
+      <material specular="0.5" shininess="0.25"/>
+      <joint axis="0 1 0" range="-6.28319 6.28319" armature="0.1"/>
+      <site size="0.001 0.005 0.005" group="4" rgba="0.5 0.5 0.5 0.3"/>
+      <general biastype="affine" ctrlrange="-6.2831 6.2831" gainprm="5000" biasprm="0 -5000 -500"/>
+      <default class="size4">
+        <joint damping="10"/>
+        <general forcerange="-330 330"/>
+      </default>
+      <default class="size3">
+        <joint damping="5"/>
+        <general forcerange="-150 150"/>
+        <default class="size3_limited">
+          <joint range="-3.1415 3.1415"/>
+          <general ctrlrange="-3.1415 3.1415"/>
+        </default>
+      </default>
+      <default class="size2">
+        <joint damping="2"/>
+        <general forcerange="-56 56"/>
+      </default>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom type="capsule" group="3"/>
+        <default class="eef_collision">
+          <geom type="cylinder"/>
+        </default>
+      </default>
+    </default>
+    <default class="gr_main">
+      <default class="gr_2f85">
+        <mesh scale="0.001 0.001 0.001"/>
+        <general biastype="affine"/>
+        <default class="gr_driver">
+          <joint solreflimit="0.005" solimplimit="0.95 0.99" range="0 0.8" armature="0.005" damping="0.1"/>
+        </default>
+        <default class="gr_follower">
+          <joint solreflimit="0.005" solimplimit="0.95 0.99" range="-0.872664 0.872664" armature="0.001"/>
+        </default>
+        <default class="gr_spring_link">
+          <joint springref="2.62" stiffness="1.0" range="-0.296706 0.8" armature="0.001" damping="0.00125"/>
+        </default>
+        <default class="gr_coupler">
+          <joint solreflimit="0.005" solimplimit="0.95 0.99" range="-1.57 0" armature="0.001"/>
+        </default>
+        <default class="gr_visual">
+          <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+        </default>
+        <default class="gr_collision">
+          <geom type="mesh" group="3"/>
+          <default class="gr_pad_box1">
+            <geom size="0.011 0.004 0.009375" type="box" priority="1" friction="2 0.2 0.05" solref="0.004" solimp="0.95 0.99" rgba="0.55 0.55 0.55 1"/>
+          </default>
+          <default class="gr_pad_box2">
+            <geom size="0.011 0.004 0.009375" type="box" priority="1" friction="2 0.2 0.05" solref="0.004" solimp="0.95 0.99" rgba="0.45 0.45 0.45 1"/>
+          </default>
+        </default>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="black" class="ur10e" rgba="0.033 0.033 0.033 1"/>
+    <material name="jointgray" class="ur10e" rgba="0.278 0.278 0.278 1"/>
+    <material name="linkgray" class="ur10e" rgba="0.82 0.82 0.82 1"/>
+    <material name="urblue" class="ur10e" rgba="0.49 0.678 0.8 1"/>
+    <material name="gr_metal" rgba="0.58 0.58 0.58 1"/>
+    <material name="gr_silicone" rgba="0.1882 0.1882 0.1882 1"/>
+    <material name="gr_gray" rgba="0.4627 0.4627 0.4627 1"/>
+    <material name="gr_black" rgba="0.149 0.149 0.149 1"/>
+    <mesh name="base_0" file="base_0.obj"/>
+    <mesh name="base_1" file="base_1.obj"/>
+    <mesh name="shoulder_0" file="shoulder_0.obj"/>
+    <mesh name="shoulder_1" file="shoulder_1.obj"/>
+    <mesh name="shoulder_2" file="shoulder_2.obj"/>
+    <mesh name="upperarm_0" file="upperarm_0.obj"/>
+    <mesh name="upperarm_1" file="upperarm_1.obj"/>
+    <mesh name="upperarm_2" file="upperarm_2.obj"/>
+    <mesh name="upperarm_3" file="upperarm_3.obj"/>
+    <mesh name="forearm_0" file="forearm_0.obj"/>
+    <mesh name="forearm_1" file="forearm_1.obj"/>
+    <mesh name="forearm_2" file="forearm_2.obj"/>
+    <mesh name="forearm_3" file="forearm_3.obj"/>
+    <mesh name="wrist1_0" file="wrist1_0.obj"/>
+    <mesh name="wrist1_1" file="wrist1_1.obj"/>
+    <mesh name="wrist1_2" file="wrist1_2.obj"/>
+    <mesh name="wrist2_0" file="wrist2_0.obj"/>
+    <mesh name="wrist2_1" file="wrist2_1.obj"/>
+    <mesh name="wrist2_2" file="wrist2_2.obj"/>
+    <mesh name="wrist3" file="wrist3.obj"/>
+    <mesh name="gr_base_mount" class="gr_2f85" file="base_mount.stl"/>
+    <mesh name="gr_base" class="gr_2f85" file="base.stl"/>
+    <mesh name="gr_driver" class="gr_2f85" file="driver.stl"/>
+    <mesh name="gr_coupler" class="gr_2f85" file="coupler.stl"/>
+    <mesh name="gr_follower" class="gr_2f85" file="follower.stl"/>
+    <mesh name="gr_pad" class="gr_2f85" file="pad.stl"/>
+    <mesh name="gr_silicone_pad" class="gr_2f85" file="silicone_pad.stl"/>
+    <mesh name="gr_spring_link" class="gr_2f85" file="spring_link.stl"/>
+  </asset>
+
+  <worldbody>
+    <geom size="2 2 0.01" type="plane" conaffinity="5" rgba="0.72 0.74 0.77 1"/>
+    <geom size="0.5 0.008 0.16" pos="0.46 0.62 0.36" type="box" contype="0" conaffinity="0" rgba="0.42 0.6 0.75 0.16"/>
+    <!-- ===== WORK TABLE (raises the fill-finish work surface to z=0.20) ===== -->
+    <body name="table" pos="0.46 0 0">
+      <!-- colliding stainless worktop: top surface at z=0.20; vial rests on this -->
+      <geom name="worktop" size="0.30 0.46 0.01" pos="0 0 0.19" type="box" contype="1" conaffinity="1" friction="1 0.005 0.0001" rgba="0.80 0.82 0.85 1"/>
+      <!-- apron + legs (visual only) -->
+      <geom size="0.30 0.46 0.02" pos="0 0 0.16" type="box" contype="0" conaffinity="0" rgba="0.62 0.64 0.67 1"/>
+      <geom size="0.02 0.02 0.09" pos="-0.26 -0.42 0.09" type="box" contype="0" conaffinity="0" rgba="0.5 0.52 0.55 1"/>
+      <geom size="0.02 0.02 0.09" pos="0.26 -0.42 0.09" type="box" contype="0" conaffinity="0" rgba="0.5 0.52 0.55 1"/>
+      <geom size="0.02 0.02 0.09" pos="-0.26 0.42 0.09" type="box" contype="0" conaffinity="0" rgba="0.5 0.52 0.55 1"/>
+      <geom size="0.02 0.02 0.09" pos="0.26 0.42 0.09" type="box" contype="0" conaffinity="0" rgba="0.5 0.52 0.55 1"/>
+    </body>
+    <!-- robot mounting plinth (visual, cosmetic) -->
+    <body name="robot_plinth" pos="0 0 0">
+      <geom size="0.09 0.09 0.005" pos="0 0 0.005" type="box" contype="0" conaffinity="0" rgba="0.3 0.31 0.34 1"/>
+    </body>
+    <camera name="room" target="pallet" pos="1.15 0 0.85" mode="targetbody"/>
+    <camera name="film" target="pallet" pos="1.05 0.62 0.74" mode="targetbody"/>
+    <light name="spotlight" target="wrist_2_link" pos="0 -1 2" dir="0 0 -1" mode="targetbodycom"/>
+    <light pos="0.4 0.4 1.7" dir="0 -0.287348 -0.957826" diffuse="0.9 0.9 0.92"/>
+    <light pos="0.4 -0.4 1.7" dir="0 0.287348 -0.957826" diffuse="0.55 0.55 0.6"/>
+    <body name="base" childclass="ur10e" quat="0 0 0 -1">
+      <inertial pos="0 0 0" mass="4" diaginertia="0.0061063308908 0.0061063308908 0.01125"/>
+      <geom class="visual" material="black" mesh="base_0"/>
+      <geom class="visual" material="jointgray" mesh="base_1"/>
+      <body name="shoulder_link" pos="0 0 0.181">
+        <inertial pos="0 0 0" mass="7.778" diaginertia="0.0314743 0.0314743 0.0218756"/>
+        <joint name="shoulder_pan_joint" class="size4" pos="0 0 0" axis="0 0 1"/>
+        <geom class="visual" material="urblue" mesh="shoulder_0"/>
+        <geom class="visual" material="black" mesh="shoulder_1"/>
+        <geom class="visual" material="jointgray" mesh="shoulder_2"/>
+        <geom class="collision" size="0.078 0.08" pos="0 0 -0.05"/>
+        <body name="upper_arm_link" pos="0 0.176 0" quat="0.707107 0 0.707107 0">
+          <inertial pos="0 0 0.3065" mass="12.93" diaginertia="0.423074 0.423074 0.0363656"/>
+          <joint name="shoulder_lift_joint" class="size4" pos="0 0 0" axis="0 1 0"/>
+          <geom class="visual" material="black" mesh="upperarm_0"/>
+          <geom class="visual" material="jointgray" mesh="upperarm_1"/>
+          <geom class="visual" material="urblue" mesh="upperarm_2"/>
+          <geom class="visual" material="linkgray" mesh="upperarm_3"/>
+          <geom class="collision" size="0.078 0.08" pos="0 -0.05 0" quat="0.707107 0.707107 0 0"/>
+          <geom class="collision" size="0.06 0.3" pos="0 0 0.3"/>
+          <body name="forearm_link" pos="0 -0.137 0.613">
+            <inertial pos="0 0 0.2855" mass="3.87" diaginertia="0.11059 0.11059 0.0108844"/>
+            <joint name="elbow_joint" class="size3_limited" pos="0 0 0" axis="0 1 0"/>
+            <geom class="visual" material="urblue" mesh="forearm_0"/>
+            <geom class="visual" material="black" mesh="forearm_1"/>
+            <geom class="visual" material="jointgray" mesh="forearm_2"/>
+            <geom class="visual" material="linkgray" mesh="forearm_3"/>
+            <geom class="collision" size="0.058 0.065" pos="0 0.08 0" quat="0.707107 0.707107 0 0"/>
+            <geom class="collision" size="0.043 0.28" pos="0 0 0.29"/>
+            <body name="wrist_1_link" pos="0 0 0.571" quat="0.707107 0 0.707107 0">
+              <inertial pos="0 0.135 0" quat="0.5 0.5 -0.5 0.5" mass="1.96" diaginertia="0.0055125 0.00510825 0.00510825"/>
+              <joint name="wrist_1_joint" class="size2" pos="0 0 0" axis="0 1 0"/>
+              <geom class="visual" material="black" mesh="wrist1_0"/>
+              <geom class="visual" material="urblue" mesh="wrist1_1"/>
+              <geom class="visual" material="jointgray" mesh="wrist1_2"/>
+              <geom class="collision" size="0.05 0.07" pos="0 0.06 0" quat="0.707107 0.707107 0 0"/>
+              <body name="wrist_2_link" pos="0 0.135 0">
+                <inertial pos="0 0 0.12" quat="0.5 0.5 -0.5 0.5" mass="1.96" diaginertia="0.0055125 0.00510825 0.00510825"/>
+                <joint name="wrist_2_joint" class="size2" pos="0 0 0" axis="0 0 1"/>
+                <geom class="visual" material="black" mesh="wrist2_0"/>
+                <geom class="visual" material="urblue" mesh="wrist2_1"/>
+                <geom class="visual" material="jointgray" mesh="wrist2_2"/>
+                <geom class="collision" size="0.046 0.065" pos="0 0 0.05"/>
+                <geom class="collision" size="0.046 0.043" pos="0 0.028 0.12" quat="0.707107 0.707107 0 0"/>
+                <body name="wrist_3_link" pos="0 0 0.12">
+                  <inertial pos="0 0.092 0" quat="0 1 -1 0" mass="0.202" diaginertia="0.000204525 0.000144346 0.000144346"/>
+                  <joint name="wrist_3_joint" class="size2" pos="0 0 0" axis="0 1 0"/>
+                  <geom class="visual" material="linkgray" mesh="wrist3"/>
+                  <geom class="eef_collision" size="0.046 0.02" pos="0 0.097 0" quat="0.707107 0.707107 0 0"/>
+                  <site name="attachment_site" pos="0 0.1 0" quat="-0.707107 0.707107 0 0"/>
+                  <!-- Eye-in-hand mount, re-aimed down the tool axis to frame the
+                       gripper + vial for close-range grasp depth (iteration 3).
+                       Same local pose as the UR5e cell — the flange offset (y=0.1)
+                       is identical on the UR10e, so the framing transfers. -->
+                  <camera name="wrist" pos="0 -0.02 0.1" fovy="100"
+                          xyaxes="-1 0 -0.00297 0.00278 -0.35575 -0.93458"/>
+                  <camera name="wrist_d405" pos="0 0.115 0.055" fovy="87"
+                          xyaxes="-1 0 -0.00297 0.00278 -0.35575 -0.93458"/>
+                  <body name="gr_base_mount" childclass="gr_2f85" pos="0 0.107 0" quat="-0.707107 0.707107 0 0">
+                    <geom class="gr_visual" material="gr_black" mesh="gr_base_mount"/>
+                    <geom class="gr_collision" mesh="gr_base_mount"/>
+                    <body name="gr_base" pos="0 0 0.0038" quat="0.707107 0 0 -0.707107">
+                      <inertial pos="0 -2.70394e-05 0.0354675" quat="0.999999 -0.00152849 0 0" mass="0.777441" diaginertia="0.000260285 0.000225381 0.000152708"/>
+                      <geom class="gr_visual" material="gr_black" mesh="gr_base"/>
+                      <geom class="gr_collision" mesh="gr_base"/>
+                      <site name="gr_pinch" pos="0 0 0.145" group="5" rgba="0.9 0.9 0.9 1"/>
+                      <body name="gr_right_driver" pos="0 0.0306011 0.054904">
+                        <inertial pos="2.96931e-12 0.0177547 0.00107314" quat="0.681301 0.732003 0 0" mass="0.00899563" diaginertia="1.72352e-06 1.60906e-06 3.22006e-07"/>
+                        <joint name="gr_right_driver_joint" class="gr_driver" pos="0 0 0" axis="1 0 0"/>
+                        <geom class="gr_visual" material="gr_gray" mesh="gr_driver"/>
+                        <geom class="gr_collision" mesh="gr_driver"/>
+                        <body name="gr_right_coupler" pos="0 0.0315 -0.0041">
+                          <inertial pos="0 0.00301209 0.0232175" quat="0.705636 -0.0455904 0.0455904 0.705636" mass="0.0140974" diaginertia="4.16206e-06 3.52216e-06 8.88131e-07"/>
+                          <joint name="gr_right_coupler_joint" class="gr_coupler" pos="0 0 0" axis="1 0 0"/>
+                          <geom class="gr_visual" material="gr_black" mesh="gr_coupler"/>
+                          <geom class="gr_collision" mesh="gr_coupler"/>
+                        </body>
+                      </body>
+                      <body name="gr_right_spring_link" pos="0 0.0132 0.0609">
+                        <inertial pos="-8.65005e-09 0.0181624 0.0212658" quat="0.663403 -0.244737 0.244737 0.663403" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
+                        <joint name="gr_right_spring_link_joint" class="gr_spring_link" pos="0 0 0" axis="1 0 0" springref="2.62"/>
+                        <geom class="gr_visual" material="gr_black" mesh="gr_spring_link"/>
+                        <geom class="gr_collision" mesh="gr_spring_link"/>
+                        <body name="gr_right_follower" pos="0 0.055 0.0375">
+                          <inertial pos="0 -0.011046 0.0124786" quat="0.986437 0.164143 0 0" mass="0.0125222" diaginertia="2.67415e-06 2.4559e-06 6.02031e-07"/>
+                          <joint name="gr_right_follower_joint" class="gr_follower" pos="0 -0.018 0.0065" axis="1 0 0"/>
+                          <geom class="gr_visual" material="gr_black" mesh="gr_follower"/>
+                          <geom class="gr_collision" mesh="gr_follower"/>
+                          <body name="gr_right_pad" pos="0 -0.0189 0.01352">
+                            <inertial pos="0 -0.0025 0.0185" quat="0.707107 0 0 0.707107" mass="0.0035" diaginertia="4.73958e-07 3.64583e-07 1.23958e-07"/>
+                            <geom name="gr_right_pad1" class="gr_pad_box1" pos="0 -0.0026 0.028125" mass="0"/>
+                            <geom name="gr_right_pad2" class="gr_pad_box2" pos="0 -0.0026 0.009375" mass="0"/>
+                            <geom class="gr_visual" mesh="gr_pad"/>
+                            <body name="gr_right_silicone_pad">
+                              <geom class="gr_visual" material="gr_black" mesh="gr_silicone_pad"/>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                      <body name="gr_left_driver" pos="0 -0.0306011 0.054904" quat="0 0 0 1">
+                        <inertial pos="0 0.0177547 0.00107314" quat="0.681301 0.732003 0 0" mass="0.00899563" diaginertia="1.72352e-06 1.60906e-06 3.22006e-07"/>
+                        <joint name="gr_left_driver_joint" class="gr_driver" pos="0 0 0" axis="1 0 0"/>
+                        <geom class="gr_visual" material="gr_gray" mesh="gr_driver"/>
+                        <geom class="gr_collision" mesh="gr_driver"/>
+                        <body name="gr_left_coupler" pos="0 0.0315 -0.0041">
+                          <inertial pos="0 0.00301209 0.0232175" quat="0.705636 -0.0455904 0.0455904 0.705636" mass="0.0140974" diaginertia="4.16206e-06 3.52216e-06 8.88131e-07"/>
+                          <joint name="gr_left_coupler_joint" class="gr_coupler" pos="0 0 0" axis="1 0 0"/>
+                          <geom class="gr_visual" material="gr_black" mesh="gr_coupler"/>
+                          <geom class="gr_collision" mesh="gr_coupler"/>
+                        </body>
+                      </body>
+                      <body name="gr_left_spring_link" pos="0 -0.0132 0.0609" quat="0 0 0 1">
+                        <inertial pos="-8.65005e-09 0.0181624 0.0212658" quat="0.663403 -0.244737 0.244737 0.663403" mass="0.0221642" diaginertia="8.96853e-06 6.71733e-06 2.63931e-06"/>
+                        <joint name="gr_left_spring_link_joint" class="gr_spring_link" pos="0 0 0" axis="1 0 0" springref="2.62"/>
+                        <geom class="gr_visual" material="gr_black" mesh="gr_spring_link"/>
+                        <geom class="gr_collision" mesh="gr_spring_link"/>
+                        <body name="gr_left_follower" pos="0 0.055 0.0375">
+                          <inertial pos="0 -0.011046 0.0124786" quat="0.986437 0.164143 0 0" mass="0.0125222" diaginertia="2.67415e-06 2.4559e-06 6.02031e-07"/>
+                          <joint name="gr_left_follower_joint" class="gr_follower" pos="0 -0.018 0.0065" axis="1 0 0"/>
+                          <geom class="gr_visual" material="gr_black" mesh="gr_follower"/>
+                          <geom class="gr_collision" mesh="gr_follower"/>
+                          <body name="gr_left_pad" pos="0 -0.0189 0.01352">
+                            <inertial pos="0 -0.0025 0.0185" quat="0.707107 0 0 0.707107" mass="0.0035" diaginertia="4.73958e-07 3.64583e-07 1.23958e-07"/>
+                            <geom name="gr_left_pad1" class="gr_pad_box1" pos="0 -0.0026 0.028125" mass="0"/>
+                            <geom name="gr_left_pad2" class="gr_pad_box2" pos="0 -0.0026 0.009375" mass="0"/>
+                            <geom class="gr_visual" mesh="gr_pad"/>
+                            <body name="gr_left_silicone_pad">
+                              <geom class="gr_visual" material="gr_black" mesh="gr_silicone_pad"/>
+                            </body>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+    <body name="pallet" pos="0.46 0 0.204">
+      <geom size="0.24 0.42 0.004" type="box" contype="0" conaffinity="0" rgba="0.6 0.44 0.24 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 -0.38 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 -0.285 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 -0.19 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 -0.095 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 0.095 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 0.19 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 0.285 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+      <geom size="0.24 0.004 0.0045" pos="0 0.38 0" type="box" contype="0" conaffinity="0" rgba="0.5 0.36 0.2 1"/>
+    </body>
+    <body name="tray_src" pos="0.52 0.3 0.22">
+      <geom size="0.1 0.055 0.006" pos="0 0 -0.014" type="box" contype="0" conaffinity="0" rgba="0.18 0.34 0.55 1"/>
+      <body name="src_vial_0" pos="-0.066 -0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.82 0.16 0.16 1"/>
+      </body>
+      <body name="src_vial_1" pos="-0.022 -0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.16 0.32 0.78 1"/>
+      </body>
+      <body name="src_vial_2" pos="0.022 -0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.62 0.64 0.66 1"/>
+      </body>
+      <body name="src_vial_3" pos="0.066 -0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.82 0.16 0.16 1"/>
+      </body>
+      <body name="src_vial_4" pos="-0.066 0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.16 0.32 0.78 1"/>
+      </body>
+      <body name="src_vial_5" pos="-0.022 0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.62 0.64 0.66 1"/>
+      </body>
+      <body name="src_vial_6" pos="0.022 0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.82 0.16 0.16 1"/>
+      </body>
+      <body name="src_vial_7" pos="0.066 0.024 0">
+        <geom size="0.009 0.02" type="cylinder" contype="0" conaffinity="0" rgba="0.8 0.47 0.1 0.95"/>
+        <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.16 0.32 0.78 1"/>
+      </body>
+    </body>
+    <body name="nest" pos="0.45 -0.15 0.212">
+      <geom size="0.09 0.055 0.006" pos="0 0 -0.006" type="box" contype="0" conaffinity="0" rgba="0.16 0.42 0.32 1"/>
+      <geom size="0.012 0.005" pos="-0.06 -0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="-0.02 -0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="0.02 -0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="0.06 -0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="-0.06 0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="-0.02 0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="0.02 0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <geom size="0.012 0.005" pos="0.06 0.024 0.001" type="cylinder" contype="0" conaffinity="0" rgba="0.12 0.14 0.18 1"/>
+      <site name="pocket_0" pos="-0.06 -0.024 0.016" size="0.008" rgba="0 0 0 0"/>
+      <!-- colliding pocket well at pocket_0: guides the vial upright. contype/conaffinity=2
+           collide ONLY with the vial (contype/conaffinity=3), not the fingers (1) or arm (1). -->
+      <geom name="well_xp" size="0.003 0.016 0.0175" pos="-0.044 -0.024 0.0055" type="box" contype="2" conaffinity="2" rgba="0.3 0.33 0.36 1"/>
+      <geom name="well_xn" size="0.003 0.016 0.0175" pos="-0.076 -0.024 0.0055" type="box" contype="2" conaffinity="2" rgba="0.3 0.33 0.36 1"/>
+      <geom name="well_yp" size="0.016 0.003 0.0175" pos="-0.06 -0.008 0.0055" type="box" contype="2" conaffinity="2" rgba="0.3 0.33 0.36 1"/>
+      <geom name="well_yn" size="0.016 0.003 0.0175" pos="-0.06 -0.04 0.0055" type="box" contype="2" conaffinity="2" rgba="0.3 0.33 0.36 1"/>
+    </body>
+    <body name="vial_0" pos="0.45 0.15 0.22">
+      <joint type="free"/>
+      <geom size="0.009 0.02" type="cylinder" contype="3" conaffinity="3" mass="0.02" friction="1.4 0.02 0.001" solref="0.006 1" solimp="0.95 0.99 0.001" rgba="0.8 0.47 0.1 0.95"/>
+      <geom size="0.01 0.004" pos="0 0 0.024" type="cylinder" contype="0" conaffinity="0" rgba="0.82 0.16 0.16 1"/>
+    </body>
+    <body name="carton_1" pos="0.3 0.4 0.245">
+      <geom size="0.045 0.028 0.045" type="box" contype="0" conaffinity="0" rgba="0.78 0.22 0.2 1"/>
+    </body>
+    <body name="carton_2" pos="0.18 0.4 0.23">
+      <geom size="0.05 0.03 0.03" type="box" contype="0" conaffinity="0" rgba="0.2 0.36 0.72 1"/>
+    </body>
+    <body name="carton_3" pos="0.3 -0.4 0.24">
+      <geom size="0.04 0.03 0.04" type="box" contype="0" conaffinity="0" rgba="0.92 0.92 0.88 1"/>
+    </body>
+    <body name="pill_bottle" pos="0.18 -0.4 0.23">
+      <geom size="0.022 0.03" type="cylinder" contype="0" conaffinity="0" rgba="0.85 0.78 0.2 1"/>
+      <geom size="0.022 0.006" pos="0 0 0.036" type="cylinder" contype="0" conaffinity="0" rgba="0.95 0.95 0.92 1"/>
+    </body>
+  </worldbody>
+
+  <contact>
+    <exclude body1="gr_base" body2="gr_right_driver"/>
+    <exclude body1="gr_base" body2="gr_right_spring_link"/>
+    <exclude body1="gr_base" body2="gr_left_driver"/>
+    <exclude body1="gr_base" body2="gr_left_spring_link"/>
+    <exclude body1="gr_right_coupler" body2="gr_right_follower"/>
+    <exclude body1="gr_left_coupler" body2="gr_left_follower"/>
+  </contact>
+
+  <equality>
+    <connect body1="gr_right_follower" body2="gr_right_coupler" anchor="0 0 0" solref="0.005" solimp="0.95 0.99"/>
+    <connect body1="gr_left_follower" body2="gr_left_coupler" anchor="0 0 0" solref="0.005" solimp="0.95 0.99"/>
+    <joint joint1="gr_right_driver_joint" joint2="gr_left_driver_joint" polycoef="0 1 0 0 0" solref="0.005" solimp="0.95 0.99"/>
+  </equality>
+
+  <tendon>
+    <fixed name="gr_split">
+      <joint joint="gr_right_driver_joint" coef="0.5"/>
+      <joint joint="gr_left_driver_joint" coef="0.5"/>
+    </fixed>
+  </tendon>
+
+  <actuator>
+    <general name="shoulder_pan" class="size4" joint="shoulder_pan_joint"/>
+    <general name="shoulder_lift" class="size4" joint="shoulder_lift_joint"/>
+    <general name="elbow" class="size3_limited" joint="elbow_joint"/>
+    <general name="wrist_1" class="size2" joint="wrist_1_joint"/>
+    <general name="wrist_2" class="size2" joint="wrist_2_joint"/>
+    <general name="wrist_3" class="size2" joint="wrist_3_joint"/>
+    <general name="gr_fingers_actuator" class="gr_2f85" tendon="gr_split" ctrlrange="0 255" forcerange="-40 40" gainprm="0.313725" biasprm="0 -100 -10"/>
+  </actuator>
+
+  <keyframe>
+    <key name="home" qpos="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0 0 0 0 0 0 0 0 0.45 0.15 0.22 1 0 0 0" ctrl="-1.5708 -1.5708 1.5708 -1.5708 -1.5708 0 0"/>
+  </keyframe>
+</mujoco>
