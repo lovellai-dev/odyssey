@@ -1,0 +1,54 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: franka-libero-gr00t-long10-t3-10ep
+  description: >-
+    Eval-only — score the NVIDIA GR00T-N1.7 LIBERO checkpoint on libero_10
+    (LIBERO-Long) task_id 3 over 10 episodes, capturing one rollout video per
+    episode. Completes the 4-suite sweep (object/spatial/goal/10) on eval_gr00t_tests.
+  tags: [gr00t, nvidia, libero, libero_10, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate GR00T-N1.7 on libero_10 (long-horizon) task 3 (10 episodes) and
+  confirm the success rate, capturing per-episode rollout videos.
+
+acceptance_criteria: |
+  The GR00T server serves the checkpoint, action chunks execute in LIBERO across
+  10 episodes, success_rate is reported, and one mp4 per episode is written.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+tasks:
+  - name: eval-libero-long10-t3-10ep
+    kind: evaluation
+    evaluation_type: libero
+    description: Long-horizon (LIBERO-10) task_id=3, GR00T pilot.
+    benchmark_name: libero_10
+    num_episodes: 10
+    config:
+      pilot: gr00t                           # -> gr00t_libero_eval.py subprocess + policy server
+      checkpoint: nvidia/GR00T-N1.7-LIBERO   # server loads the libero_10/ subdir
+      task_id: 3
+
+      # --- GR00T policy server (closed-loop auto-serve) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      server_python: /home/gema/Isaac-GR00T/.venv/bin/python
+      n_action_steps: 16
+
+      # LIBERO-Long tasks are multi-step (~2x horizon) -> raise the per-episode cap
+      # above the 520 default so long tasks aren't cut off mid-execution.
+      max_steps_per_episode: 700
+
+      # one mp4 per episode -> <run>/<task>/videos/episode_NN_{PASS,FAIL}.mp4
+      capture_video: true
