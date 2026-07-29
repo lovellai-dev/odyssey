@@ -111,9 +111,14 @@ else
 fi
 
 # LIBERO client stack (pilot-agnostic; same pins the validated franka-libero uses,
-# MINUS transformers/numpy — π0.5 needs neither). Installed into the pi05 venv.
+# MINUS transformers — π0.5 needs no transformers). Installed into the pi05 venv.
+# mujoco + numpy ARE pinned here (unlike franka-libero, which omits them to protect
+# a co-installed OpenVLA stack): this venv is standalone, and left unpinned pip
+# resolves mujoco 3.x (robosuite 1.4.0 calls the old MjData.qM API -> AttributeError)
+# and numpy 2.x (ABI clash with mujoco 2.3.x + gym 0.25). Pin both to known-good.
 uv pip install --python "$PYBIN" \
-  robosuite==1.4.0 bddl==1.0.1 robomimic==0.2.0 hydra-core==1.2.0 easydict==1.9 \
+  robosuite==1.4.0 mujoco==2.3.2 "numpy<2" \
+  bddl==1.0.1 robomimic==0.2.0 hydra-core==1.2.0 easydict==1.9 \
   einops==0.4.1 gym==0.25.2 cloudpickle==2.1.0 future==0.18.2 thop==0.1.1.post2209072238 \
   opencv-python==4.6.0.66 matplotlib==3.5.3
 uv pip install --python "$PYBIN" "imageio[ffmpeg]"   # mp4 encoder for capture_video
