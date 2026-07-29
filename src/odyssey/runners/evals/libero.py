@@ -89,7 +89,24 @@ def _make_libero_env(
             f"(has {n_tasks} tasks 0..{n_tasks - 1})."
         )
     task = suite.get_task(task_id)
-    init_states = suite.get_task_init_states(task_id)
+    # LIBERO's get_task_init_states() reads pickled numpy init states via
+    # torch.load(). PyTorch >= 2.6 flipped weights_only to True by default, which
+    # rejects numpy globals and raises UnpicklingError. These are trusted files
+    # shipped with the benchmark, so load them with weights_only=False. Contained
+    # monkeypatch (restored in finally) rather than a global torch.load override.
+    import torch
+
+    _orig_torch_load = torch.load
+
+    def _torch_load_weights_only_false(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("weights_only", False)
+        return _orig_torch_load(*args, **kwargs)
+
+    torch.load = _torch_load_weights_only_false  # type: ignore[assignment]
+    try:
+        init_states = suite.get_task_init_states(task_id)
+    finally:
+        torch.load = _orig_torch_load  # type: ignore[assignment]
 
     bddl_file = os.path.join(
         get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
