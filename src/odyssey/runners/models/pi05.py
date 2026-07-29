@@ -38,6 +38,31 @@ def _make_pi05_client(*, host: str, port: int, api_key: str | None = None) -> An
             "Install openpi and serve a π0.5 checkpoint "
             "(e.g. scripts/serve_policy.py), then point the mission at host:port."
         ) from e
+
+    # Disable the client-side websocket keepalive. openpi's WebsocketPolicyServer
+    # is synchronous: the FIRST infer blocks its handler thread while JAX compiles
+    # the π0.5 graph (can take minutes), so it cannot answer the client's keepalive
+    # pings. With the default ping_interval (20s) the client then tears the
+    # connection down with 1011 "keepalive ping timeout" before the first chunk
+    # ever returns. openpi's WebsocketClientPolicy exposes no ping knob, so patch
+    # the connect it calls (websockets.sync.client.connect, resolved at call time)
+    # to default ping_interval=None. Server->client pings still work (the sync
+    # client auto-pongs on its reader thread); we only stop OUR keepalive.
+    try:  # pragma: no cover - requires the websockets runtime dep
+        import websockets.sync.client as _wsc
+
+        if not getattr(_wsc.connect, "_odyssey_no_keepalive", False):
+            _orig_connect = _wsc.connect
+
+            def _connect_no_keepalive(*a: Any, **k: Any) -> Any:
+                k.setdefault("ping_interval", None)
+                return _orig_connect(*a, **k)
+
+            _connect_no_keepalive._odyssey_no_keepalive = True  # type: ignore[attr-defined]
+            _wsc.connect = _connect_no_keepalive  # type: ignore[assignment]
+    except ImportError:
+        pass
+
     kwargs: dict[str, Any] = {"host": host, "port": int(port)}
     if api_key:
         kwargs["api_key"] = api_key
