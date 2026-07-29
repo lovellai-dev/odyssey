@@ -96,17 +96,22 @@ def _make_libero_env(
     # monkeypatch (restored in finally) rather than a global torch.load override.
     import torch
 
-    _orig_torch_load = torch.load
+    # Route the reassignment through an Any-typed alias so mypy neither rejects
+    # the method assignment (torch present, with stubs) nor flags an unused
+    # suppression when torch is absent in CI (torch.load is then Any). Same
+    # behaviour either way; just keeps strict mypy green across both environments.
+    _torch: Any = torch
+    _orig_torch_load = _torch.load
 
     def _torch_load_weights_only_false(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("weights_only", False)
         return _orig_torch_load(*args, **kwargs)
 
-    torch.load = _torch_load_weights_only_false  # type: ignore[assignment]
+    _torch.load = _torch_load_weights_only_false
     try:
         init_states = suite.get_task_init_states(task_id)
     finally:
-        torch.load = _orig_torch_load  # type: ignore[assignment]
+        _torch.load = _orig_torch_load
 
     bddl_file = os.path.join(
         get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
