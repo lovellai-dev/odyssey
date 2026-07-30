@@ -6,8 +6,13 @@ This is the multi-agent eval orchestrator. Before each episode:
      phase transition strategy determining when to advance.
 
 Phase transition strategies:
-  * ``fixed_steps`` (default) — advance after N steps per phase.
-  * ``timeout`` — advance after T seconds per phase.
+  * ``fixed_steps`` (default) — advance after N steps per phase (open-loop).
+  * ``timeout`` — advance after T seconds per phase (open-loop).
+  * ``completion`` — advance when a ``ChunkCompletionGate`` judges the current
+    sub-instruction done (closed-loop *hand-back*). This is the chunk-aware
+    completion-gated regime: the gate polls a completion detector once per
+    action chunk (shared with the GR00T / π0.5 chunk pilots), and the phase
+    advances the moment control is handed back, instead of on a fixed budget.
 
 The runtime is simulator-agnostic: callers (e.g. RobosuiteRunner)
 drive the step loop and call ``get_action()`` each tick. The runtime
@@ -26,6 +31,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from odyssey.runners.agents.completion_gate import ChunkCompletionGate
 from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime
 
 logger = logging.getLogger(__name__)
@@ -34,6 +40,7 @@ logger = logging.getLogger(__name__)
 class PhaseStrategy(str, Enum):
     FIXED_STEPS = "fixed_steps"
     TIMEOUT = "timeout"
+    COMPLETION = "completion"
 
 
 @dataclass
@@ -84,6 +91,13 @@ class PlannedEvalRuntime:
         Controls when to advance between sub-instructions.
     fallback_instruction:
         Used if the planner is None or returns no plan.
+    completion_gate:
+        Required only for ``PhaseStrategy.COMPLETION`` — the chunk-aware
+        ``ChunkCompletionGate`` that decides, once per action chunk, when the
+        current sub-instruction is done and the phase should advance (closed-loop
+        hand-back). Ignored by the ``fixed_steps`` / ``timeout`` strategies. If
+        the strategy is ``completion`` but no gate is supplied, the runtime never
+        advances on completion (falls back to running each phase open-ended).
     """
 
     def __init__(
@@ -93,12 +107,22 @@ class PlannedEvalRuntime:
         *,
         phase_config: PhaseConfig | None = None,
         fallback_instruction: str = "complete the task",
+        completion_gate: ChunkCompletionGate | None = None,
     ) -> None:
         self._pilot = pilot
         self._planner = planner
         self._phase_config = phase_config or PhaseConfig()
         self._fallback = fallback_instruction
+        self._gate = completion_gate
         self._state = _PhaseState()
+        if (
+            self._phase_config.strategy == PhaseStrategy.COMPLETION
+            and self._gate is None
+        ):
+            logger.warning(
+                "PlannedEvalRuntime: COMPLETION strategy without a completion_gate "
+                "— phases will not advance on completion (open-ended per phase)."
+            )
 
     @property
     def current_phase_index(self) -> int:
@@ -133,6 +157,8 @@ class PlannedEvalRuntime:
             sub_instructions=steps,
             phase_start_time=time.monotonic(),
         )
+        if self._gate is not None:
+            self._gate.reset()  # fresh chunk window for the new episode
         logger.info(
             "PlannedEvalRuntime: episode plan with %d phases: %s",
             len(steps),
@@ -152,10 +178,10 @@ class PlannedEvalRuntime:
 
         action = self._pilot.act(image, instruction)
         self._state.steps_in_phase += 1
-        self._maybe_advance_phase()
+        self._maybe_advance_phase(image, instruction)
         return action
 
-    def _maybe_advance_phase(self) -> None:
+    def _maybe_advance_phase(self, image: Any = None, instruction: str = "") -> None:
         if self._state.is_complete:
             return
 
@@ -169,10 +195,20 @@ class PlannedEvalRuntime:
             elapsed = time.monotonic() - self._state.phase_start_time
             if elapsed >= cfg.timeout_seconds:
                 advance = True
+        # Closed-loop hand-back: the gate polls the completion detector once
+        # per action chunk and returns True when the sub-instruction is done.
+        elif (
+            cfg.strategy == PhaseStrategy.COMPLETION
+            and self._gate is not None
+            and self._gate.update(image, instruction)
+        ):
+            advance = True
 
         if advance:
             old_idx = self._state.current_index
             self._state.advance()
+            if self._gate is not None:
+                self._gate.reset()  # new sub-instruction -> fresh chunk window
             if not self._state.is_complete:
                 logger.debug(
                     "Phase %d → %d: %s",
