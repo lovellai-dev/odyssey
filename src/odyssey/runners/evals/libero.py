@@ -38,6 +38,8 @@ from typing import Any
 
 from odyssey.runners.base import Runner, TaskContext
 from odyssey.runners.evals._common import build_eval_summary, resolve_eval_checkpoint
+from odyssey.runners.evals.isaac_lab import EvalProtocolCollector, summarize
+from odyssey.runners.subprocess import TrainingProcessSpec, run_training_subprocess
 from odyssey.runners.video import save_rollout_video, to_uint8_frame
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
@@ -87,7 +89,29 @@ def _make_libero_env(
             f"(has {n_tasks} tasks 0..{n_tasks - 1})."
         )
     task = suite.get_task(task_id)
-    init_states = suite.get_task_init_states(task_id)
+    # LIBERO's get_task_init_states() reads pickled numpy init states via
+    # torch.load(). PyTorch >= 2.6 flipped weights_only to True by default, which
+    # rejects numpy globals and raises UnpicklingError. These are trusted files
+    # shipped with the benchmark, so load them with weights_only=False. Contained
+    # monkeypatch (restored in finally) rather than a global torch.load override.
+    import torch
+
+    # Route the reassignment through an Any-typed alias so mypy neither rejects
+    # the method assignment (torch present, with stubs) nor flags an unused
+    # suppression when torch is absent in CI (torch.load is then Any). Same
+    # behaviour either way; just keeps strict mypy green across both environments.
+    _torch: Any = torch
+    _orig_torch_load = _torch.load
+
+    def _torch_load_weights_only_false(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("weights_only", False)
+        return _orig_torch_load(*args, **kwargs)
+
+    _torch.load = _torch_load_weights_only_false
+    try:
+        init_states = suite.get_task_init_states(task_id)
+    finally:
+        _torch.load = _orig_torch_load
 
     bddl_file = os.path.join(
         get_libero_path("bddl_files"), task.problem_folder, task.bddl_file
@@ -200,6 +224,21 @@ class LiberoRunner(Runner):
             )
 
         cfg = spec.config or {}
+
+        # Pilot backend. Default: the in-process OpenVLA policy / multi-agent
+        # runtime below. ``pilot: gr00t`` and ``pilot: pi05`` both swap to a
+        # chunk-emitting pilot driven out-of-process via a policy server — each
+        # its own subprocess recipe (same pattern as IsaacLabRunner), because
+        # that inference is server-based, not in-process. Action chunking + a
+        # smaller footprint is why they exist. Both reuse the GR00T-LIBERO
+        # bridge (EvalProtocolCollector + summarize + the subprocess helper);
+        # only the eval script + argv builder differ.
+        pilot = str(cfg.get("pilot", "openvla")).lower()
+        if pilot == "gr00t":
+            return await self._run_gr00t_pilot(context, spec)
+        if pilot == "pi05":
+            return await self._run_pi05_pilot(context, spec)
+
         suite_name = spec.benchmark_name
         task_id = int(cfg.get("task_id", 0))
         image_key = cfg.get("image_key", "agentview_image")
@@ -367,6 +406,168 @@ class LiberoRunner(Runner):
         summary["metrics"]["instruction"] = instruction
         summary["artifacts"] = {"videos": video_paths}
         return summary
+
+    async def _run_gr00t_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a GR00T pilot on LIBERO via the subprocess + policy-server recipe.
+
+        Mirrors ``IsaacLabRunner.run``: launch the eval script, collect the
+        ``ODYSSEY_*`` protocol, summarize. The GR00T model runs in a separate
+        policy server (booted by the script in ``--serve_checkpoint`` mode); this
+        process only orchestrates and scores.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "gr00t_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=gr00t",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_gr00t_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(gr00t) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"gr00t_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
+    async def _run_pi05_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a π0.5 (openpi) pilot on LIBERO via the subprocess recipe.
+
+        Mirrors ``_run_gr00t_pilot`` — the two share the whole GR00T-LIBERO
+        bridge (``EvalProtocolCollector`` + ``summarize`` + the subprocess
+        helper); only the eval script (``pi05_libero_eval.py``, which serves /
+        drives the openpi WebsocketPolicyServer and replays chunks through the
+        pilot-agnostic ``ChunkPilotAdapter``) and the argv builder differ.
+        π0.5 inference is server-based, so this process only orchestrates and
+        scores.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "pi05_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=pi05",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_pi05_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(pi05) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"pi05_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
+
+# Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
+# to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
+# the resolved --video_dir, not the raw capture_video/*_fps/*_format keys.
+_GR00T_HANDLED_CONFIG_KEYS = {
+    "pilot", "checkpoint", "runner", "capture_video", "video_fps", "video_format",
+}
+
+
+def build_gr00t_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``gr00t_libero_eval.py`` argv: contract flags + config passthrough.
+
+    The eval script uses argparse snake_case flags, so ``task.config`` keys pass
+    through verbatim (``n_action_steps`` → ``--n_action_steps``), like the Isaac
+    Lab contract.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _GR00T_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
+
+
+# π0.5 shares the GR00T handled-keys contract: video is wired via the resolved
+# --video_dir, and pilot/checkpoint/runner are consumed by the runner itself.
+_PI05_HANDLED_CONFIG_KEYS = _GR00T_HANDLED_CONFIG_KEYS
+
+
+def build_pi05_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``pi05_libero_eval.py`` argv: contract flags + config passthrough.
+
+    Same contract as ``build_gr00t_libero_argv`` (the shared GR00T-LIBERO
+    bridge): the eval script uses argparse snake_case flags, so ``task.config``
+    keys pass through verbatim (``n_action_steps`` → ``--n_action_steps``,
+    ``host``/``port`` → the openpi server address), minus the keys the runner
+    consumes itself.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _PI05_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
 
 
 # ---------------------------------------------------------------------------

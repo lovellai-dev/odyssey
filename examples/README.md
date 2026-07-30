@@ -6,9 +6,10 @@
 | `quickstart-gr00t/` | GR00T N1.7 3B fine-tune on the Isaac-GR00T demo set + Isaac Lab eval. | 24 GB+ GPU for training; eval mock-only until the Isaac Lab runner lands |
 | `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
 | `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
+| `quickstart-pi05/` | **Eval-only**: score a Physical Intelligence **π0.5** checkpoint on the LIBERO object suite (Franka), driven out-of-process via a pre-started openpi policy server. Chunk-emitting pilot (issue #74). **Wiring done; GPU smoke pending** — [see its README →](quickstart-pi05/README.md). | 24 GB GPU (+ an openpi/JAX server) |
 
-More quickstarts (Octo, Pi0.5) arrive in later releases. See the
-publication plan for the cadence.
+More quickstarts (Octo) arrive in later releases. See the publication plan for
+the cadence.
 
 ## LIBERO eval (`franka-libero/`)
 
@@ -31,6 +32,7 @@ Once `lovell-odyssey` is installed:
 ```bash
 odyssey validate examples/quickstart-openvla/mission.yaml
 odyssey validate examples/quickstart-gr00t/mission.yaml
+odyssey validate examples/quickstart-pi05/mission.yaml
 odyssey validate examples/multiagent-openvla-gemma/mission.yaml
 ```
 
