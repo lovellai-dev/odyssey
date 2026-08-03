@@ -109,7 +109,7 @@ and that `agents` contains exactly one agent.
 
 | Form | Example | What it does today |
 |---|---|---|
-| `embodiment:` | `franka_panda`, `ur5e`, `sawyer` | Names a built-in catalog embodiment. 8 names accepted: `franka_panda`, `panda`, `sawyer`, `iiwa`, `jaco`, `kinova_gen3`, `ur5e`, `baxter` — the arms Robosuite's built-in robot models cover. Resolved at mission-creation by `LocalRobotProvider`; passed through to `robosuite.make(robots=...)` at evaluation. |
+| `embodiment:` | `franka_panda`, `ur5e`, `ur10e` | Names a built-in catalog embodiment. 9 names accepted: `franka_panda`, `panda`, `sawyer`, `iiwa`, `jaco`, `kinova_gen3`, `ur5e`, `baxter` — the arms Robosuite's built-in robot models cover, passed through to `robosuite.make(robots=...)` at evaluation — plus `ur10e`, driven by the **GR00T runner** (`NEW_EMBODIMENT` finetune), which Robosuite doesn't ship: it resolves and validates, but a Robosuite eval task against it raises rather than passing through. All resolved at mission-creation by `LocalRobotProvider`. |
 | `urdf:` | `./arms/my_arm.urdf` | Names a local URDF/xacro path. Existence-checked at mission-creation. No robot pass-through to Robosuite — falls back to the env's default robot. |
 | `id:` | `rob_01HQR...` | Reserved for a robot registered in your Lovell account. When the Lovell provider ships, this will fetch the loadout from the account rather than requiring an inline `agents:` block. Requires `odyssey login`, not yet shipped. |
 

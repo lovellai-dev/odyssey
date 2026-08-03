@@ -28,14 +28,19 @@ from odyssey.providers.base import ResolvedRobot, RobotProvider
 from odyssey.spec.mission import RobotSpec
 
 # Scoped to embodiments at least one shipped runner can actually drive
-# end-to-end. Today that means the arms Robosuite's built-in robot
-# models cover (``ROBOSUITE_ROBOT_NAMES`` in runners/evals/robosuite.py is the
-# matching translation table). Quadrupeds (unitree_go2/h1), mobile bases
-# (tiago, stretch3), and arms Robosuite doesn't ship (ur10e) were
-# removed in this trim — they accepted with a green spec, then produced
-# identical default-Panda eval runs that misled users about what was
-# being simulated. Re-add a name here only when a runner exists that
-# honors it; for unsupported robots, ``urdf:`` still works.
+# end-to-end. Two runners qualify a name today:
+#   * Robosuite — the arms its built-in robot models cover
+#     (``ROBOSUITE_ROBOT_NAMES`` in runners/evals/robosuite.py is the matching
+#     translation table).
+#   * the GR00T runner — arms it can finetune as a NEW_EMBODIMENT (e.g.
+#     ``ur10e``), which Robosuite doesn't ship and so stays outside
+#     ``ROBOSUITE_ROBOT_NAMES``.
+# The catalog is therefore a superset of the Robosuite-drivable names, not a
+# mirror of them. Quadrupeds (unitree_go2/h1) and mobile bases (tiago,
+# stretch3) remain excluded — with no runner that honors them they accepted
+# with a green spec, then produced identical default-Panda eval runs that
+# misled users about what was being simulated. Re-add a name here only when a
+# runner exists that drives it; for unsupported robots, ``urdf:`` still works.
 KNOWN_EMBODIMENTS: frozenset[str] = frozenset(
     {
         "franka_panda",   # alias of "panda" — common in OpenVLA / LeRobot specs

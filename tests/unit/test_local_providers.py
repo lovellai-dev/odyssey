@@ -53,6 +53,21 @@ async def test_robot_resolves_ur10e_embodiment() -> None:
     assert resolved.name == "ur10e"
 
 
+async def test_ur10e_resolves_then_robosuite_refuses_it() -> None:
+    # Pins the behaviour change this PR introduces: on develop, `ur10e` was
+    # rejected at spec/catalog validation; now it resolves cleanly and only a
+    # Robosuite eval task refuses it — loudly (ValueError), never a silent
+    # default-Panda substitution. ur10e is the first real catalog name that can
+    # reach `_resolve_robosuite_robot`, so no `model_construct` is needed here.
+    from odyssey.runners.evals.robosuite import _resolve_robosuite_robot
+
+    spec = RobotSpec(embodiment="ur10e", agents=_agents())
+    resolved = await LocalRobotProvider().resolve(spec)
+    assert resolved.embodiment == "ur10e"
+    with pytest.raises(ValueError, match="Robosuite has no built-in robot"):
+        _resolve_robosuite_robot(spec)
+
+
 async def test_robot_rejects_unknown_embodiment() -> None:
     provider = LocalRobotProvider()
     # model_construct bypasses spec validation — needed because we're
