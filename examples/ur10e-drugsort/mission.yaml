@@ -1,0 +1,110 @@
+# UR10e drug-sort — GR00T pilot fine-tune (v0 dataset, 2026-07-28).
+#
+# Fine-tunes nvidia/GR00T-N1.7-3B on the browser-captured UR10e AseptiPack
+# pick-and-place demos (ur10e_partial_cond_aug, GR00T LeRobot v2.1, 10-D
+# observer-conditioned state) via the odyssey `gr00t` runner ->
+# gr00t.experiment.launch_finetune.
+#
+# NOTE ON DATA: this v0 set is 24 real trajectories + 36 photometric twins.
+# NVIDIA's own GR00T tutorial uses ~50 episodes as a working floor, so treat this
+# run as a PIPELINE-VALIDATION experiment (prove train->checkpoint end to end),
+# not a success-rate claim. See FINDINGS_AND_NEXT_STEPS.md in the PoC notes.
+#
+# ── HOW TO RUN (on the SSH box) ────────────────────────────────────────────────
+#   export ISAAC_GR00T_REPO_PATH="$HOME/Isaac-GR00T"            # your checkout
+#   # 1) put the modality config where launch_finetune can import it:
+#   mkdir -p "$ISAAC_GR00T_REPO_PATH/examples/UR10e_DrugSort"
+#   cp examples/ur10e-drugsort/ur10e_config.py \
+#      "$ISAAC_GR00T_REPO_PATH/examples/UR10e_DrugSort/ur10e_config.py"
+#   # 2) point dataset.ref (below) at the unpacked dataset on this box.
+#   # 3) SMOKE FIRST (plumbing only, no GPU): odyssey run … --use-mock-runner
+#   #    then a short real smoke: set max_steps: 500 / save_steps: 500 and run.
+#   env -u PYTHONPATH HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+#       odyssey run examples/ur10e-drugsort/mission.yaml
+#
+# Validate without a GPU:
+#   odyssey validate examples/ur10e-drugsort/mission.yaml
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: ur10e-drugsort-finetune-v0
+  description: Fine-tune GR00T N1.7 on the UR10e AseptiPack drug-sorting v0 dataset (10-D observer-conditioned).
+  tags: [gr00t, nvidia, ur10e, robotiq, aseptipack, drug-sorting, playground, v0]
+
+objective: |
+  Fine-tune GR00T N1.7 3B on the browser-captured UR10e / Robotiq 2F-85
+  pick-and-place demonstrations (ur10e_partial_cond_aug, 60 eps = 24 real + 36
+  photometric twins, 53,487 frames, 10-D state with the grasp_target channel) so
+  the resulting policy can pick a vial and seat it in the rack, deployable into
+  the Lovell AI Robot Playground Pilot slot.
+
+acceptance_criteria: |
+  The fine-tune produces a GR00T checkpoint that serves and drives the cell; the
+  honest task metric is the standalone closed-loop grasp+place success scored
+  against physics ground truth (meta/gt), run outside this mission.
+
+robot:
+  # ur10e is registered in the local catalog (providers/local/robots.py) for the
+  # GR00T/Isaac finetune path. GR00T trains under the NEW_EMBODIMENT tag, so the
+  # arm geometry is carried by the dataset + modality config, not this name.
+  embodiment: ur10e
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: finetune-gr00t-ur10e-v0
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # ABSOLUTE path to the unpacked dataset ON THIS SSH BOX. Edit to match.
+      ref: /data/ur10e_drugsort_v0/ur10e_partial_cond_aug
+      format: lerobot
+    config:
+      runner: gr00t
+      embodiment_tag: new_embodiment
+      # Relative path is resolved against $ISAAC_GR00T_REPO_PATH by the gr00t
+      # runner — copy ur10e_config.py there first (see HOW TO RUN above).
+      modality_config_path: examples/UR10e_DrugSort/ur10e_config.py
+      # Champion recipe (ATTEMPTS_LOG.md): LR 1e-4, gbs 16, workers 8, ABSOLUTE
+      # action rep (set in the modality config), 16-step horizon.
+      # SMOKE: set max_steps: 500 / save_steps: 500 for a fast end-to-end check.
+      learning_rate: 0.0001
+      global_batch_size: 16
+      max_steps: 8000
+      save_steps: 2000
+      dataloader_num_workers: 8
+
+  # Spec requires exactly one evaluation task. This is a serve-check only (it
+  # auto-serves the freshly trained checkpoint into an Isaac Lab env); it needs
+  # Isaac Lab on this box. Training completes and the checkpoint is saved BEFORE
+  # this runs, so a missing Isaac Lab does not lose the fine-tune. The honest
+  # eval is the standalone closed-loop GT eval (see RUN_AND_EVAL.md).
+  - name: serve-check-gr00t-ur10e
+    kind: evaluation
+    evaluation_type: isaac_lab
+    benchmark_name: Isaac-Stack-Cube-Franka-IK-Rel-Visuomotor-Cosmos-v0
+    num_episodes: 1
+    config:
+      eval_script: src/odyssey/runners/evals/gr00t_isaac_eval.py
+      serve_checkpoint: true
+      embodiment_tag: new_embodiment
+      server_python: ${ISAAC_GR00T_REPO_PATH}/.venv/bin/python
+      server_device: cuda:0
+      host: 127.0.0.1
+      port: 5555
+      instruction: "pick up the vial and place it in the rack"
+      pos_scale: 0.05
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false

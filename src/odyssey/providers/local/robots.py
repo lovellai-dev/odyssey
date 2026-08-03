@@ -45,6 +45,10 @@ KNOWN_EMBODIMENTS: frozenset[str] = frozenset(
         "jaco",
         "kinova_gen3",
         "ur5e",
+        "ur10e",          # GR00T/Isaac finetune (NEW_EMBODIMENT) — NOT Robosuite.
+                          # Re-added for the ur10e-drugsort GR00T pilot: this path
+                          # uses the `gr00t` runner + isaac_lab eval, never the
+                          # default-Panda Robosuite eval the trim note warns about.
         "baxter",
     }
 )

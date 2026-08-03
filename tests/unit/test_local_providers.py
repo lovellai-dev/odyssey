@@ -79,7 +79,12 @@ def test_known_embodiments_covers_robosuite_robots() -> None:
     # runners.evals.robosuite.ROBOSUITE_ROBOT_NAMES.
     from odyssey.runners.evals.robosuite import ROBOSUITE_ROBOT_NAMES
 
-    assert set(ROBOSUITE_ROBOT_NAMES.keys()) == KNOWN_EMBODIMENTS
+    # Every Robosuite-drivable robot must be in the catalog...
+    assert set(ROBOSUITE_ROBOT_NAMES.keys()) <= KNOWN_EMBODIMENTS
+    # ...and the only names beyond Robosuite are GR00T NEW_EMBODIMENT arms
+    # (driven by the `gr00t` runner + isaac_lab eval, never Robosuite) — today
+    # just ur10e for the ur10e-drugsort pilot.
+    assert KNOWN_EMBODIMENTS - set(ROBOSUITE_ROBOT_NAMES.keys()) == {"ur10e"}
     # franka_panda is the alias most OpenVLA / LeRobot specs use.
     assert "franka_panda" in KNOWN_EMBODIMENTS
     # Quadrupeds and mobile bases were intentionally trimmed — no
