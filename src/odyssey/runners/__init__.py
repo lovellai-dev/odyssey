@@ -27,6 +27,11 @@ from odyssey.runners.evals.isaac_lab import IsaacLabRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
 from odyssey.runners.models.gr00t import GR00TRunner, build_gr00t_argv, parse_gr00t_line
 from odyssey.runners.models.openvla import OpenVLARunner, build_openvla_argv, parse_openvla_line
+from odyssey.runners.models.pi05_train import (
+    Pi05Runner,
+    build_pi05_train_argv,
+    parse_pi05_train_line,
+)
 from odyssey.runners.registry import RunnerRegistry
 from odyssey.runners.subprocess import (
     LineParser,
@@ -41,6 +46,7 @@ __all__ = [
     "IsaacLabRunner",
     "LineParser",
     "OpenVLARunner",
+    "Pi05Runner",
     "RobosuiteRunner",
     "Runner",
     "RunnerRegistry",
@@ -48,7 +54,9 @@ __all__ = [
     "TrainingProcessSpec",
     "build_gr00t_argv",
     "build_openvla_argv",
+    "build_pi05_train_argv",
     "parse_gr00t_line",
     "parse_openvla_line",
+    "parse_pi05_train_line",
     "run_training_subprocess",
 ]

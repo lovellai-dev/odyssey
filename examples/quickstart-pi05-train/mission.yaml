@@ -1,0 +1,117 @@
+# π0.5 fine-tune quickstart (training-only).
+#
+# Fine-tunes a Physical Intelligence π0.5 (openpi) checkpoint on a LeRobot-format
+# demonstration set, via the odyssey `pi05` training runner -> openpi's
+# scripts/compute_norm_stats.py then scripts/train.py (two subprocesses).
+#
+# This base example is wired for the UR10e / Robotiq-2F85 drug-sort v0 dataset
+# (LeRobot v2.1, 60 eps, 7-DoF single-arm joint + gripper, exterior + wrist cams
+# @ 256x256) — the same demos the GR00T pilot finetunes on. Swap the dataset +
+# config_name for your own set.
+#
+# HOW openpi TRAINING WORKS (different from GR00T/OpenVLA):
+#   openpi is CONFIG-NAME-DRIVEN. Training selects a registered `TrainConfig`
+#   (here `pi05_ur10e_drugsort`) that bundles the data pipeline + weight loader +
+#   optimizer. You must ADD that config entry to openpi's
+#   src/openpi/training/config.py (the π0.5 analogue of GR00T's modality config
+#   file), with data.repo_id pointing at this dataset's folder name. Everything
+#   under `config:` below (except control keys) is forwarded as a tyro override.
+#   See examples/quickstart-pi05-train/README.md for the full recipe.
+#
+# Validate without a GPU:
+#   odyssey validate mission.yaml
+#   odyssey run mission.yaml --use-mock-runner
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: pi05-ur10e-drugsort-finetune
+  description: >-
+    Fine-tune π0.5 (openpi) on the UR10e drug-sort v0 LeRobot demos (7-DoF,
+    exterior + wrist cameras), producing a checkpoint deployable as the Pilot.
+  tags: [pi05, openpi, physical-intelligence, ur10e, robotiq, lerobot, training]
+
+objective: |
+  Fine-tune a π0.5 generalist on the browser-captured UR10e / Robotiq-2F85
+  pick-and-place demonstrations (ur10e_partial_cond_aug) so the resulting policy
+  can pick a vial and seat it in the rack.
+
+acceptance_criteria: |
+  The fine-tune produces a π0.5 checkpoint under the task output_dir
+  (checkpoints/<config_name>/<exp_name>/<step>) that loads and serves in an
+  openpi WebsocketPolicyServer. The honest task metric is the standalone
+  closed-loop grasp+place success against physics ground truth, not this run.
+
+robot:
+  # "ur10e" is not in the odyssey robot catalog; "ur5e" is and is used only for
+  # local catalog validation. The arm geometry is carried by the dataset, not
+  # this name (same convention as the GR00T ur10e mission).
+  embodiment: ur5e
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        # HF mirror of the openpi π0.5 base weights (Apache 2.0). Pilot-identity
+        # documentation only — openpi's weight_loader (inside the TrainConfig)
+        # is what actually pulls the base params for fine-tuning.
+        base: lerobot/pi05_base
+
+tasks:
+  - name: finetune-pi05-ur10e
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # ABSOLUTE path to the unpacked dataset ON THE TRAINING BOX (GPU VM). The
+      # pi05 runner sets HF_LEROBOT_HOME to this dir's PARENT so openpi's LeRobot
+      # loader resolves `data.repo_id` (below) == the folder name.
+      ref: /data/ur10e_drugsort_v0/ur10e_partial_cond_aug
+      format: lerobot
+    config:
+      # Routes this wildcard training task to the π0.5 runner (OpenVLA is the
+      # default; GR00T / π0.5 opt in by name).
+      runner: pi05
+      # REQUIRED: the registered openpi TrainConfig. Add this entry to openpi's
+      # src/openpi/training/config.py before running (see README).
+      config_name: pi05_ur10e_drugsort
+      # openpi computes dataset norm stats first (set false to skip if already
+      # cached under ./assets). Default is true.
+      compute_norm_stats: true
+
+      # --- tyro overrides forwarded to scripts/train.py -------------------------
+      # Nested dataclass fields use dots; underscores in a leaf become dashes
+      # (data.repo_id -> --data.repo-id). This links the config to THIS dataset's
+      # folder name (must match the HF_LEROBOT_HOME resolution above).
+      data:
+        repo_id: ur10e_partial_cond_aug
+      # Small-data fine-tune knobs — tune per your GPU / dataset size.
+      num_train_steps: 30000
+      batch_size: 32
+      # exp_name: defaults to the task name ("finetune-pi05-ur10e"); --overwrite
+      # is emitted by default so re-running clobbers the prior exp dir. Set
+      # `resume: true` to continue from the latest checkpoint instead.
+
+  # A Mission must declare exactly one evaluation task. For a UR10e-fine-tuned
+  # π0.5, LIBERO (Franka sim) is NOT an honest metric — different embodiment,
+  # action space and task. The honest metric is the STANDALONE closed-loop
+  # grasp+place success scored against physics ground truth (meta/gt), run here
+  # via `evaluation_type: custom` (the sim-agnostic CustomEvalRunner — issue #87
+  # / PR #88; falls back to the CPU mock until that runner ships on develop).
+  - name: eval-drugsort-closed-loop
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: ur10e-drugsort-gt
+    num_episodes: 20
+    config:
+      # The eval script owns serving the fine-tuned checkpoint and scoring
+      # grasp+place against meta/gt. See the PILOT RUN_AND_EVAL.md recipe.
+      eval_script: scripts/eval_ur5e_drugsort_pi05.py
+
+leaderboard:
+  publish: false   # Backend not live yet.
+
+graph:
+  contribute: false   # Backend not live yet.

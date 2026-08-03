@@ -33,6 +33,7 @@ from odyssey.runners import (
     CPUMockRunner,
     GR00TRunner,
     OpenVLARunner,
+    Pi05Runner,
     RunnerRegistry,
 )
 from odyssey.runners.evals.isaac_lab import IsaacLabRunner
@@ -48,12 +49,14 @@ def _build_runners() -> RunnerRegistry:
     registry = RunnerRegistry()
     # Real runners first; CPU mock as a last-resort fallback so unfamiliar
     # task types still produce *something* instead of "no runner registered."
-    # OpenVLA and GR00T are both wildcard training runners — registration
-    # order makes OpenVLA the default; GR00T is selected per-task via
-    # ``config: {runner: gr00t}``. --use-mock-runner forces the mock
-    # through the engine's force_runner, not by thinning this registry.
+    # OpenVLA, GR00T and π0.5 are all wildcard training runners — registration
+    # order makes OpenVLA the default; GR00T / π0.5 are selected per-task via
+    # ``config: {runner: gr00t}`` / ``config: {runner: pi05}``. --use-mock-runner
+    # forces the mock through the engine's force_runner, not by thinning this
+    # registry.
     registry.register(OpenVLARunner())
     registry.register(GR00TRunner())
+    registry.register(Pi05Runner())
     registry.register(RobosuiteRunner())
     registry.register(IsaacLabRunner())
     registry.register(LiberoRunner())
