@@ -391,8 +391,10 @@ def main() -> int:
           f"yaw={args.yaw_jitter:.3f}rad (episode 0 nominal)")
     # Nominal snapshot of the render-only fields for visual domain randomisation.
     visual_snap = _snapshot_visual(mj, model) if args.visual_dr > 0 else None
-    print(f"[gen] visual DR: {'OFF' if visual_snap is None else f'strength={args.visual_dr:.2f} '
-          '(camera/lighting/material jitter per episode; ep0 nominal)'}")
+    _dr_msg = ("OFF" if visual_snap is None
+               else f"strength={args.visual_dr:.2f} "
+                    "(camera/lighting/material jitter per episode; ep0 nominal)")
+    print(f"[gen] visual DR: {_dr_msg}")
     rng = np.random.default_rng(args.seed)
 
     writer = LeRobotDatasetWriter(
