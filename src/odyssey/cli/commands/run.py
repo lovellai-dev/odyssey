@@ -35,6 +35,7 @@ from odyssey.runners import (
     OpenVLARunner,
     RunnerRegistry,
 )
+from odyssey.runners.evals.custom import CustomEvalRunner
 from odyssey.runners.evals.isaac_lab import IsaacLabRunner
 from odyssey.runners.evals.libero import LiberoRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
@@ -57,6 +58,9 @@ def _build_runners() -> RunnerRegistry:
     registry.register(RobosuiteRunner())
     registry.register(IsaacLabRunner())
     registry.register(LiberoRunner())
+    # Exact (EVALUATION, "custom") match — beats the wildcard CPU mock so a real
+    # custom eval no longer falls through to a fake one.
+    registry.register(CustomEvalRunner())
     registry.register(CPUMockRunner())
     return registry
 
