@@ -45,6 +45,8 @@ KNOWN_EMBODIMENTS: frozenset[str] = frozenset(
         "jaco",
         "kinova_gen3",
         "ur5e",
+        "ur10e",          # driven by the GR00T runner (NEW_EMBODIMENT finetune),
+                          # not Robosuite — hence outside ROBOSUITE_ROBOT_NAMES.
         "baxter",
     }
 )
