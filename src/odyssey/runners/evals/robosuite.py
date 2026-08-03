@@ -72,14 +72,16 @@ hosted Lovell embodiment whose name isn't in
 """
 
 
-# Odyssey embodiment → Robosuite robot model. The map deliberately
-# mirrors the trimmed LocalRobotProvider.KNOWN_EMBODIMENTS so the same
-# names that pass spec validation also run end-to-end.
+# Odyssey embodiment → Robosuite robot model. This map is the
+# Robosuite-drivable *subset* of LocalRobotProvider.KNOWN_EMBODIMENTS: every
+# name here passes spec validation and runs end-to-end under Robosuite, but
+# the catalog is a superset — GR00T-only targets like ``ur10e`` validate yet
+# have no entry here (they run under the GR00T runner, not Robosuite).
 #
 # Anything missing here either has no Robosuite equivalent (Unitree
-# quadrupeds, Tiago, Stretch3) or hasn't been wired yet. For those,
-# operators can use ``urdf:`` and we'll fall through to Robosuite's
-# default robot for the benchmark.
+# quadrupeds, Tiago, Stretch3; GR00T-only arms like ur10e) or hasn't been
+# wired yet. For those, operators can use ``urdf:`` and we'll fall through to
+# Robosuite's default robot for the benchmark.
 ROBOSUITE_ROBOT_NAMES: dict[str, str] = {
     "franka_panda": "Panda",
     "panda": "Panda",
