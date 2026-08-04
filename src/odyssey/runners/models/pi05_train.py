@@ -192,8 +192,10 @@ def build_pi05_train_argv(*, task: TrainingTask, exp_name: str) -> list[str]:
 def build_pi05_norm_stats_argv(*, task: TrainingTask) -> list[str]:
     """Build the openpi ``scripts/compute_norm_stats.py`` argv.
 
-    Only the positional ``config_name`` is required; the dataset it reads is fixed
-    by the config's ``data`` factory.
+    Unlike ``train.py`` (positional config name via ``overridable_config_cli``),
+    ``compute_norm_stats.py`` is a plain ``tyro.cli(main)`` whose ``config_name``
+    parameter is exposed as a REQUIRED ``--config-name`` flag. The dataset it reads
+    is fixed by the config's ``data`` factory.
     """
     config = task.config or {}
     config_name = config.get("config_name")
@@ -201,7 +203,7 @@ def build_pi05_norm_stats_argv(*, task: TrainingTask) -> list[str]:
         raise RuntimeError(
             "π0.5 runner: config['config_name'] is required for norm-stats."
         )
-    return [str(config_name)]
+    return ["--config-name", str(config_name)]
 
 
 def _lerobot_env_for_dataset(task: TrainingTask) -> dict[str, str]:

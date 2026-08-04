@@ -129,9 +129,11 @@ def test_train_argv_excludes_control_keys() -> None:
 # norm-stats argv builder
 # ---------------------------------------------------------------------------
 
-def test_norm_stats_argv_is_config_name_only() -> None:
+def test_norm_stats_argv_uses_config_name_flag() -> None:
+    # compute_norm_stats.py exposes config_name as a --config-name flag (tyro.cli),
+    # NOT positional like train.py.
     task = _task(config={"config_name": "pi05_libero", "num_train_steps": 10})
-    assert build_pi05_norm_stats_argv(task=task) == ["pi05_libero"]
+    assert build_pi05_norm_stats_argv(task=task) == ["--config-name", "pi05_libero"]
 
 
 def test_norm_stats_argv_requires_config_name() -> None:
