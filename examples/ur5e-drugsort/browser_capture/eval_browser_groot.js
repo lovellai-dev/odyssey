@@ -194,7 +194,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   // and a vial balanced on the rim passes `seated` comfortably. Measured over
   // the 40-episode GT set: seated 25/40, actually in the well 7/40.
   //
-  // Geometry read off aseptipack_1pocket.xml, not assumed:
+  // Geometry read off the single-pocket cell XML, not assumed:
   //   vial  <geom size="0.009 0.02" cylinder>  r 9 mm, half-height 20 mm
   //   well  walls +/-16 mm, 3 mm thick         inner span 26 mm, centred on pocket_0
   //         pos z 0.0055, half-height 0.0175   top at +23 mm (rack frame)
