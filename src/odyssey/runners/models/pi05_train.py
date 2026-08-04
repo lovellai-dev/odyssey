@@ -217,9 +217,10 @@ def _lerobot_env_for_dataset(task: TrainingTask) -> dict[str, str]:
     ref = task.dataset.ref
     if task.dataset.source == DatasetSource.LOCAL and os.path.isabs(ref):
         parent = os.path.dirname(os.path.normpath(ref))
-        # Set both the current and legacy var names — openpi/lerobot have used
-        # HF_LEROBOT_HOME and LEROBOT_HOME across versions.
-        return {"HF_LEROBOT_HOME": parent, "LEROBOT_HOME": parent}
+        # Only HF_LEROBOT_HOME — do NOT also set the legacy LEROBOT_HOME. Recent
+        # lerobot HARD-FAILS at import (raises ValueError) if the deprecated
+        # LEROBOT_HOME var is present, which killed compute_norm_stats.
+        return {"HF_LEROBOT_HOME": parent}
     return {}
 
 

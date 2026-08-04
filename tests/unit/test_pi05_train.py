@@ -151,7 +151,8 @@ def test_lerobot_env_points_at_parent_for_absolute_local() -> None:
     )
     env = _lerobot_env_for_dataset(task)
     assert env["HF_LEROBOT_HOME"] == "/data/ur10e_drugsort_v0"
-    assert env["LEROBOT_HOME"] == "/data/ur10e_drugsort_v0"
+    # The deprecated LEROBOT_HOME must NOT be set — recent lerobot hard-fails on it.
+    assert "LEROBOT_HOME" not in env
 
 
 def test_lerobot_env_empty_for_hf_dataset() -> None:
