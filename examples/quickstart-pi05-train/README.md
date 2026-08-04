@@ -70,10 +70,15 @@ odyssey run mission.yaml
 
 The runner executes, in order:
 
-1. `python scripts/compute_norm_stats.py pi05_ur10e_drugsort`
+1. `python scripts/compute_norm_stats.py --config-name pi05_ur10e_drugsort`
    (skip with `config: {compute_norm_stats: false}` if `./assets` already holds them)
 2. `python scripts/train.py pi05_ur10e_drugsort --exp-name finetune-pi05-ur10e --overwrite \
       --data.repo-id ur10e_partial_cond_aug --num-train-steps 30000 --batch-size 32`
+
+> The norm-stats step takes no `data.*` overrides — it reads the dataset fixed by
+> the config's `data` factory. So the mission's `data.repo_id` **must equal** the
+> registered config's default `repo_id`, or step 1 writes norm stats under one
+> `repo_id` and step 2 reads another and fails (loudly, after the full dataset scan).
 
 Both run with `cwd` = the task's `output_dir`, so openpi's cwd-relative `./assets`
 and `./checkpoints` land under the odyssey run dir. The trained checkpoint is
@@ -84,7 +89,7 @@ captured from `checkpoints/<config_name>/<exp_name>/<step>/` (highest step).
 | key                  | meaning                                                            |
 |----------------------|-------------------------------------------------------------------|
 | `runner: pi05`       | routes the wildcard training task to `Pi05Runner`                 |
-| `config_name`        | **required** — the registered openpi `TrainConfig` (positional)   |
+| `config_name`        | **required** — the registered openpi `TrainConfig` (positional to `train.py`, `--config-name` flag to `compute_norm_stats.py`) |
 | `exp_name`           | openpi `--exp-name`; defaults to the task name                     |
 | `overwrite`          | emit `--overwrite` (default `true`); clobbers the prior exp dir    |
 | `resume`             | emit `--resume` instead of `--overwrite`; continue latest ckpt    |

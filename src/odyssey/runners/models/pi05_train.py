@@ -14,8 +14,11 @@ name (e.g. ``pi05_libero``) that bundles the data pipeline, weight loader and
 optimizer, and CLI ``--overrides`` (parsed by *tyro*) tweak individual fields.
 So the mission's ``config:`` here carries:
 
-  * ``config_name`` — REQUIRED, the registered openpi ``TrainConfig`` (positional
-    arg to both scripts). Fine-tuning a *new* embodiment/dataset means adding a
+  * ``config_name`` — REQUIRED, the registered openpi ``TrainConfig``. It reaches
+    the two scripts differently (see the argv builders): ``train.py`` takes it
+    **positionally** (``overridable_config_cli`` makes it a subcommand), while
+    ``compute_norm_stats.py`` takes it as a ``--config-name`` flag (plain
+    ``tyro.cli``). Fine-tuning a *new* embodiment/dataset means adding a
     config entry to openpi's ``src/openpi/training/config.py`` (the π0.5 analogue
     of GR00T's ``modality_config_path`` file) whose ``data.repo_id`` points at the
     LeRobot dataset — see ``examples/quickstart-pi05-train/README.md``.
@@ -25,8 +28,8 @@ So the mission's ``config:`` here carries:
 
 Two subprocesses, in order (openpi requires norm stats before training):
 
-  1. ``scripts/compute_norm_stats.py <config_name>`` — computes dataset
-     normalization statistics into ``assets/`` (skippable via
+  1. ``scripts/compute_norm_stats.py --config-name <config_name>`` — computes
+     dataset normalization statistics into ``assets/`` (skippable via
      ``config: {compute_norm_stats: false}`` when they already exist).
   2. ``scripts/train.py <config_name> --exp-name <name> [--overwrite] [overrides]``.
 

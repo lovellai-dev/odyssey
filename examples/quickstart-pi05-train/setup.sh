@@ -140,7 +140,7 @@ cat <<EOF
        $OPENPI_DIR/.venv/bin/odyssey run      examples/quickstart-pi05-train/mission.yaml
 
      The runner then executes, in order:
-       python scripts/compute_norm_stats.py $CONFIG_NAME
+       python scripts/compute_norm_stats.py --config-name $CONFIG_NAME
        python scripts/train.py $CONFIG_NAME --exp-name <task> --overwrite [overrides]
      with cwd=<task output_dir>, so ./assets and ./checkpoints land under ~/.odyssey/runs.
 
