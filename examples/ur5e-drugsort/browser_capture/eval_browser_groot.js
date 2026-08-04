@@ -33,6 +33,10 @@ const MAX_TICKS = process.env.MAX_TICKS ? parseInt(process.env.MAX_TICKS) : 900;
 const CHROME = process.env.CHROME || '/usr/bin/google-chrome-stable';
 const PROFILE = path.join(OUT, 'chrome-udd-eval-' + Date.now());
 const GL_ARGS = ['--use-gl=angle', '--use-angle=gl-egl', '--ignore-gpu-blocklist', '--enable-webgl', '--enable-gpu-rasterization'];
+// Solver no-slip iterations the eval RAISES at reset. This is a runtime physics
+// override NOT recorded in the scene XML (issue #89); pass it into RUN_ATTEMPT and
+// record it in the summary so a reader knows which physics produced the numbers.
+const NOSLIP_ITERATIONS = 20;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -55,17 +59,36 @@ const SETUP = () => {
   const pinchSite = mj.mj_name2id(m, OBJ_SITE, 'gr_pinch');   // near-miss telemetry (as probe_browser_groot.js)
   const homeKey = mj.mj_name2id(m, OBJ_KEY, 'home');
   const ARM_BODIES = new Set(['base', 'shoulder_link', 'upper_arm_link', 'forearm_link', 'wrist_1_link', 'wrist_2_link', 'wrist_3_link']);
+  // PHYSICS OVERRIDE (issue #89): disable contacts on every arm+gripper geom except
+  // the pads. This is a RUNTIME mutation NOT recorded in the scene XML, so the eval
+  // cannot observe arm self-collision or arm-vs-environment contact (e.g. the UR10e
+  // shoulder_link capsule through the ground plane is silently absent). Capture the
+  // pre-override no-slip default and exactly which bodies/geoms were freed so the
+  // summary is honest about the physics that produced the numbers.
+  const noslip_iterations_default = m.opt.noslip_iterations;
+  const contactDisabledBodies = new Set();
+  let contactDisabledGeoms = 0;
   for (let g = 0; g < m.ngeom; g++) {
     const bn = mj.mj_id2name(m, OBJ_BODY, m.geom_bodyid[g]) || '';
     const gn = mj.mj_id2name(m, OBJ_GEOM, g) || '';
-    if ((ARM_BODIES.has(bn) || bn.startsWith('gr_')) && !gn.includes('pad')) { m.geom_contype[g] = 0; m.geom_conaffinity[g] = 0; }
+    if ((ARM_BODIES.has(bn) || bn.startsWith('gr_')) && !gn.includes('pad')) {
+      m.geom_contype[g] = 0; m.geom_conaffinity[g] = 0;
+      contactDisabledBodies.add(bn); contactDisabledGeoms++;
+    }
   }
   const G = window.MultiAgentGroot;
   const camExt = G.makeMjCamera(pm, mj, 'room');
   const camWrist = G.makeMjCamera(pm, mj, 'wrist');
   const cap = G.makeCapture(v.renderer);
   window.__ev = { armAct, gripAct, armQadr, gripQadr, vialBody, vialQ, vialDof, pocketSite, pinchSite, homeKey, camExt, camWrist, cap };
-  return { armAct, gripAct, vialBody, vialQ, pocketSite, pinchSite, homeKey };
+  return {
+    armAct, gripAct, vialBody, vialQ, pocketSite, pinchSite, homeKey,
+    physics_overrides: {
+      contact_disabled_bodies: Array.from(contactDisabledBodies).sort(),
+      contact_disabled_geoms: contactDisabledGeoms,
+      noslip_iterations_default,
+    },
+  };
 };
 
 // One in-browser GR00T attempt: randomized start -> closed-loop query/act -> score.
@@ -86,7 +109,10 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   mj.mj_resetDataKeyframe(m, pm.mjData, H.homeKey);
   { const qp = pm.mjData.qpos; for (let i = 0; i < 7; i++) qp[H.vialQ + i] = vialQpos[i]; }
   { const dv = pm.mjData.qvel; for (let i = 0; i < 6; i++) dv[H.vialDof + i] = 0; }
-  m.opt.noslip_iterations = 20;
+  // PHYSICS OVERRIDE (issue #89): raise the solver's no-slip iterations. Runtime
+  // mutation NOT in the scene XML; value comes from cfg.noslipIterations (recorded
+  // in the summary) so the numbers are traceable to the physics that produced them.
+  m.opt.noslip_iterations = (cfg && cfg.noslipIterations != null) ? cfg.noslipIterations : 20;
   mj.mj_forward(m, pm.mjData);
   for (let k = 0; k < SETTLE; k++) { setArm(homeQ); setGrip(0); mj.mj_step(m, pm.mjData); }
 
@@ -176,7 +202,19 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
     return mj.mj_name2id(pm.mjModel, 1, 'vial_0') >= 0 && !!window.MultiAgentGroot;
   }, { timeout: 120000 });
   await sleep(1200);
-  await page.evaluate(SETUP);
+  const setupInfo = await page.evaluate(SETUP);
+
+  // Runtime physics mutations this harness applies that are NOT in the scene XML
+  // (issue #89): analysis against the cell XML studies a different world than these
+  // numbers came from. Record them so every summary is self-documenting.
+  const physicsOverrides = {
+    note: 'Runtime physics mutations applied by the eval harness that are NOT recorded in the scene XML (issue #89).',
+    contact_disabled_bodies: setupInfo.physics_overrides.contact_disabled_bodies,
+    contact_disabled_geoms: setupInfo.physics_overrides.contact_disabled_geoms,
+    noslip_iterations: NOSLIP_ITERATIONS,
+    noslip_iterations_default: setupInfo.physics_overrides.noslip_iterations_default,
+  };
+  console.log('PHYSICS_OVERRIDES ' + JSON.stringify(physicsOverrides));
 
   // Confirm the deployment proxy is reachable/healthy before scoring.
   const health = await page.evaluate(async () => { try { const r = await fetch('/api/groot/health'); return await r.json(); } catch (e) { return { error: String(e) }; } });
@@ -194,7 +232,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
   for (const plan of plans) {
     const t0 = Date.now();
     const epRel = 'ep' + String(plan.episode).padStart(3, '0');
-    const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS, rawDump: RAW_DUMP, epRel });
+    const r = await page.evaluate(RUN_ATTEMPT, plan.vial_qpos, plan.home_q, { maxTicks: MAX_TICKS, nActionSteps: N_ACTION_STEPS, agents: AGENTS, rawDump: RAW_DUMP, epRel, noslipIterations: NOSLIP_ITERATIONS });
     if (RAW_DUMP && r.states_d && r.states_d.length) {
       fs.writeFileSync(path.join(RAW, epRel, 'meta.json'), JSON.stringify({ episode: plan.episode, success: r.success ? 1 : 0, states: r.states_d, gt: r.gt_d, actions: [] }));
     }
@@ -210,6 +248,7 @@ const RUN_ATTEMPT = async (vialQpos, homeQ, cfg) => {
     agents: AGENTS, port: PORT, n_action_steps: N_ACTION_STEPS, max_ticks: MAX_TICKS,
     n_attempts: results.length, n_success: nSucc, n_lifted: nLift, n_seated: nSeat,
     success_rate: +(nSucc / results.length).toFixed(3), success: `${nSucc}/${results.length}`,
+    physics_overrides: physicsOverrides,
     total_seconds: +((Date.now() - t0all) / 1000).toFixed(1), results,
   };
   fs.writeFileSync(path.join(OUT, `eval_${AGENTS}.json`), JSON.stringify(summary, null, 2));
