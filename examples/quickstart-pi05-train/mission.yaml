@@ -44,10 +44,9 @@ acceptance_criteria: |
   closed-loop grasp+place success against physics ground truth, not this run.
 
 robot:
-  # "ur10e" is not in the odyssey robot catalog; "ur5e" is and is used only for
-  # local catalog validation. The arm geometry is carried by the dataset, not
-  # this name (same convention as the GR00T ur10e mission).
-  embodiment: ur5e
+  # ur10e is a registered embodiment (PR #86). Used for local catalog validation;
+  # the arm geometry is carried by the dataset, not this name.
+  embodiment: ur10e
   agents:
     - id: pilot
       role: PILOT
