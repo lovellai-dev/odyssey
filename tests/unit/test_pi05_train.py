@@ -17,6 +17,7 @@ import pytest
 
 from odyssey.runners.models.pi05_train import (
     _lerobot_env_for_dataset,
+    _link_norm_stats_cache,
     _resolve_output_checkpoint,
     build_pi05_norm_stats_argv,
     build_pi05_train_argv,
@@ -183,6 +184,40 @@ def test_resolve_output_checkpoint_picks_highest_step(tmp_path: Path) -> None:
 
 def test_resolve_output_checkpoint_none_when_empty(tmp_path: Path) -> None:
     assert _resolve_output_checkpoint(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# norm-stats cache
+# ---------------------------------------------------------------------------
+
+def test_link_norm_stats_cache_symlinks_and_reuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    run1 = tmp_path / "run1"
+    run1.mkdir()
+    cache, cached = _link_norm_stats_cache(run1, "pi05_ur10e_drugsort")
+    assert cache is not None
+    # ./assets in the run dir is a symlink to the stable per-config cache.
+    assert (run1 / "assets").is_symlink()
+    assert (run1 / "assets").resolve() == cache.resolve()
+    assert cached is False  # nothing cached yet
+
+    # Simulate openpi writing norm stats into the cache; a fresh run reuses them.
+    (cache / "ur10e").mkdir(parents=True)
+    (cache / "ur10e" / "norm_stats.json").write_text("{}")
+    run2 = tmp_path / "run2"
+    run2.mkdir()
+    _, cached2 = _link_norm_stats_cache(run2, "pi05_ur10e_drugsort")
+    assert cached2 is True
+
+
+def test_link_norm_stats_cache_no_config_name(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    cache, cached = _link_norm_stats_cache(run, "")
+    assert cache is None
+    assert cached is False
 
 
 # ---------------------------------------------------------------------------

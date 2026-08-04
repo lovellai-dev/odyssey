@@ -248,6 +248,30 @@ def _resolve_output_checkpoint(output_dir: Path) -> Path | None:
     return best[1] if best is not None else None
 
 
+def _link_norm_stats_cache(output_dir: Path, config_name: str) -> tuple[Path | None, bool]:
+    """Point openpi's cwd-relative ``./assets`` at a STABLE per-config cache.
+
+    openpi writes norm stats into ``./assets`` relative to cwd (= the per-run
+    output_dir), so a fresh output_dir every run recomputes the *deterministic*
+    stats from scratch — a multi-minute full-dataset scan each time. Symlink
+    ``output_dir/assets`` at a stable cache keyed by ``config_name`` so the stats
+    persist and are reused across runs; checkpoints still land in the per-run
+    ``output_dir/checkpoints`` (only ``./assets`` is redirected).
+
+    Returns ``(cache_dir, already_has_norm_stats)``; ``(None, False)`` when there
+    is no config_name to key the cache on.
+    """
+    if not config_name:
+        return None, False
+    cache = Path.home() / ".odyssey" / "pi05_assets" / config_name
+    cache.mkdir(parents=True, exist_ok=True)
+    link = output_dir / "assets"
+    if not link.is_symlink() and not link.exists():
+        link.symlink_to(cache, target_is_directory=True)
+    cached = any(cache.rglob("norm_stats.json"))
+    return cache, cached
+
+
 class Pi05Runner(Runner):
     """Fine-tune a π0.5 model. Subprocess-based — actual training happens in
     openpi's ``scripts/compute_norm_stats.py`` then ``scripts/train.py``."""
@@ -282,12 +306,18 @@ class Pi05Runner(Runner):
         output_dir = output_path(context)
         output_dir.mkdir(parents=True, exist_ok=True)
         config = dict(spec.config)
+        config_name = str(config.get("config_name") or "")
         exp_name = str(config.get("exp_name") or spec.name)
         timeout = getattr(spec, "timeout_seconds", None)
         child_env = _lerobot_env_for_dataset(spec)
 
+        # Redirect openpi's ./assets at a stable per-config cache so norm stats are
+        # computed once and reused, not recomputed on every fresh output_dir.
+        assets_cache, norm_cached = _link_norm_stats_cache(output_dir, config_name)
+
         # Step 1: normalization statistics (openpi requires them before training).
-        if config.get("compute_norm_stats", True):
+        # Skip when a prior run already cached them for this config.
+        if config.get("compute_norm_stats", True) and not norm_cached:
             await context.emit_progress(
                 "dataset_loading", step="compute_norm_stats", step_label=exp_name
             )
@@ -307,6 +337,15 @@ class Pi05Runner(Runner):
                 raise RuntimeError(
                     f"openpi compute_norm_stats exited with code {rc}"
                 )
+        elif norm_cached:
+            logger.info(
+                "π0.5 task %s: reusing cached norm stats at %s",
+                context.task.id,
+                assets_cache,
+            )
+            await context.emit_progress(
+                "dataset_loading", step="norm_stats_cached", step_label=exp_name
+            )
 
         # Step 2: fine-tune.
         train_spec = TrainingProcessSpec(
