@@ -30,7 +30,10 @@ Two subprocesses, in order (openpi requires norm stats before training):
 
   1. ``scripts/compute_norm_stats.py --config-name <config_name>`` — computes
      dataset normalization statistics into ``assets/`` (skippable via
-     ``config: {compute_norm_stats: false}`` when they already exist).
+     ``config: {compute_norm_stats: false}`` when they already exist). Results are
+     cached across runs per ``<config_name>/<repo_id>``; set
+     ``config: {norm_stats_cache: false}`` to force a recompute when a dataset's
+     content changed under an unchanged ``repo_id``.
   2. ``scripts/train.py <config_name> --exp-name <name> [--overwrite] [overrides]``.
 
 Both run with ``cwd = <task output_dir>`` so openpi's cwd-relative ``./assets``
@@ -78,7 +81,15 @@ _NORM_STATS_SCRIPT_REL = "scripts/compute_norm_stats.py"
 
 # Config keys the runner consumes directly — never forwarded as tyro overrides.
 _CONTROL_KEYS = frozenset(
-    {"config_name", "runner", "exp_name", "overwrite", "resume", "compute_norm_stats"}
+    {
+        "config_name",
+        "runner",
+        "exp_name",
+        "overwrite",
+        "resume",
+        "compute_norm_stats",
+        "norm_stats_cache",
+    }
 )
 
 # openpi's train loop logs metrics dicts and a tqdm bar, e.g.:
@@ -248,7 +259,27 @@ def _resolve_output_checkpoint(output_dir: Path) -> Path | None:
     return best[1] if best is not None else None
 
 
-def _link_norm_stats_cache(output_dir: Path, config_name: str) -> tuple[Path | None, bool]:
+def _dataset_repo_id(task: TrainingTask) -> str:
+    """The LeRobot ``repo_id`` openpi keys norm stats by.
+
+    openpi writes ``assets/<config_name>/<repo_id>/norm_stats.json``. ``repo_id``
+    is the mission's ``data.repo_id`` tyro override when present, else the local
+    dataset folder name (same source as ``_lerobot_env_for_dataset``). Empty when
+    neither is set — the registered config's *default* repo_id is then not known
+    to the runner, so the cache cannot be pinned and must recompute.
+    """
+    config = task.config or {}
+    data = config.get("data")
+    if isinstance(data, dict) and data.get("repo_id"):
+        return str(data["repo_id"])
+    if task.dataset is not None and task.dataset.ref:
+        return os.path.basename(os.path.normpath(task.dataset.ref))
+    return ""
+
+
+def _link_norm_stats_cache(
+    output_dir: Path, config_name: str, repo_id: str
+) -> tuple[Path | None, bool]:
     """Point openpi's cwd-relative ``./assets`` at a STABLE per-config cache.
 
     openpi writes norm stats into ``./assets`` relative to cwd (= the per-run
@@ -257,6 +288,15 @@ def _link_norm_stats_cache(output_dir: Path, config_name: str) -> tuple[Path | N
     ``output_dir/assets`` at a stable cache keyed by ``config_name`` so the stats
     persist and are reused across runs; checkpoints still land in the per-run
     ``output_dir/checkpoints`` (only ``./assets`` is redirected).
+
+    The cache-hit test is keyed on the EXACT ``<config_name>/<repo_id>`` path
+    openpi writes, not a recursive glob: one registered config can hold stats for
+    several datasets (iterating datasets against one config is the intended
+    workflow, and what the shipped example does via ``data.repo_id``), so a glob
+    would report a hit for *any* dataset under the config, skip the step, and then
+    ``train.py`` dies looking for the ``repo_id`` it actually needs. An empty
+    ``repo_id`` (config default, unknown here) recomputes rather than risk a wrong
+    hit.
 
     Returns ``(cache_dir, already_has_norm_stats)``; ``(None, False)`` when there
     is no config_name to key the cache on.
@@ -268,7 +308,9 @@ def _link_norm_stats_cache(output_dir: Path, config_name: str) -> tuple[Path | N
     link = output_dir / "assets"
     if not link.is_symlink() and not link.exists():
         link.symlink_to(cache, target_is_directory=True)
-    cached = any(cache.rglob("norm_stats.json"))
+    cached = bool(repo_id) and (
+        cache / config_name / repo_id / "norm_stats.json"
+    ).is_file()
     return cache, cached
 
 
@@ -312,8 +354,24 @@ class Pi05Runner(Runner):
         child_env = _lerobot_env_for_dataset(spec)
 
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
-        # computed once and reused, not recomputed on every fresh output_dir.
-        assets_cache, norm_cached = _link_norm_stats_cache(output_dir, config_name)
+        # computed once and reused, not recomputed on every fresh output_dir. The
+        # hit is keyed on the exact dataset (config_name + repo_id). Escape hatch:
+        # the cache has no content-fingerprint, so a dataset recaptured under the
+        # SAME repo_id would silently reuse stale stats — set
+        # ``config: {norm_stats_cache: false}`` to force a fresh recompute into the
+        # per-run dir (no shared cache) when the dataset content has changed.
+        if config.get("norm_stats_cache", True):
+            repo_id = _dataset_repo_id(spec)
+            assets_cache, norm_cached = _link_norm_stats_cache(
+                output_dir, config_name, repo_id
+            )
+        else:
+            logger.warning(
+                "π0.5 task %s: norm-stats cache disabled (norm_stats_cache=false)"
+                " — recomputing statistics into the per-run assets dir.",
+                context.task.id,
+            )
+            assets_cache, norm_cached = None, False
 
         # Step 1: normalization statistics (openpi requires them before training).
         # Skip when a prior run already cached them for this config.

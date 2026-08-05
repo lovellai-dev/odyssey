@@ -80,6 +80,13 @@ The runner executes, in order:
 > registered config's default `repo_id`, or step 1 writes norm stats under one
 > `repo_id` and step 2 reads another and fails (loudly, after the full dataset scan).
 
+> Norm stats are cached across runs at `~/.odyssey/pi05_assets/<config_name>/<config_name>/<repo_id>/`
+> and step 1 is skipped on a hit. The hit is keyed on `config_name` + `repo_id`
+> only — it has **no content fingerprint**, so a dataset recaptured under an
+> unchanged `repo_id` would silently reuse stale statistics. When the dataset
+> content changed, set `config: {norm_stats_cache: false}` to force a fresh
+> recompute into the per-run dir.
+
 Both run with `cwd` = the task's `output_dir`, so openpi's cwd-relative `./assets`
 and `./checkpoints` land under the odyssey run dir. The trained checkpoint is
 captured from `checkpoints/<config_name>/<exp_name>/<step>/` (highest step).
@@ -94,6 +101,7 @@ captured from `checkpoints/<config_name>/<exp_name>/<step>/` (highest step).
 | `overwrite`          | emit `--overwrite` (default `true`); clobbers the prior exp dir    |
 | `resume`             | emit `--resume` instead of `--overwrite`; continue latest ckpt    |
 | `compute_norm_stats` | run the norm-stats pre-step (default `true`)                       |
+| `norm_stats_cache`   | reuse cached norm stats across runs, keyed by `config_name`+`repo_id` (default `true`); set `false` to force a recompute when the dataset content changed under the same `repo_id` |
 | *anything else*      | forwarded as a tyro override (`a_b` → `--a-b`; nested `x: {y: 1}` → `--x.y 1`; bools → `--flag` / `--no-flag`) |
 
 ## Can I then evaluate on LIBERO?

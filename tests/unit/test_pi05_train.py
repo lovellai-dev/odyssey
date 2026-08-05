@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from odyssey.runners.models.pi05_train import (
+    _dataset_repo_id,
     _lerobot_env_for_dataset,
     _link_norm_stats_cache,
     _resolve_output_checkpoint,
@@ -190,34 +191,96 @@ def test_resolve_output_checkpoint_none_when_empty(tmp_path: Path) -> None:
 # norm-stats cache
 # ---------------------------------------------------------------------------
 
+_CFG = "pi05_ur10e_drugsort"
+
+
 def test_link_norm_stats_cache_symlinks_and_reuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     run1 = tmp_path / "run1"
     run1.mkdir()
-    cache, cached = _link_norm_stats_cache(run1, "pi05_ur10e_drugsort")
+    cache, cached = _link_norm_stats_cache(run1, _CFG, "ur10e")
     assert cache is not None
     # ./assets in the run dir is a symlink to the stable per-config cache.
     assert (run1 / "assets").is_symlink()
     assert (run1 / "assets").resolve() == cache.resolve()
     assert cached is False  # nothing cached yet
 
-    # Simulate openpi writing norm stats into the cache; a fresh run reuses them.
-    (cache / "ur10e").mkdir(parents=True)
-    (cache / "ur10e" / "norm_stats.json").write_text("{}")
+    # Simulate openpi writing stats at assets/<config_name>/<repo_id>/; a fresh run
+    # for the SAME dataset reuses them.
+    (cache / _CFG / "ur10e").mkdir(parents=True)
+    (cache / _CFG / "ur10e" / "norm_stats.json").write_text("{}")
     run2 = tmp_path / "run2"
     run2.mkdir()
-    _, cached2 = _link_norm_stats_cache(run2, "pi05_ur10e_drugsort")
+    _, cached2 = _link_norm_stats_cache(run2, _CFG, "ur10e")
     assert cached2 is True
+
+
+def test_link_norm_stats_cache_hit_is_keyed_by_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached dataset must NOT satisfy a run for a *different* dataset under the
+    same config — openpi keys norm stats by repo_id, so a glob would wrongly hit
+    and train.py would then die looking for the repo_id it actually needs."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    run1 = tmp_path / "run1"
+    run1.mkdir()
+    cache, _ = _link_norm_stats_cache(run1, _CFG, "dataset_A")
+    assert cache is not None
+    (cache / _CFG / "dataset_A").mkdir(parents=True)
+    (cache / _CFG / "dataset_A" / "norm_stats.json").write_text("{}")
+
+    run2 = tmp_path / "run2"
+    run2.mkdir()
+    _, cached_b = _link_norm_stats_cache(run2, _CFG, "dataset_B")  # different dataset
+    assert cached_b is False
+
+
+def test_link_norm_stats_cache_empty_repo_id_recomputes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown repo_id (config default) is never a hit — recompute over a wrong
+    guess. Any stray stats under the config must not count."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    run = tmp_path / "run"
+    run.mkdir()
+    cache, _ = _link_norm_stats_cache(run, _CFG, "")
+    assert cache is not None
+    (cache / _CFG / "whatever").mkdir(parents=True)
+    (cache / _CFG / "whatever" / "norm_stats.json").write_text("{}")
+    _, cached = _link_norm_stats_cache(run, _CFG, "")
+    assert cached is False
 
 
 def test_link_norm_stats_cache_no_config_name(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    cache, cached = _link_norm_stats_cache(run, "")
+    cache, cached = _link_norm_stats_cache(run, "", "ur10e")
     assert cache is None
     assert cached is False
+
+
+def test_dataset_repo_id_prefers_data_override() -> None:
+    task = _task(
+        config={"config_name": _CFG, "data": {"repo_id": "ur10e_partial_cond_aug"}},
+        dataset=DatasetRef(
+            source=DatasetSource.LOCAL, ref="/data/some_other_folder"
+        ),
+    )
+    assert _dataset_repo_id(task) == "ur10e_partial_cond_aug"
+
+
+def test_dataset_repo_id_falls_back_to_dataset_folder() -> None:
+    task = _task(
+        config={"config_name": _CFG},
+        dataset=DatasetRef(source=DatasetSource.LOCAL, ref="/data/ur10e_v0/"),
+    )
+    assert _dataset_repo_id(task) == "ur10e_v0"
+
+
+def test_dataset_repo_id_empty_when_unknown() -> None:
+    assert _dataset_repo_id(_task(config={"config_name": _CFG})) == ""
 
 
 # ---------------------------------------------------------------------------
