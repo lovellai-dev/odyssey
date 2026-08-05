@@ -64,6 +64,43 @@ deadlines, instruction prefixes injected into VLA prompts). Write them like
 you mean it — future-you will reread them in leaderboard submissions and
 graph queries.
 
+### Evaluation types
+
+`evaluation_type` selects the eval runner:
+
+| `evaluation_type` | Runs |
+|---|---|
+| `robosuite` | In-process rollouts in the Robosuite sim (auto-wired OpenVLA policy). |
+| `isaac_lab` | An Isaac Lab eval script under Isaac Sim's Python, over an `ODYSSEY_*` stdout protocol. |
+| `custom` | **Any eval script**, as a subprocess, decoupled from any sim. |
+
+Use `custom` when the honest metric for your task is neither Robosuite nor Isaac
+Lab — e.g. the ground-truth evals for the UR10e/UR5e GR00T pilot (open-loop:
+replay recorded observations and compare the predicted action chunk to the
+recorded expert action; closed-loop: roll out the served policy and score
+against physics ground truth). The runner owns the launch, the checkpoint path,
+cancellation, and reading metrics; the *script* owns everything domain-specific,
+including how it loads or serves the checkpoint.
+
+```yaml
+  - name: openloop-gt
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: openloop-gt
+    config:
+      eval_script: scripts/eval_openloop_gt.py   # or $ODYSSEY_EVAL_SCRIPT
+      eval_python: /venv/gr00t/bin/python         # optional; default sys.executable
+      replay_dataset: /data/ur10e                 # extra keys pass through as --replay_dataset
+```
+
+The runner launches `<eval_python> <eval_script> --checkpoint <path> --out-json
+<path> [--<config-key> <value> …]`. The script writes its metrics to the
+`--out-json` path as a JSON object; `success_rate` (if present) yields a letter
+grade + pass/fail, otherwise the metrics are surfaced as-is (a metric-only eval
+such as per-joint MAE is not forced into a pass/fail). Without this runner,
+`evaluation_type: custom` would fall through to the fake `CPUMockRunner`. Full
+contract: `src/odyssey/runners/evals/custom.py`.
+
 ## Robots and agents
 
 In the Lovell AI architecture, a **robot** is more than an embodiment —
