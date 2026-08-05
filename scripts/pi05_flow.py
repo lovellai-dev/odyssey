@@ -142,13 +142,18 @@ class Pi05Flow:
         }
         if prompt is not None:
             raw["prompt"] = prompt
-        if action_chunk is not None:
-            raw["action"] = np.asarray(action_chunk, dtype=np.float32)
+        have_action = action_chunk is not None
+        # The repack transform maps ``actions <- action``, so the ``action`` key MUST exist
+        # even on the obs-only path (features / serving). Inject a zero dummy when there is no
+        # expert chunk — the observation (prefix: images+state+prompt) is independent of the
+        # action value, so pooled features are unaffected; we just don't read a target back.
+        raw["action"] = (np.asarray(action_chunk, dtype=np.float32) if have_action
+                         else np.zeros((self.action_horizon, self.real_dims), np.float32))
 
         inputs = self.policy._input_transform(raw)
         obs = self._observation_from_inputs(inputs)
         target_internal = None
-        if action_chunk is not None:
+        if have_action:
             target_internal = self._jnp.asarray(inputs["actions"])[np.newaxis, ...]
         return obs, target_internal
 
