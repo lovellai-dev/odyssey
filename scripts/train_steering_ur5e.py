@@ -307,9 +307,24 @@ def build_mlp(in_dim: int, out_dim: int, hidden: int = 256):
     )
 
 
+def _set_geometry(real_steps: int, real_dims: int, pad_horizon: int, pad_dim: int) -> None:
+    """Rebind the module-level action-geometry constants (GR00T defaults 16/7/40/132).
+
+    The steering pipeline is pilot-agnostic except for these four numbers; π0.5 passes
+    10/7/10/32. Rebinding the globals keeps build_xy/deploy_pads/assemble_init_noise
+    unchanged and leaves the GR00T path identical when the flags are not passed.
+    """
+    global REAL_STEPS, REAL_DIMS, REAL_OUT, ACTION_HORIZON, ACTION_DIM, FULL_OUT
+    REAL_STEPS, REAL_DIMS = real_steps, real_dims
+    ACTION_HORIZON, ACTION_DIM = pad_horizon, pad_dim
+    REAL_OUT = real_steps * real_dims
+    FULL_OUT = pad_horizon * pad_dim
+
+
 def mode_train(args) -> dict:
     import torch
 
+    _set_geometry(args.real_steps, args.real_dims, args.pad_horizon, args.pad_dim)
     shard_dirs = [s for s in str(args.shards).split(",") if s]
     arrays, source = load_shards_multi(shard_dirs)
     design = args.output_design
@@ -471,6 +486,9 @@ def mode_train(args) -> dict:
         "in_dim": X.shape[1], "out_dim": Y.shape[1], "hidden": args.hidden,
         "output_design": design, "pad_seed": PAD_SEED,
         "features": args.features,
+        # Action geometry, so the gate/server reconstruct shapes without guessing.
+        "real_steps": REAL_STEPS, "real_dims": REAL_DIMS,
+        "pad_horizon": ACTION_HORIZON, "pad_dim": ACTION_DIM,
         "val_episodes": np.unique(episodes[val_idx]).tolist(),
     }
     np.savez(args.model_out, **{f"sd.{k}": v for k, v in ckpt["state_dict"].items()},
@@ -558,6 +576,11 @@ def main() -> int:
     pt = sub.add_parser("train")
     pt.add_argument("--shards", default="/home/ubuntu/steering_targets")
     pt.add_argument("--output-design", default="real112", choices=["real112", "full5280"])
+    # Action geometry — defaults are GR00T (16/7/40/132); π0.5 passes 10/7/10/32.
+    pt.add_argument("--real-steps", type=int, default=REAL_STEPS)
+    pt.add_argument("--real-dims", type=int, default=REAL_DIMS)
+    pt.add_argument("--pad-horizon", type=int, default=ACTION_HORIZON)
+    pt.add_argument("--pad-dim", type=int, default=ACTION_DIM)
     pt.add_argument("--model-out", default="/home/ubuntu/steering_net_v0.npz")
     pt.add_argument("--hidden", type=int, default=256)
     pt.add_argument("--lr", type=float, default=3e-4)

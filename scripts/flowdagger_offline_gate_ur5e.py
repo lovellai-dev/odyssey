@@ -237,6 +237,155 @@ def mode_decode(args) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# decode mode — π0.5 pilot (openpi venv). Mirrors mode_decode with the Pi05Flow
+# API; writes the SAME decoded npz schema so fk-gate consumes it unchanged.
+# ---------------------------------------------------------------------------
+def mode_decode_pi05(args) -> dict:
+    import sys as _sys
+    _here = str(Path(__file__).resolve().parent)
+    if _here not in _sys.path:
+        _sys.path.insert(0, _here)
+    from pi05_flow import Pi05Flow
+    from flow_inverter_pi05 import expert_chunk_pi05
+    from flow_inverter_groot import enumerate_chunks, load_gt_phases, phase_bucket
+    import train_steering_ur5e as ts
+
+    if not args.checkpoint_dir:
+        raise SystemExit("pi05 decode requires --checkpoint-dir")
+
+    forward, meta = load_steering_net(args.steering_net)
+    design = meta.get("output_design", "real112")
+    H = int(meta.get("pad_horizon", 10))
+    D = int(meta.get("pad_dim", 32))
+    RS = int(meta.get("real_steps", 10))
+    RD = int(meta.get("real_dims", 7))
+    in_dim = int(meta.get("in_dim", 14))
+    # Match ts geometry so deploy_pads/assemble_init_noise build (H, D) tensors.
+    ts._set_geometry(RS, RD, H, D)
+    val_eps = set(meta.get("val_episodes", []))
+    if getattr(args, "val_episodes", None):
+        val_eps = {int(x) for x in str(args.val_episodes).split(",")}
+    fk_step = min(int(args.fk_step), H - 1)
+    print(f"[gate-pi05] design={design} H={H} D={D} real={RD} fk_step={fk_step} "
+          f"val_eps={sorted(val_eps)}", flush=True)
+
+    flow = Pi05Flow(args.config_name, args.checkpoint_dir, num_denoise_steps=H)
+    dataset_dir = Path(args.dataset)
+
+    all_picks = [(e, f) for (e, f) in enumerate_chunks(dataset_dir, args.stride) if e in val_eps]
+    rng = np.random.default_rng(args.seed)
+    if len(all_picks) > args.n:
+        sel = np.sort(rng.choice(len(all_picks), size=args.n, replace=False))
+        all_picks = [all_picks[i] for i in sel]
+    print(f"[gate-pi05] {len(all_picks)} held-out states", flush=True)
+
+    gt_cache: dict = {}
+    readers: dict = {}
+    fixed_pads = ts.deploy_pads(1)[0]  # (H, D) fixed-seed pad template
+
+    per = []
+    steered_arm8, oracle_arm8, expert_arm8, stock_arm8 = [], [], [], []
+    steered_traj, oracle_traj, expert_traj = [], [], []
+    grasp_targets, plabels = [], []
+    for (ep, fr) in all_picks:
+        ext, wrist, state, _ = load_dataset_frame_pi05(dataset_dir, ep, fr, readers)
+        chunk = expert_chunk_pi05(dataset_dir, ep, fr, H, readers)  # (H,7) absolute
+        obs, target = flow.process_frame(exterior=ext, wrist=wrist, state=state,
+                                         action_chunk=chunk)
+        tgt = np.asarray(target[0])                      # (H,D) internal
+
+        # low-dim obs for the steering net (must match invert-dataset's stored feats)
+        phases = load_gt_phases(dataset_dir, ep, gt_cache)
+        plabel = phase_bucket(phases[fr]) if (phases is not None and fr < len(phases)) else 0
+        oh = ts.phase_onehot(np.array([plabel]))[0]
+        s7 = np.zeros(7, np.float32)
+        s7[: min(7, len(state))] = np.asarray(state, np.float32)[:7]
+        cols = [s7, np.zeros(3, np.float32), oh]         # π0.5 drops grasp_target → zeros
+        if in_dim >= 15:
+            n_frames = len(phases) if phases is not None else fr + RS
+            cols.append(np.array([min(1.0, fr / max(1.0, float(n_frames)))], np.float32))
+        if in_dim > 100:                                  # v4 pooled π0.5 features
+            cols.append(flow.pool_backbone(obs).astype(np.float32))
+        obs_low = np.concatenate(cols).astype(np.float32)[None]
+
+        # (a) steered
+        pred = forward(obs_low)
+        if design == "full5280":
+            w_steer = pred.reshape(H, D).astype(np.float32)
+        else:
+            w_steer = ts.assemble_init_noise(pred.reshape(RS, RD), pads=fixed_pads[None])[0]
+        recon_steer = flow.decode_internal(obs, w_steer)
+        mse_steer = float(np.mean((recon_steer[:, :RD] - tgt[:, :RD]) ** 2))
+
+        # (c) oracle
+        w_oracle, _ = flow.invert(obs, target)
+        recon_oracle = flow.decode_internal(obs, w_oracle)
+        mse_oracle = float(np.mean((recon_oracle[:, :RD] - tgt[:, :RD]) ** 2))
+
+        # (b) stock: n_seeds random noises
+        stock_each, stock_arms = [], []
+        for si in range(args.n_seeds):
+            wr = np.random.default_rng(args.seed + ep * 1000 + fr + si).standard_normal((H, D)).astype(np.float32)
+            rec = flow.decode_internal(obs, wr)
+            stock_each.append(float(np.mean((rec[:, :RD] - tgt[:, :RD]) ** 2)))
+            stock_arms.append(flow.decode_physical(obs, wr)[fk_step, :6])
+        stock_mse_mean = float(np.mean(stock_each))
+
+        # physical arm poses (step fk_step) — for the fk-gate EE condition
+        steered_arm8.append(flow.decode_physical(obs, w_steer)[fk_step, :6])
+        oracle_arm8.append(flow.decode_physical(obs, w_oracle)[fk_step, :6])
+        expert_arm8.append(np.asarray(chunk, np.float32)[fk_step, :6])
+        stock_arm8.append(np.asarray(stock_arms, np.float32))
+        steered_traj.append(flow.decode_physical(obs, w_steer)[:, :6])
+        oracle_traj.append(flow.decode_physical(obs, w_oracle)[:, :6])
+        expert_traj.append(np.asarray(chunk, np.float32)[:, :6])
+        grasp_targets.append(np.zeros(3, np.float32))
+        plabels.append(int(plabel))
+
+        per.append({"episode": int(ep), "frame": int(fr), "phase": int(plabel),
+                    "mse_steered": mse_steer, "mse_stock_mean": stock_mse_mean,
+                    "mse_oracle": mse_oracle,
+                    "steered_beats_stock": bool(mse_steer < stock_mse_mean)})
+        print(f"[gate-pi05] ep{ep} fr{fr} steer={mse_steer:.4e} stock={stock_mse_mean:.4e} "
+              f"oracle={mse_oracle:.4e} beat={mse_steer < stock_mse_mean}", flush=True)
+
+    np.savez(
+        args.decoded_out,
+        steered_arm8=np.asarray(steered_arm8, np.float32),
+        oracle_arm8=np.asarray(oracle_arm8, np.float32),
+        expert_arm8=np.asarray(expert_arm8, np.float32),
+        stock_arm8=np.asarray(stock_arm8, np.float32),
+        mse_steered=np.asarray([p["mse_steered"] for p in per], np.float64),
+        mse_stock_mean=np.asarray([p["mse_stock_mean"] for p in per], np.float64),
+        mse_oracle=np.asarray([p["mse_oracle"] for p in per], np.float64),
+        episode=np.asarray([p["episode"] for p in per], np.int64),
+        frame=np.asarray([p["frame"] for p in per], np.int64),
+        steered_traj=np.asarray(steered_traj, np.float32),
+        oracle_traj=np.asarray(oracle_traj, np.float32),
+        expert_traj=np.asarray(expert_traj, np.float32),
+        grasp_target=np.asarray(grasp_targets, np.float32),
+        phase=np.asarray(plabels, np.int64),
+    )
+    frac = float(np.mean([p["steered_beats_stock"] for p in per])) if per else 0.0
+    out = {"n_holdout_states": len(per), "steered_beats_stock_frac": frac,
+           "mse": {"steered_mean": float(np.mean([p["mse_steered"] for p in per])),
+                   "stock_mean": float(np.mean([p["mse_stock_mean"] for p in per])),
+                   "oracle_mean": float(np.mean([p["mse_oracle"] for p in per]))},
+           "decoded_npz": str(args.decoded_out), "pilot": "pi05", "per_state": per}
+    if args.out:
+        Path(args.out).write_text(json.dumps(out, indent=2))
+    print(json.dumps({k: v for k, v in out.items() if k != "per_state"}, indent=2), flush=True)
+    return out
+
+
+def load_dataset_frame_pi05(dataset_dir: Path, episode: int, frame: int, readers: dict):
+    """Thin wrapper around the pilot-agnostic reader (kept local so the pi05 decode
+    has no torch/gr00t import)."""
+    from probe_flow_inversion_groot import load_dataset_frame
+    return load_dataset_frame(dataset_dir, episode, frame, readers)
+
+
+# ---------------------------------------------------------------------------
 # fk-gate mode (mujoco venv) — FK step-8 arm6 -> EE, compute distances, gate
 # ---------------------------------------------------------------------------
 def mode_fk_gate(args) -> dict:
@@ -349,6 +498,13 @@ def main() -> int:
     sub = ap.add_subparsers(dest="mode", required=True)
 
     pd = sub.add_parser("decode")
+    pd.add_argument("--pilot", choices=["groot", "pi05"], default="groot")
+    pd.add_argument("--config-name", dest="config_name", default="pi05_ur10e_drugsort",
+                    help="pi05: openpi TrainConfig name")
+    pd.add_argument("--checkpoint-dir", dest="checkpoint_dir", default=None,
+                    help="pi05: openpi checkpoint dir (…/params parent)")
+    pd.add_argument("--fk-step", dest="fk_step", type=int, default=STEP8,
+                    help="chunk index whose arm pose is FK'd (clamped to horizon-1)")
     pd.add_argument("--model-path", default="/home/ubuntu/ckpt/ur5e_drugsort_obscond/full/checkpoint-12000")
     pd.add_argument("--embodiment-tag", default="new_embodiment")
     pd.add_argument("--dataset", default="/home/ubuntu/ur5e_drugsort_obscond")
@@ -374,7 +530,10 @@ def main() -> int:
 
     args = ap.parse_args()
     if args.mode == "decode":
-        mode_decode(args)
+        if args.pilot == "pi05":
+            mode_decode_pi05(args)
+        else:
+            mode_decode(args)
     elif args.mode == "fk-gate":
         mode_fk_gate(args)
     else:  # pragma: no cover
