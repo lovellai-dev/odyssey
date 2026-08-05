@@ -75,6 +75,9 @@ class Pi05Flow:
         self._jax = jax
         self._jnp = jnp
         self._model_mod = _model
+        # The repack transform requires a ``prompt`` key (it runs before InjectDefaultPrompt),
+        # so process_frame always injects one — this default when the caller passes none.
+        self._default_prompt = default_prompt or DEFAULT_INSTRUCTION
 
         train_config = _config.get_config(config_name)
         # The repack transform (LeRobot column names → openpi ``observation/*`` keys) lives on
@@ -140,8 +143,7 @@ class Pi05Flow:
             "observation.images.wrist": np.asarray(wrist),
             "observation.state": np.asarray(state, dtype=np.float32),
         }
-        if prompt is not None:
-            raw["prompt"] = prompt
+        raw["prompt"] = prompt if prompt is not None else self._default_prompt
         have_action = action_chunk is not None
         # The repack transform maps ``actions <- action``, so the ``action`` key MUST exist
         # even on the obs-only path (features / serving). Inject a zero dummy when there is no
