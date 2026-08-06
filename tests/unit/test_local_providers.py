@@ -41,6 +41,33 @@ async def test_robot_resolves_known_embodiment() -> None:
     assert resolved.name == "franka_panda"
 
 
+async def test_robot_resolves_ur10e_embodiment() -> None:
+    # ur10e is a GR00T NEW_EMBODIMENT arm (finetune target); it must resolve
+    # through the local provider so a `robot.embodiment: ur10e` spec validates.
+    provider = LocalRobotProvider()
+    resolved = await provider.resolve(
+        RobotSpec(embodiment="ur10e", agents=_agents())
+    )
+    assert resolved.provider == "local"
+    assert resolved.embodiment == "ur10e"
+    assert resolved.name == "ur10e"
+
+
+async def test_ur10e_resolves_then_robosuite_refuses_it() -> None:
+    # Pins the behaviour change this PR introduces: on develop, `ur10e` was
+    # rejected at spec/catalog validation; now it resolves cleanly and only a
+    # Robosuite eval task refuses it — loudly (ValueError), never a silent
+    # default-Panda substitution. ur10e is the first real catalog name that can
+    # reach `_resolve_robosuite_robot`, so no `model_construct` is needed here.
+    from odyssey.runners.evals.robosuite import _resolve_robosuite_robot
+
+    spec = RobotSpec(embodiment="ur10e", agents=_agents())
+    resolved = await LocalRobotProvider().resolve(spec)
+    assert resolved.embodiment == "ur10e"
+    with pytest.raises(ValueError, match="Robosuite has no built-in robot"):
+        _resolve_robosuite_robot(spec)
+
+
 async def test_robot_rejects_unknown_embodiment() -> None:
     provider = LocalRobotProvider()
     # model_construct bypasses spec validation — needed because we're
@@ -73,13 +100,15 @@ async def test_robot_rejects_missing_urdf(tmp_path: Path) -> None:
 
 
 def test_known_embodiments_covers_robosuite_robots() -> None:
-    # The trimmed allowlist is the set of embodiments at least one
-    # shipped runner can drive end-to-end. Robosuite is the eval
-    # runner today, so every name here must also have a translation in
-    # runners.evals.robosuite.ROBOSUITE_ROBOT_NAMES.
+    # The allowlist is the set of embodiments at least one shipped runner can
+    # drive end-to-end. Robosuite is the eval runner for most arms, so every
+    # Robosuite-translatable name must be in the catalog...
     from odyssey.runners.evals.robosuite import ROBOSUITE_ROBOT_NAMES
 
-    assert set(ROBOSUITE_ROBOT_NAMES.keys()) == KNOWN_EMBODIMENTS
+    assert set(ROBOSUITE_ROBOT_NAMES.keys()) <= KNOWN_EMBODIMENTS
+    # ...and the only names beyond Robosuite are GR00T NEW_EMBODIMENT arms
+    # (driven by the `gr00t` runner, never Robosuite) — today just ur10e.
+    assert KNOWN_EMBODIMENTS - set(ROBOSUITE_ROBOT_NAMES.keys()) == {"ur10e"}
     # franka_panda is the alias most OpenVLA / LeRobot specs use.
     assert "franka_panda" in KNOWN_EMBODIMENTS
     # Quadrupeds and mobile bases were intentionally trimmed — no

@@ -16,6 +16,11 @@ dist/
 wheels/
 *.whl
 
+# Node deps. Example harnesses that drive a browser (puppeteer et al.) install
+# these locally; a single `npm install` is ~2,800 files, so an accidental
+# `git add -A` in an example dir swamps the repo. Lockfiles stay tracked.
+node_modules/
+
 # Virtual envs
 .venv/
 venv/

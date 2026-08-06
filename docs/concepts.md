@@ -64,6 +64,43 @@ deadlines, instruction prefixes injected into VLA prompts). Write them like
 you mean it — future-you will reread them in leaderboard submissions and
 graph queries.
 
+### Evaluation types
+
+`evaluation_type` selects the eval runner:
+
+| `evaluation_type` | Runs |
+|---|---|
+| `robosuite` | In-process rollouts in the Robosuite sim (auto-wired OpenVLA policy). |
+| `isaac_lab` | An Isaac Lab eval script under Isaac Sim's Python, over an `ODYSSEY_*` stdout protocol. |
+| `custom` | **Any eval script**, as a subprocess, decoupled from any sim. |
+
+Use `custom` when the honest metric for your task is neither Robosuite nor Isaac
+Lab — e.g. the ground-truth evals for the UR10e/UR5e GR00T pilot (open-loop:
+replay recorded observations and compare the predicted action chunk to the
+recorded expert action; closed-loop: roll out the served policy and score
+against physics ground truth). The runner owns the launch, the checkpoint path,
+cancellation, and reading metrics; the *script* owns everything domain-specific,
+including how it loads or serves the checkpoint.
+
+```yaml
+  - name: openloop-gt
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: openloop-gt
+    config:
+      eval_script: scripts/eval_openloop_gt.py   # or $ODYSSEY_EVAL_SCRIPT
+      eval_python: /venv/gr00t/bin/python         # optional; default sys.executable
+      replay_dataset: /data/ur10e                 # extra keys pass through as --replay_dataset
+```
+
+The runner launches `<eval_python> <eval_script> --checkpoint <path> --out-json
+<path> [--<config-key> <value> …]`. The script writes its metrics to the
+`--out-json` path as a JSON object; `success_rate` (if present) yields a letter
+grade + pass/fail, otherwise the metrics are surfaced as-is (a metric-only eval
+such as per-joint MAE is not forced into a pass/fail). Without this runner,
+`evaluation_type: custom` would fall through to the fake `CPUMockRunner`. Full
+contract: `src/odyssey/runners/evals/custom.py`.
+
 ## Robots and agents
 
 In the Lovell AI architecture, a **robot** is more than an embodiment —
@@ -109,7 +146,7 @@ and that `agents` contains exactly one agent.
 
 | Form | Example | What it does today |
 |---|---|---|
-| `embodiment:` | `franka_panda`, `ur5e`, `sawyer` | Names a built-in catalog embodiment. 8 names accepted: `franka_panda`, `panda`, `sawyer`, `iiwa`, `jaco`, `kinova_gen3`, `ur5e`, `baxter` — the arms Robosuite's built-in robot models cover. Resolved at mission-creation by `LocalRobotProvider`; passed through to `robosuite.make(robots=...)` at evaluation. |
+| `embodiment:` | `franka_panda`, `ur5e`, `ur10e` | Names a built-in catalog embodiment. 9 names accepted: `franka_panda`, `panda`, `sawyer`, `iiwa`, `jaco`, `kinova_gen3`, `ur5e`, `baxter` — the arms Robosuite's built-in robot models cover, passed through to `robosuite.make(robots=...)` at evaluation — plus `ur10e`, driven by the **GR00T runner** (`NEW_EMBODIMENT` finetune), which Robosuite doesn't ship: it resolves and validates, but a Robosuite eval task against it raises rather than passing through. All resolved at mission-creation by `LocalRobotProvider`. |
 | `urdf:` | `./arms/my_arm.urdf` | Names a local URDF/xacro path. Existence-checked at mission-creation. No robot pass-through to Robosuite — falls back to the env's default robot. |
 | `id:` | `rob_01HQR...` | Reserved for a robot registered in your Lovell account. When the Lovell provider ships, this will fetch the loadout from the account rather than requiring an inline `agents:` block. Requires `odyssey login`, not yet shipped. |
 
