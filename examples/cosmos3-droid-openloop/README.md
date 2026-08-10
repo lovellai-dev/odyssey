@@ -54,7 +54,7 @@ odyssey run examples/cosmos3-droid-openloop/mission.yaml
 ## Measured (H100, 2026-08-10, Edge-Policy-DROID served)
 
 | dataset (domain) | mae | zero | hold | width | note |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | DROID cookbook ep. (`droid_lerobot`) | 0.385 | 0.946 | 0.070 | 7/8 | in-dist: beats zero 2.5×; empty task annotation → generic prompt |
 | UR drugsort ep. (`robomind-ur`) | 1.409 | 1.333 | 0.033 | 7/7 | OOD for this checkpoint (DROID-SFT): ≈noise, as expected — needs UR SFT |
 
