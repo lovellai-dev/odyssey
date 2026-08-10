@@ -24,17 +24,15 @@ perception questions.
   by vLLM, driven through `OpenAICompatCompletionJudge`
   (`src/odyssey/runners/agents/openai_judge.py` — framework code, a
   `CompletionDetector` that drops into `ChunkCompletionGate`; it gained the
-  `extra_body` knob for this experiment). The PILOT in the loadout is
-  **declared but not exercised** (the spec requires one).
-- **Video provenance** (the robots in the footage were *not* driven by any
-  Cosmos model):
-  - `mission.yaml` → LIBERO OOD-smoke rollouts (Franka Panda, driven by
-    `Cosmos3-Edge-Policy-DROID` through the `pilot: cosmos3` bridge —
-    expected FAILs, see `../quickstart-cosmos3/`).
-  - `mission-success.yaml` → drug-sort DAgger evaluation rollouts from the
-    UR-arm drugsort campaign (GR00T-based policy; the H100 scripts label the
-    campaign **UR10e** DAgger while reusing `ur5e-drugsort` tooling paths —
-    episodes idle at the tick cap after early success).
+  `extra_body` knob for this experiment).
+- The **PILOT records provenance, not execution**: the judged rollouts were
+  driven on the H100 by the GR00T-based DAgger drug-sort policy (finetuned
+  from `nvidia/GR00T-N1.7`) — that is what the loadout's PILOT names. This
+  mission never loads it; the spec simply requires a PILOT.
+- **Video provenance**: drug-sort DAgger evaluation rollouts from the UR-arm
+  drugsort campaign (the H100 scripts label the campaign **UR10e** DAgger
+  while reusing `ur5e-drugsort` tooling paths — episodes idle at the tick cap
+  after early success). No Cosmos model drove these robots.
 
 ## Serving recipe (H100-validated, 2026-08-10)
 
@@ -59,13 +57,11 @@ diffusion worker). `--omni --no-guardrails` remains the recipe for
 
 ## Method
 
-Two eval-only missions (the spec allows exactly one evaluation task per
-mission), one per polarity:
-
-| mission | rollouts | expected signal |
-|---|---|---|
-| `mission.yaml` | failed LIBERO episodes | grasp/completion stay NO; retry flips YES late |
-| `mission-success.yaml` | successful drug-sort episodes | grasp flips YES while held; completion YES at the end |
+One eval-only mission, `mission.yaml`, over **successful** drug-sort episodes
+(expected: grasp flips YES while held, completion YES at the end). An earlier
+companion mission covered the NO polarity on failed LIBERO rollouts; it was
+dropped from this branch for clarity — it lives in the git history and on
+`cosmos3-integration`, and its numbers are reported below as Runs 1–2.
 
 `reasoner_probe.py` samples frames at 0/50/75/100 % of each MP4 and asks four
 strict YES/NO questions per frame through the judge: `control` (arm visible?
@@ -125,10 +121,10 @@ questions (the PR #68 posture) over completion-style ones.
 
 1. Serve the model (recipe above; any Edge/Nano/Super Reasoner id works —
    family-wide by construction).
-2. Point each mission's `config.videos_dir` at a directory of rollout MP4s
+2. Point the mission's `config.videos_dir` at a directory of rollout MP4s
    and set `config.instruction` to what those rollouts attempted; set
    `config.eval_python` to a venv with `imageio` + `pillow` (e.g.
    `env_pilot_cosmos3` from `../quickstart-cosmos3/setup.sh`).
-3. `odyssey run examples/cosmos3-reasoner-probe/mission.yaml` (and
-   `mission-success.yaml`). Metrics land in the task's
-   `custom_eval_metrics.json`; per-frame verdicts under `metrics.verdicts`.
+3. `odyssey run examples/cosmos3-reasoner-probe/mission.yaml`. Metrics land
+   in the task's `custom_eval_metrics.json`; per-frame verdicts under
+   `metrics.verdicts`.
