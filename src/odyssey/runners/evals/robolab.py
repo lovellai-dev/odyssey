@@ -119,7 +119,14 @@ def build_robolab_argv(
     for key, value in cfg.items():
         if key in _HANDLED_CONFIG_KEYS:
             continue
-        argv += [f"--{key.replace('_', '-')}", str(value)]
+        flag = f"--{key.replace('_', '-')}"
+        # Booleans map to bare store_true/store_false flags (RoboLab's
+        # --disable-subtask etc. take no value); False simply omits the flag.
+        if isinstance(value, bool):
+            if value:
+                argv.append(flag)
+            continue
+        argv += [flag, str(value)]
     return argv
 
 

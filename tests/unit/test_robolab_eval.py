@@ -152,6 +152,17 @@ def test_robolab_argv_defaults_single_env_run_per_episode() -> None:
     assert argv[argv.index("--num-envs") + 1] == "1"
 
 
+def test_robolab_argv_booleans_become_bare_flags() -> None:
+    # RoboLab's store_true/store_false flags take NO value (--disable-subtask,
+    # --enable-gt-state); True -> bare flag, False -> omitted entirely.
+    spec = _eval_spec(robolab_root="/rl", disable_subtask=True, enable_gt_state=False)
+    argv = build_robolab_argv(spec=spec, folder="f")
+    assert "--disable-subtask" in argv
+    assert argv[argv.index("--disable-subtask") + 1].startswith("--")  # no value after it
+    assert "--enable-gt-state" not in argv
+    assert "True" not in argv and "False" not in argv
+
+
 def test_robolab_root_is_required() -> None:
     with pytest.raises(RuntimeError, match="robolab_root"):
         resolve_robolab_root({})
