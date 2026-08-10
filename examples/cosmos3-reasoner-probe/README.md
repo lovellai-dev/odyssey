@@ -1,28 +1,42 @@
-# Cosmos 3 Reasoner SPECIALIST probe — grasp verification
+# Experiment: Cosmos 3 Reasoner as a grasp-verification SPECIALIST
 
-Eval-only mission that answers, **before any multi-agent wiring**: can a served
-`nvidia/Cosmos3-Nano` — the Reasoner surface of the Cosmos 3 family, *not* the
-`-Policy-DROID` action model — work as a **grasp-verification SPECIALIST**?
+Branch: `experiment-specialist-grasp-verification` (off `cosmos3-integration`,
+PR #95). Status: **probe complete, verdict below; multi-agent wiring not yet
+done.** Motivating issue: #78 (the co-resident Gemma int4 `check_done` judge
+answered NO essentially always, so multi-agent phases advanced by step-cap
+instead of by completion — the fix direction was a *stronger judge*).
 
-It follows the *delegation* posture of the planner-vs-delegation experiment
-(PR #68, closed unmerged): the SPECIALIST authors no plan; it answers on-demand
-perception questions. The probe drives `OpenAICompatCompletionJudge` (the
-`CompletionDetector` the multi-agent runtimes gate on — issue #78's "stronger
-judge" direction) over frames sampled at 0% / 50% / 75% / 100% of rollout MP4s,
-asking four YES/NO questions per frame:
+## Question under test
 
-| question   | failed rollout             | successful rollout                  |
-|------------|----------------------------|-------------------------------------|
-| control    | YES everywhere (arm visible) | YES everywhere                    |
-| grasp      | NO everywhere              | **YES while the object is held**    |
-| completion | NO everywhere              | YES at the end                      |
-| retry      | YES late in the episode    | NO everywhere                       |
+Can a served `nvidia/Cosmos3-Nano` — the **Reasoner** surface of NVIDIA's
+Cosmos 3 family (16B omnimodal, *not* the `Cosmos3-Nano-Policy-DROID` action
+model) — act as a SPECIALIST that verifies **grasp state** from camera frames,
+in the *delegation* posture of the planner-vs-delegation experiment (PR #68,
+closed unmerged): the SPECIALIST authors no plan, it answers on-demand
+perception questions.
 
-`control` detects the Gemma-judge degenerate mode (always NO). The grasp
-column is the discrimination a delegation SPECIALIST needs. Metric-only: no
-success_rate is fabricated.
+## What actually runs (and what does not)
 
-## 1. Serve the Reasoner (GPU box; the AR surface loads ≈ 40 GB)
+- **No simulator runs.** The probe extracts frames from pre-recorded rollout
+  MP4s and queries the served model over HTTP. `evaluation_type: custom`
+  (subprocess, sim-agnostic).
+- The **SPECIALIST is the only exercised agent**: `nvidia/Cosmos3-Nano` served
+  by vLLM, driven through `OpenAICompatCompletionJudge`
+  (`src/odyssey/runners/agents/openai_judge.py` — framework code, a
+  `CompletionDetector` that drops into `ChunkCompletionGate`; it gained the
+  `extra_body` knob for this experiment). The PILOT in the loadout is
+  **declared but not exercised** (the spec requires one).
+- **Video provenance** (the robots in the footage were *not* driven by any
+  Cosmos model):
+  - `mission.yaml` → LIBERO OOD-smoke rollouts (Franka Panda, driven by
+    `Cosmos3-Edge-Policy-DROID` through the `pilot: cosmos3` bridge —
+    expected FAILs, see `../quickstart-cosmos3/`).
+  - `mission-success.yaml` → drug-sort DAgger evaluation rollouts from the
+    UR-arm drugsort campaign (GR00T-based policy; the H100 scripts label the
+    campaign **UR10e** DAgger while reusing `ur5e-drugsort` tooling paths —
+    episodes idle at the tick cap after early success).
+
+## Serving recipe (H100-validated, 2026-08-10)
 
 ```bash
 sudo docker run --rm --gpus all --network host \
@@ -32,55 +46,89 @@ sudo docker run --rm --gpus all --network host \
         --gpu-memory-utilization 0.60 --max-model-len 32768
 ```
 
-**Plain `vllm serve`, NOT `--omni`** (validated on H100, 2026-08-10):
-`Cosmos3ForConditionalGeneration` is registered in plain vLLM and that is the
-reasoning path — image+text in, text out, sub-second replies. Under `--omni`
-the identical chat request routes to the *diffusion* pipeline: 50 denoise
-steps and an image reply, so no YES/NO text ever comes back and every verdict
-parses as the conservative NO (and in the `:cosmos3` image tag the half-built
-text path 500s / can OOM the diffusion worker). `--omni --no-guardrails`
-remains the recipe for *generation* serving only (the gated
-`nvidia/Cosmos-1.0-Guardrail` would otherwise 401 at startup). Trim
-`--gpu-memory-utilization` to co-exist with other jobs on the GPU.
+**Plain `vllm serve`, NOT `--omni`.** `Cosmos3ForConditionalGeneration` is
+registered in plain vLLM and that is the reasoning path — image+text in, text
+out, 0.05–0.2 s per YES/NO reply. Under `--omni` the identical chat request
+routes to the *diffusion* pipeline: 50 denoise steps, an **image** reply, so
+no YES/NO text ever comes back and every verdict parses as the conservative
+NO (in the `:cosmos3` image tag the half-built text path 500s / OOMs the
+diffusion worker). `--omni --no-guardrails` remains the recipe for
+*generation* serving only (the gated `nvidia/Cosmos-1.0-Guardrail` otherwise
+401s at startup). Box gotchas: the NVIDIA container runtime needs
+`nvidia-persistenced` running; the AR surface loads ≈ 40 GB VRAM.
 
-## 2. Stage probe frames
+## Method
 
-Two directories of rollout MP4s, one per polarity:
+Two eval-only missions (the spec allows exactly one evaluation task per
+mission), one per polarity:
 
-- `videos_dir` of task 1 → **failed** rollouts, e.g. the `videos/` dir of a
-  `quickstart-cosmos3` OOD smoke under `~/.odyssey/runs/<mission>/<task>/videos/`.
-- `videos_dir` of task 2 → **successful** rollouts (e.g. FlowDAgger UR5e
-  drug-sort evals). Set each task's `config.instruction` to what its rollouts
-  attempted.
+| mission | rollouts | expected signal |
+|---|---|---|
+| `mission.yaml` | failed LIBERO episodes | grasp/completion stay NO; retry flips YES late |
+| `mission-success.yaml` | successful drug-sort episodes | grasp flips YES while held; completion YES at the end |
 
-## 3. Run
+`reasoner_probe.py` samples frames at 0/50/75/100 % of each MP4 and asks four
+strict YES/NO questions per frame through the judge: `control` (arm visible?
+— detects the #78 always-NO degenerate mode), `grasp`, `completion` (stock
+template), `retry`. Knobs: `view: wrist|side` crops one half of a 2:1
+concat_view frame, `upscale: N` LANCZOS-resizes (the #78 zoom lesson).
+Metric-only out-json: rates, latency, per-frame verdicts with reply excerpts.
 
-```bash
-odyssey run examples/cosmos3-reasoner-probe/mission.yaml
-```
+## Results (H100, 2026-08-10)
 
-The eval env needs `imageio` + `pillow` (the `env_pilot_cosmos3` from
-`../quickstart-cosmos3/setup.sh` has both — name it via `config.eval_python`).
+**Run 1 — full 256 px frames** and **Run 2 — `view: wrist`, `upscale: 3`**
+(both missions COMPLETED, 80/80 calls parsed, latency 0.05–0.17 s mean):
 
-## Reading the result
+| question | result (both runs) |
+|---|---|
+| control | **100 % YES** — not Gemma-degenerate |
+| grasp / completion / retry | 100 % NO |
 
-`metrics.verdicts` carries one row per (question, frame) with the answer,
-latency and a reply excerpt. Interpretation:
+**Run 3 — dense paired diagnostic sweep** (every 10th frame of a successful
+episode, wrist crop ×3, paired opposite questions *"holding an object?"* /
+*"gripper empty?"*):
 
-- `control_yes_rate` < 1.0 → the judge can't even confirm the scene; distrust
-  the rest (this is what #78's Gemma judge failed).
-- `grasp` YES concentrated on held-object frames of successful rollouts, NO on
-  failed rollouts → a real grasp-verification SPECIALIST candidate.
-- `latency_s_mean` bounds how often you could afford to gate (the multi-agent
-  runtimes judge at chunk boundaries, ~every 16 env steps).
-- An all-NO grasp column is **not automatically the #78 degenerate mode**:
-  check where the grasp window actually falls. In the UR5e FlowDAgger evals
-  the pick lands in the first ~15% of the episode and the episode idles at
-  the tick cap after early success, so p50/p75/p100 samples are honestly NO.
-  Disambiguate with a dense paired-question sweep (holding? vs empty? on
-  `view: wrist` crops): H100 findings (2026-08-10) — Cosmos3-Nano answers the
-  pair consistently and flags holding=YES inside the true grasp window, so it
-  works as a *gripper-state oracle on wrist crops*; open-ended "is the task
-  done" phrasings still bias NO even post-success, and fine object-location
-  questions are unreliable at 256px. Prefer concrete perception questions
-  over task-completion phrasings when wiring it as a SPECIALIST.
+- Pairs answered **consistently** (empty → NO/YES) on almost every frame.
+- **holding=YES / empty=NO exactly inside the true grasp window** (frame 10 of
+  138; verified against the actual frame).
+- Ground truth explains runs 1–2: the drug-sort pick lands in the **first
+  ~15 % of the episode** and the episode idles at the tick cap after early
+  success — so the fixed 0/50/75/100 % samples fall entirely post-place and
+  the all-NO grasp column was *honest*, *not* the #78 degeneracy.
+
+Where it still fails: open-ended task-completion phrasings bias NO even after
+visible success, and fine object-location questions on full 256 px concat
+frames are inconsistent (it answered YES to two mutually exclusive location
+questions on the same frame).
+
+## Verdict
+
+`Cosmos3-Nano` is **usable as a gripper-state oracle on wrist-camera crops
+with concrete perception questions** — consistent paired answers, correct
+inside the real grasp window, and 25–100× faster per judgement than the
+co-resident Gemma judge. It is **not yet trustworthy** for open-ended
+"is the sub-task done" judgements or fine spatial grounding at low
+resolution. For SPECIALIST wiring, prefer perception-style delegation
+questions (the PR #68 posture) over completion-style ones.
+
+## Next steps
+
+1. Mission-YAML plumbing to select `OpenAICompatCompletionJudge` as the
+   `completion`-strategy detector in the multi-agent runtimes (nothing merged
+   wires a detector from config today).
+2. Add the paired *empty?* question and denser sampling to the scripted
+   probe, so the mission itself captures what the diagnostic sweep showed.
+3. Re-run against confirmed-UR10e rollouts with the campaign's real task
+   instruction; fix the `embodiment` label accordingly.
+
+## Reproduce
+
+1. Serve the model (recipe above; any Edge/Nano/Super Reasoner id works —
+   family-wide by construction).
+2. Point each mission's `config.videos_dir` at a directory of rollout MP4s
+   and set `config.instruction` to what those rollouts attempted; set
+   `config.eval_python` to a venv with `imageio` + `pillow` (e.g.
+   `env_pilot_cosmos3` from `../quickstart-cosmos3/setup.sh`).
+3. `odyssey run examples/cosmos3-reasoner-probe/mission.yaml` (and
+   `mission-success.yaml`). Metrics land in the task's
+   `custom_eval_metrics.json`; per-frame verdicts under `metrics.verdicts`.

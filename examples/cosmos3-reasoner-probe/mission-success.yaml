@@ -76,13 +76,13 @@ robot:
         base: nvidia/Cosmos3-Nano   # the Reasoner surface, served by vLLM-Omni
 
 tasks:
-  # Polarity 2 — SUCCESSFUL rollouts (UR5e drug-sort FlowDAgger evals): grasp
+  # Polarity 2 — SUCCESSFUL rollouts (drug-sort DAgger evals — the UR10e campaign, which reuses ur5e-drugsort tooling paths): grasp
   # should flip YES while the object is held, completion YES at the end.
   - name: probe-grasp-success-rollouts
     kind: evaluation
     evaluation_type: custom
     description: >-
-      Judge frames of successful UR5e drug-sort rollouts through the same
+      Judge frames of successful UR-arm drug-sort DAgger rollouts through the same
       endpoint — the YES polarity of grasp verification.
     benchmark_name: cosmos3_reasoner_grasp_probe
     num_episodes: 12
@@ -96,7 +96,7 @@ tasks:
       max_videos: 3
       max_tokens: 1024
       timeout_seconds: 180
-      # Issue #78 zoom lesson: the UR5e rollouts are 256x512 concat_view —
+      # Issue #78 zoom lesson: the drug-sort rollouts are 256x512 concat_view —
       # crop to the wrist half (where the grasp actually is) and upscale.
       view: wrist
       upscale: 3
