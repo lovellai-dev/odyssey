@@ -158,7 +158,9 @@ def test_robolab_argv_booleans_become_bare_flags() -> None:
     spec = _eval_spec(robolab_root="/rl", disable_subtask=True, enable_gt_state=False)
     argv = build_robolab_argv(spec=spec, folder="f")
     assert "--disable-subtask" in argv
-    assert argv[argv.index("--disable-subtask") + 1].startswith("--")  # no value after it
+    idx = argv.index("--disable-subtask")
+    # bare flag: either last, or immediately followed by another flag (no value)
+    assert idx == len(argv) - 1 or argv[idx + 1].startswith("--")
     assert "--enable-gt-state" not in argv
     assert "True" not in argv and "False" not in argv
 
