@@ -168,3 +168,17 @@ def test_openai_judge_drops_into_chunk_completion_gate() -> None:
     # Steps 3-4: second boundary -> judge says YES -> hand back.
     assert gate.update(image, "grasp") is False  # mid-chunk, no judge call
     assert gate.update(image, "grasp") is True
+
+
+def test_openai_judge_extra_body_merges_into_payload() -> None:
+    """extra_body keys ride top-level on every request (e.g. vLLM-Omni's
+    ``modalities: ["text"]`` routing knob) without clobbering the core fields."""
+    judge = _judge(
+        transport=lambda p: _reply("YES"),
+        extra_body={"modalities": ["text"], "model": "should-not-win"},
+    )
+    payload = judge.build_payload(_image(), "grasp the capsule")
+    assert payload["modalities"] == ["text"]
+    # Core fields always win over extra_body on collision.
+    assert payload["model"] != "should-not-win"
+    assert payload["messages"]

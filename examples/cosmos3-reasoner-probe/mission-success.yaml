@@ -1,0 +1,101 @@
+# Cosmos 3 Reasoner SPECIALIST probe — grasp verification (eval-only, custom
+# runner, no simulator).
+#
+# NAMING: `nvidia/Cosmos3-Nano` (the base omnimodal model — the REASONER
+# surface, 16B) is NOT `nvidia/Cosmos3-Nano-Policy-DROID` (the action policy).
+# This mission probes the former as a SPECIALIST candidate in the DELEGATION
+# spirit of the planner-vs-delegation experiment (PR #68, closed unmerged): the
+# SPECIALIST authors no plan — it answers on-demand perception questions, the
+# headline one being GRASP VERIFICATION ("is the object secured in the
+# gripper?"), plus the stock completion check and a retry check. This is the
+# "stronger judge" direction of issue #78 (the co-resident Gemma int4
+# check_done answered NO essentially always — the control question here
+# detects exactly that degenerate mode).
+#
+# It exercises `OpenAICompatCompletionJudge` — the CompletionDetector surface a
+# multi-agent mission would drop this model into — over frames sampled at
+# several positions of existing rollout MP4s. Two tasks give both polarities:
+# failed rollouts (grasp/completion should stay NO) and successful rollouts
+# (grasp should flip YES mid-episode, completion at the end). Metric-only: no
+# fabricated success_rate.
+#
+# EXTERNALLY-SERVED (same posture as the WAM policy evals) — start vLLM-Omni
+# first on a GPU box (Nano 16B bf16 ≈ 32 GB; release-tested container):
+#
+#     sudo docker run --rm --gpus all --network host \
+#         -v ~/.cache/huggingface:/root/.cache/huggingface \
+#         vllm/vllm-omni:cosmos3 \
+#         vllm serve nvidia/Cosmos3-Nano --omni --port 8002 \
+#             --init-timeout 1800 --gpu-memory-utilization 0.55 --no-guardrails
+#
+# `--no-guardrails` skips the GATED nvidia/Cosmos-1.0-Guardrail download (same
+# rationale as the cosmos-framework policy-server workaround in
+# ../quickstart-cosmos3/setup.sh: the guardrails moderate GENERATED media, not
+# a YES/NO judgement path). The Reasoner emits chain-of-thought before its
+# verdict — max_tokens must be generous (the judge's 8-token default would
+# truncate before any YES/NO token and every answer would parse as a spurious NO).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: cosmos3-reasoner-specialist-probe-success
+  description: >-
+    Eval-only probe of the Cosmos 3 Reasoner (Cosmos3-Nano) as a
+    grasp-verification SPECIALIST — control / grasp / completion / retry
+    judgements over failed and successful rollout frames via the
+    OpenAI-compatible judge surface, delegation-style.
+  tags: [cosmos3, reasoner, nvidia, specialist, grasp, delegation, judge, custom, eval-only]
+
+objective: |
+  Verify that a served Cosmos3-Nano Reasoner loads and answers the judge
+  protocol, and measure whether its YES/NO verdicts track grasp state across
+  rollout frames — the grounding a delegation-style SPECIALIST needs before
+  any multi-agent wiring.
+
+acceptance_criteria: |
+  All judge calls succeed against the endpoint; the control question answers
+  YES (no always-NO degenerate mode); grasp verdicts discriminate held-object
+  frames from pre-grasp and post-place frames; per-call latency is workable
+  for chunk-boundary gating.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    # The spec requires a PILOT in the loadout; it is recorded but NOT
+    # exercised — this mission probes the SPECIALIST only.
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/Cosmos3-Nano-Policy-DROID
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: nvidia/Cosmos3-Nano   # the Reasoner surface, served by vLLM-Omni
+
+tasks:
+  # Polarity 2 — SUCCESSFUL rollouts (UR5e drug-sort FlowDAgger evals): grasp
+  # should flip YES while the object is held, completion YES at the end.
+  - name: probe-grasp-success-rollouts
+    kind: evaluation
+    evaluation_type: custom
+    description: >-
+      Judge frames of successful UR5e drug-sort rollouts through the same
+      endpoint — the YES polarity of grasp verification.
+    benchmark_name: cosmos3_reasoner_grasp_probe
+    num_episodes: 12
+    config:
+      eval_script: examples/cosmos3-reasoner-probe/reasoner_probe.py
+      checkpoint: nvidia/Cosmos3-Nano
+      base_url: http://127.0.0.1:8002/v1
+      model: nvidia/Cosmos3-Nano
+      videos_dir: ~/cosmos3_probe_videos_success
+      instruction: pick up the red capsule and place it in the blue tray
+      max_videos: 3
+      max_tokens: 1024
+      timeout_seconds: 180
+
+leaderboard:
+  publish: false

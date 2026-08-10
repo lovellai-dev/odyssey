@@ -93,6 +93,11 @@ class OpenAICompatCompletionJudge:
         secrets in missions; ``api_key_env`` is the YAML-friendly form).
     prompt_template:
         ``str.format``-style template receiving ``instruction``.
+    extra_body:
+        Extra top-level keys merged into every request payload, for
+        server-specific routing knobs. Motivating case: vLLM-Omni serving a
+        Cosmos 3 Reasoner routes image+text chat requests to *image
+        generation* unless the request carries ``{"modalities": ["text"]}``.
     transport:
         Injectable ``payload -> response-dict`` callable (tests / custom HTTP
         stacks). Defaults to a stdlib ``urllib`` POST.
@@ -109,6 +114,7 @@ class OpenAICompatCompletionJudge:
         max_tokens: int = 8,
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
+        extra_body: dict[str, Any] | None = None,
         transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._url = base_url.rstrip("/") + "/chat/completions"
@@ -117,6 +123,7 @@ class OpenAICompatCompletionJudge:
         self._max_tokens = int(max_tokens)
         self._temperature = float(temperature)
         self._timeout = float(timeout_seconds)
+        self._extra_body = dict(extra_body) if extra_body else {}
         self._transport = transport
         key = api_key or (os.getenv(api_key_env) if api_key_env else None)
         self._headers = {"Content-Type": "application/json"}
@@ -138,6 +145,7 @@ class OpenAICompatCompletionJudge:
     def build_payload(self, observation: Any, instruction: str) -> dict[str, Any]:
         """The chat-completions request for one judgement (exposed for tests)."""
         return {
+            **self._extra_body,
             "model": self._model,
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
