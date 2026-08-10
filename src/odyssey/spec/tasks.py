@@ -58,6 +58,7 @@ class EvaluationType(str, Enum):
     ROBOSUITE = "robosuite"
     ISAAC_LAB = "isaac_lab"
     LIBERO = "libero"
+    ROBOLAB = "robolab"
     CUSTOM = "custom"
 
 

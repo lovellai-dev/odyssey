@@ -1,26 +1,21 @@
 # Cosmos 3 (WAM) × RoboLab mission (eval-only, published DROID policy).
 #
 # Scores a published Cosmos 3 world-action policy (Cosmos3-Nano-Policy-DROID or
-# Cosmos3-Edge-Policy-DROID) on NVlabs/RoboLab — the client/server simulation
-# benchmark NVIDIA evaluates these checkpoints on. A WAM answers one query with
-# a predicted future video AND an action chunk; only the chunk drives the sim.
+# Cosmos3-Edge-Policy-DROID) on NVlabs/RoboLab — the Isaac Lab-based simulation
+# twin of the DROID rig (Franka + dual mounted cameras, tabletop tasks) NVIDIA
+# evaluates these checkpoints on. First-class `evaluation_type: robolab`: the
+# RobolabRunner launches RoboLab's policies/cosmos3/run.py headless, then
+# scores its episode_results.jsonl into the standard eval summary.
 #
-# There is no first-class RoboLab runner (promote one only if this becomes
-# recurring); the eval goes through `evaluation_type: custom` with the
-# robolab_eval.py bridge in this folder (writes the --out-json contract).
-#
-# EXTERNALLY-SERVED (two processes you start first — see README.md):
-#   1. cosmos-framework policy server (holds the weights):
+# EXTERNALLY-SERVED (two processes you start first — see README.md / setup.sh):
+#   1. cosmos-framework policy server (WebSocket; holds the weights):
 #        python -m cosmos_framework.scripts.action_policy_server_robolab \
 #            --checkpoint-path ~/checkpoints/Cosmos3-Nano-Policy-DROID --port 8000
 #      (--checkpoint-path takes a LOCAL dir — stage it with `hf download` first;
-#       setup.sh does this for you)
-#      (Edge variant additionally needs --format-prompt-as-json True)
-#   2. the RoboLab checkout/docker the bridge launches run.py in.
-#
-# ⚠️ UNVERIFIED ON GPU as of this PR: the odyssey-side wiring is complete and
-# CPU-tested; the RoboLab result format the bridge parses is the thing to pin
-# on the first smoke (see robolab_eval.py docstring).
+#       setup.sh does this for you. Edge additionally needs
+#       --format-prompt-as-json True. Guardrails are gated — see setup.sh.)
+#   2. RoboLab checkout with its Isaac Sim env/docker (config.robolab_root /
+#      config.eval_python below).
 
 odysseyVersion: "0.1"
 kind: Mission
@@ -29,9 +24,9 @@ metadata:
   name: cosmos3-robolab-droid
   description: >-
     Eval-only — score a published Cosmos 3 DROID world-action policy on the
-    RoboLab simulation benchmark via the custom-eval bridge, served
+    RoboLab simulation benchmark (first-class robolab runner), served
     out-of-process by cosmos-framework's action policy server.
-  tags: [cosmos3, wam, nvidia, robolab, droid, eval-only]
+  tags: [cosmos3, wam, nvidia, robolab, droid, isaac, eval-only]
 
 objective: |
   Evaluate a published Cosmos 3 DROID policy checkpoint on RoboLab tasks and
@@ -40,7 +35,7 @@ objective: |
 
 acceptance_criteria: |
   The policy server serves the checkpoint, RoboLab rollouts complete headless,
-  and the run reports a success_rate parsed from RoboLab's results.
+  and the run reports a success_rate scored from episode_results.jsonl.
 
 robot:
   embodiment: franka_panda   # DROID rig; documentation of the pilot identity only.
@@ -56,22 +51,21 @@ robot:
 tasks:
   - name: eval-robolab-cosmos3
     kind: evaluation
-    evaluation_type: custom
+    evaluation_type: robolab
     description: RoboLab rollouts against a pre-started Cosmos3 policy server.
-    benchmark_name: robolab
-    num_episodes: 10
+    benchmark_name: BananaInBowlTask     # RoboLab task name (run.py --task)
+    num_episodes: 10                     # -> --num-runs ceil(episodes / num_envs)
     config:
-      eval_script: examples/cosmos3-robolab/robolab_eval.py
-      # eval_python: /path/to/robolab/venv/bin/python   # bridge interpreter (optional)
-      checkpoint: nvidia/Cosmos3-Nano-Policy-DROID      # recorded in the summary
-      # --- forwarded verbatim to robolab_eval.py (snake_case -> --flags) ---
-      robolab_root: /path/to/RoboLab
-      # robolab_python: /path/to/robolab/venv/bin/python
-      task: BananaInBowlTask                            # comma-separate for a sweep
-      num_envs: 10
-      headless: true
-      # results_glob: "outputs/**/results*.json"        # prefer files over stdout scrape
-      # extra_args: "--host 127.0.0.1 --port 8000"      # run.py server flags, if any
+      robolab_root: /path/to/RoboLab     # the NVlabs/RoboLab checkout
+      # eval_python: /path/to/robolab/env/bin/python   # Isaac Sim interpreter
+      checkpoint: nvidia/Cosmos3-Nano-Policy-DROID     # recorded in the summary
+      num_envs: 10                       # parallel Isaac envs per run
+      # --- forwarded to run.py (underscores become dashes) ---
+      remote_host: 127.0.0.1             # the policy server address
+      remote_port: 8000
+      # entry_script: policies/cosmos3/run.py   # RoboLab policy backend (default)
+      # instruction_type: default
+      # video_mode: all
 
 leaderboard:
   publish: false   # Backend not live yet.

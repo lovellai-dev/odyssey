@@ -6,12 +6,12 @@
 # It ONLY sets things up — it does NOT run a mission (and does NOT boot the policy
 # server unless you pass --serve). THREE pieces, wired by host:port / paths:
 #
-#   1. Odyssey client env      — a plain venv with this repo; the bridge script
-#                                (robolab_eval.py) is stdlib-only. No sim here.
+#   1. Odyssey client env      — a plain venv with this repo (the RobolabRunner
+#                                itself has no sim deps). No sim here.
 #   2. cosmos-framework server — its own uv env -> serves a Policy-DROID checkpoint
 #                                (action_policy_server_robolab, WebSocket)
-#   3. RoboLab checkout        — NVlabs' sim client (docker build); the bridge
-#                                launches its policies/cosmos3/run.py
+#   3. RoboLab checkout        — NVlabs' Isaac Lab sim client (docker build);
+#                                the runner launches its policies/cosmos3/run.py
 #
 # ─── ⚠️ NOT YET VALIDATED ON HARDWARE ──────────────────────────────────────────────
 #  All three halves follow the NVIDIA cookbook (run_policy_with_cosmos_framework.md)
@@ -153,18 +153,17 @@ cat <<EOF
     #   sed -i 's/guardrails: bool = True/guardrails: bool = False/' \\
     #       $COSMOS_DIR/cosmos_framework/inference/common/args.py
 
-  TERMINAL 2 — run the mission (this repo's venv; the bridge launches RoboLab):
+  TERMINAL 2 — run the mission (this repo's venv; the RobolabRunner launches RoboLab):
     source $VENV/bin/activate
     # edit examples/cosmos3-robolab/mission.yaml first:
     #   config.robolab_root: $ROBOLAB_DIR
-    #   (docker users: run.py must be reachable — use RoboLab's run_docker.sh env,
-    #    or set config.robolab_python to the interpreter inside it)
+    #   config.eval_python: the Isaac Sim interpreter (RoboLab docker/venv)
+    #   config.remote_host/remote_port: the policy server address
     odyssey validate examples/cosmos3-robolab/mission.yaml
     odyssey run      examples/cosmos3-robolab/mission.yaml
 
-  First-smoke watch-list (see robolab_eval.py docstring):
-    * pin RoboLab's real result output (prefer config.results_glob over stdout scraping)
-    * the run.py flags for the server address go in config.extra_args
+  Results: <robolab_root>/output/odyssey_<task-id>/episode_results.jsonl,
+  scored into the mission summary and copied into the task output dir.
 EOF
 
 if [ "$DO_SERVE" -eq 1 ]; then
