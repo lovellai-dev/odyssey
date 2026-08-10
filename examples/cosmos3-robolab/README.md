@@ -47,6 +47,36 @@ Contract details (pinned from RoboLab source): `benchmark_name` → `--task`;
 jsonl is copied into the task's output dir as an artifact. Passthrough config
 keys reach `run.py` with underscores dashed (`remote_port` → `--remote-port`).
 
+## Running inside docker: the wrapper (and why)
+
+RoboLab's own `docker/run_docker.sh` is interactive-only and assumes a legacy
+docker setup. `setup.sh` therefore generates `~/robolab_python.sh` — a
+non-interactive wrapper you point `config.eval_python` at. Every flag in it
+was a real failure on the first hardware bring-up (H100, docker 27 /
+driver 580):
+
+| Symptom | Cause | Fix (in the wrapper) |
+| --- | --- | --- |
+| exit **125**, `unknown or invalid runtime name: nvidia` | modern daemons don't register the legacy `nvidia` runtime | `--gpus all` |
+| exit **127** (command not found) | the image ships no bare `python` on PATH | `--entrypoint /isaac-sim/python.sh` |
+| Isaac boots then **hangs**; log shows Warp `cuDeviceGetUuid` errors, PhysX `no suitable CUDA GPU`, renderer `invalid device` | docker injects only `compute,utility` driver capabilities — no graphics/Vulkan | `-e NVIDIA_DRIVER_CAPABILITIES=all` (injects host libGLX/libEGL + Vulkan ICD) |
+| `ModuleNotFoundError: robolab`/`policies` | script-mode sys.path doesn't include the repo root | `-e PYTHONPATH=/workspace/robolab` + `-w /workspace/robolab` |
+| runner's host-absolute script path not found in container | container only mounts `/workspace/robolab` | dual mount: checkout also bind-mounted at its **host path** |
+
+Verify before running a mission (both must pass, else Isaac hangs silently):
+
+```bash
+sudo docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all \
+    --entrypoint /bin/bash robolab:latest -c \
+    "nvidia-smi --query-gpu=name --format=csv,noheader && ls /etc/vulkan/icd.d/nvidia_icd.json"
+```
+
+If the Vulkan ICD check fails, the **host** needs the driver's graphics
+userspace (`libnvidia-gl-<version>` + `/etc/vulkan/icd.d/nvidia_icd.json`) and
+a current nvidia-container-toolkit. First Isaac boot compiles shaders —
+expect several minutes before episode 1; the `.cache/ov` and `.cache/kit`
+mounts persist them across runs.
+
 ## Family notes
 
 Any Cosmos 3 policy member works — the server loads the weights; the mission
