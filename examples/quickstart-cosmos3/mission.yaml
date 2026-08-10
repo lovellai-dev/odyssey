@@ -24,10 +24,13 @@
 # end-to-end; success is not expected). A real score needs the Cosmos3 SFT
 # training runner (follow-up PR) to produce a LIBERO checkpoint first.
 #
-# ⚠️ UNVERIFIED ON GPU as of this PR: wire shape confirmed against the server
-# source; concat_view ordering, rot6d axis order and gripper polarity are the
-# things to confirm on the first smoke. Nano 16B does NOT fit an L4 24GB —
-# serve it on the H100 box (Edge 4B fits smaller GPUs).
+# ✅ VALIDATED ON GPU (2026-08-10, H100): end-to-end OOD smoke green with
+# Edge-Policy-DROID — /predict wire, GET /info chunk-size auto-adoption (16),
+# 2 full episodes + per-episode MP4s, scored mission summary. Pending an
+# in-distribution LIBERO SFT checkpoint: rot6d axes + gripper polarity yielding
+# real successes. Nano 16B does NOT fit an L4 24GB — serve it on the H100 box
+# (Edge 4B fits smaller GPUs). NOTE: the server's guardrails download the GATED
+# nvidia/Cosmos-Guardrail1 — see setup.sh for the HF-access / disable options.
 
 odysseyVersion: "0.1"
 kind: Mission

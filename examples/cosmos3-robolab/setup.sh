@@ -147,6 +147,11 @@ cat <<EOF
     ${SERVE_CMD[*]}
     # --checkpoint-path must be a LOCAL directory; if the port is taken by
     # another service (ss -tlnp | grep $PORT), pick another one.
+    # "Access denied. This repository requires approval" at startup means the
+    # GATED nvidia/Cosmos-Guardrail1 (guardrails default ON): request HF access
+    # + export HF_TOKEN, or disable guardrails (content moderation, not actions):
+    #   sed -i 's/guardrails: bool = True/guardrails: bool = False/' \\
+    #       $COSMOS_DIR/cosmos_framework/inference/common/args.py
 
   TERMINAL 2 — run the mission (this repo's venv; the bridge launches RoboLab):
     source $VENV/bin/activate

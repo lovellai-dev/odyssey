@@ -37,6 +37,26 @@ odyssey run examples/quickstart-cosmos3/mission.yaml
 `n_action_steps` is auto-adopted from the server's `GET /info`
 (`curl :8000/info` to inspect), so the same mission serves Edge and Nano.
 
+## ⚠️ Guardrails are gated
+
+The server enables guardrail runners by default and downloads
+`nvidia/Cosmos-Guardrail1` — **gated** on HF (approval + `HF_TOKEN`); without
+access it crashes at startup with "Access denied. This repository requires
+approval." Either request access, or disable guardrails (they moderate
+*generated* content, not the action path):
+
+```bash
+sed -i 's/guardrails: bool = True/guardrails: bool = False/' \
+    ~/cosmos-framework/cosmos_framework/inference/common/args.py
+```
+
+## Validation status
+
+End-to-end smoke ran **green on an H100 (2026-08-10)** with Edge-Policy-DROID:
+`/predict` wire, `/info` chunk-size auto-adoption (16), 2 full episodes with
+per-episode MP4s, scored mission summary. Pending an in-distribution LIBERO SFT
+checkpoint: rot6d axes + gripper polarity yielding real successes.
+
 ## ⚠️ Checkpoint reality
 
 Only DROID policies are published — on LIBERO they are **out-of-distribution**

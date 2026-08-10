@@ -15,13 +15,21 @@
 #   2. cosmos-framework server — its own uv env  -> serves Cosmos 3 on host:port
 #                                (action_policy_server_libero, HTTP /predict + /info)
 #
-# ─── ⚠️ NOT YET VALIDATED ON HARDWARE ──────────────────────────────────────────────
-#  The odyssey client half reuses the validated LIBERO install (franka-libero /
-#  quickstart-pi05 pins). The cosmos-framework SERVER half follows NVIDIA's cookbook
-#  (uv sync groups, NGC container recommended) but has NOT been run through to a
-#  green rollout. First-smoke watch-list: the /predict wire end-to-end, concat_view
-#  ordering (third-person LEFT | wrist RIGHT assumed), rot6d axes + gripper polarity
-#  (no fix-up applied), and the domain_name/image_size values.
+# ─── ✅ VALIDATED ON HARDWARE (2026-08-10, H100) ───────────────────────────────────
+#  End-to-end OOD smoke ran GREEN: Edge-Policy-DROID served on this recipe, /info
+#  chunk-size auto-adoption (16), /predict wire, 2 full LIBERO episodes + per-episode
+#  MP4s, mission COMPLETED with a scored summary. Still UNVALIDATED (needs an
+#  in-distribution LIBERO SFT checkpoint): rot6d axis semantics + gripper polarity
+#  producing *successful* rollouts — DROID checkpoints are OOD on LIBERO by design.
+#
+# ─── ⚠️ GUARDRAILS ARE GATED ───────────────────────────────────────────────────────
+#  The server enables guardrail runners by default, which download
+#  nvidia/Cosmos-Guardrail1 — GATED on HF (needs approval + HF_TOKEN); without access
+#  the server crashes at startup with "Access denied. This repository requires
+#  approval." Either (a) request access on HF and export HF_TOKEN, or (b) disable
+#  guardrails — they moderate GENERATED content (text/video), not the action path:
+#    sed -i 's/guardrails: bool = True/guardrails: bool = False/' \
+#        <cosmos-dir>/cosmos_framework/inference/common/args.py
 #
 #  ⚠ CHECKPOINT REALITY: only DROID policies are published (OOD on LIBERO — smoke
 #  only, success not expected). A real LIBERO score needs your own SFT export
@@ -199,11 +207,15 @@ cat <<EOF
   Per-episode MP4s:
     find ~/.odyssey/runs -path "*/videos/*.mp4" -exec ls -lh {} \\;
 
-  First-smoke watch-list (see the mission header + docs/migration doc):
-    * /predict wire end-to-end + GET /info chunk size adoption
-    * concat_view order (third-person LEFT | wrist RIGHT assumed) + 180° flip
-    * rot6d axes + gripper polarity — NO fix-up applied (patch cosmos3_transforms.py)
-    * DROID checkpoints are OOD on LIBERO: episodes must complete; success not expected
+  If the server dies with "Access denied. This repository requires approval":
+    nvidia/Cosmos-Guardrail1 is gated — request HF access + export HF_TOKEN, or
+    disable guardrails (content moderation, not the action path):
+      sed -i 's/guardrails: bool = True/guardrails: bool = False/' \\
+          $COSMOS_DIR/cosmos_framework/inference/common/args.py
+
+  Validated on H100 (2026-08-10): /predict wire, /info chunk adoption, full episodes
+  + videos. Still pending an in-distribution check (LIBERO SFT checkpoint): rot6d
+  axes + gripper polarity yielding real successes — DROID checkpoints are OOD here.
 EOF
 
 if [ "$DO_SERVE" -eq 1 ]; then
