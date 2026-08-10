@@ -12,7 +12,9 @@
 # EXTERNALLY-SERVED (two processes you start first — see README.md):
 #   1. cosmos-framework policy server (holds the weights):
 #        python -m cosmos_framework.scripts.action_policy_server_robolab \
-#            --checkpoint-path nvidia/Cosmos3-Nano-Policy-DROID --port 8000
+#            --checkpoint-path ~/checkpoints/Cosmos3-Nano-Policy-DROID --port 8000
+#      (--checkpoint-path takes a LOCAL dir — stage it with `hf download` first;
+#       setup.sh does this for you)
 #      (Edge variant additionally needs --format-prompt-as-json True)
 #   2. the RoboLab checkout/docker the bridge launches run.py in.
 #

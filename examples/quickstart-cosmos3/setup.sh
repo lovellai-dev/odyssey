@@ -39,7 +39,7 @@
 #   --cuda12           use cosmos-framework's cu128-train group (CUDA 12.x driver)
 #   --serve            after setup, exec the policy server in the foreground (blocks)
 #
-# Env overrides: LIBERO_DIR (default $HOME/LIBERO), HF_TOKEN (gated NVIDIA repos)
+# Env overrides: LIBERO_DIR (default $HOME/LIBERO). Published policy checkpoints are public (no HF token).
 #
 # Linux + NVIDIA GPU assumed. Re-runnable / idempotent.
 
@@ -154,7 +154,20 @@ else
   echo "[setup] WARNING: 'uv sync' in $COSMOS_DIR did not complete — finish it per the" >&2
   echo "        cosmos-framework setup docs (NGC container / CUDA groups) before serving." >&2
 fi
-[ -n "${HF_TOKEN:-}" ] || echo "[setup] NOTE: export HF_TOKEN — the NVIDIA checkpoints are gated on Hugging Face." >&2
+# The server's --checkpoint-path expects a LOCAL DIRECTORY (validated on the
+# H100 smoke: an HF id raises "Checkpoint directory does not exist"), so stage
+# HF checkpoints explicitly. Published policy checkpoints are public (no token).
+if [[ "$CHECKPOINT" == */* && ! -d "$CHECKPOINT" && ! -e "$CHECKPOINT" ]]; then
+  CKPT_DIR="$HOME/checkpoints/$(basename "$CHECKPOINT")"
+  if [ ! -d "$CKPT_DIR" ]; then
+    echo "[setup] downloading $CHECKPOINT -> $CKPT_DIR (hf download)"
+    uv run --project "$COSMOS_DIR" hf download "$CHECKPOINT" --local-dir "$CKPT_DIR" \
+      || echo "[setup] WARNING: checkpoint download failed — stage it manually before serving." >&2
+  else
+    echo "[setup] checkpoint already staged at $CKPT_DIR — reusing"
+  fi
+  CHECKPOINT="$CKPT_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 echo "==> [5/5] done — two-terminal flow"
@@ -167,10 +180,12 @@ cat <<EOF
 
 [setup] Done. Two-terminal flow (externally-served: you start the server):
 
-  TERMINAL 1 — serve Cosmos 3 (cosmos-framework env; downloads the checkpoint on first run):
-    export HF_TOKEN=...        # gated NVIDIA repos
+  TERMINAL 1 — serve Cosmos 3 (cosmos-framework env):
     ${SERVE_CMD[*]}
-    # Any family member works (--checkpoint-path <hf-id-or-export-dir>). Verify:
+    # Any family member works; --checkpoint-path must be a LOCAL directory
+    # (an hf-downloaded repo or an export_model dir). If port $PORT is taken by
+    # another service (check: ss -tlnp | grep $PORT), pick another and mirror it
+    # in the mission's config.port. Verify OUR server answers:
     #   curl http://$HOST:$PORT/info   # shows the resolved action_chunk_size
 
   TERMINAL 2 — run the eval (this repo's venv):

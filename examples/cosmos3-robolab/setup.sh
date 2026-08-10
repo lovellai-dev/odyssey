@@ -34,7 +34,7 @@
 #   --no-docker         skip the RoboLab docker build (bare checkout only)
 #   --serve             after setup, exec the policy server in the foreground (blocks)
 #
-# Env overrides: HF_TOKEN (gated NVIDIA repos)
+# Published policy checkpoints are public on HF (no token needed).
 #
 # Linux + NVIDIA GPU assumed. Re-runnable / idempotent.
 
@@ -96,7 +96,20 @@ else
   echo "[setup] WARNING: 'uv sync' in $COSMOS_DIR did not complete — finish it per the" >&2
   echo "        cosmos-framework setup docs (NGC container / CUDA groups) before serving." >&2
 fi
-[ -n "${HF_TOKEN:-}" ] || echo "[setup] NOTE: export HF_TOKEN — the NVIDIA checkpoints are gated on Hugging Face." >&2
+# The server's --checkpoint-path expects a LOCAL DIRECTORY (validated on the
+# H100 smoke: an HF id raises "Checkpoint directory does not exist"). Published
+# policy checkpoints are public (no HF token needed) — stage them explicitly.
+if [[ "$CHECKPOINT" == */* && ! -d "$CHECKPOINT" && ! -e "$CHECKPOINT" ]]; then
+  CKPT_DIR="$HOME/checkpoints/$(basename "$CHECKPOINT")"
+  if [ ! -d "$CKPT_DIR" ]; then
+    echo "[setup] downloading $CHECKPOINT -> $CKPT_DIR (hf download)"
+    uv run --project "$COSMOS_DIR" hf download "$CHECKPOINT" --local-dir "$CKPT_DIR" \
+      || echo "[setup] WARNING: checkpoint download failed — stage it manually before serving." >&2
+  else
+    echo "[setup] checkpoint already staged at $CKPT_DIR — reusing"
+  fi
+  CHECKPOINT="$CKPT_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 echo "==> [3/4] RoboLab checkout (client sim)"
@@ -131,8 +144,9 @@ cat <<EOF
 [setup] Done. Flow (externally-served: you start the server):
 
   TERMINAL 1 — serve the DROID policy (cosmos-framework env):
-    export HF_TOKEN=...
     ${SERVE_CMD[*]}
+    # --checkpoint-path must be a LOCAL directory; if the port is taken by
+    # another service (ss -tlnp | grep $PORT), pick another one.
 
   TERMINAL 2 — run the mission (this repo's venv; the bridge launches RoboLab):
     source $VENV/bin/activate

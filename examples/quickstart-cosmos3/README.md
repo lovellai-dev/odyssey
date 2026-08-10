@@ -13,17 +13,20 @@ bash examples/quickstart-cosmos3/setup.sh --help     # knobs (checkpoint, CUDA 1
 ```
 
 Sets up (1) an Odyssey client venv with the LIBERO/MuJoCo stack and (2) the
-cosmos-framework server env (its own uv env; NGC container also works). Nano
-16B needs ≥32 GB VRAM in bf16 (H100 box) — Edge 4B fits smaller GPUs. NVIDIA
-checkpoints are gated: `export HF_TOKEN=...`.
+cosmos-framework server env (its own uv env; NGC container also works), and
+stages the checkpoint locally (`hf download`) — the server's
+`--checkpoint-path` requires a **local directory**, not an HF id. Nano 16B
+needs ≥32 GB VRAM in bf16 (H100 box) — Edge 4B fits smaller GPUs. The
+published policy checkpoints are public (no HF token needed).
 
 ## Run (two terminals)
 
 ```bash
-# T1 — serve (any family member: HF id or an export_model dir)
+# T1 — serve (any family member: a downloaded HF repo or an export_model dir)
 uv run --project ~/cosmos-framework python -m \
     cosmos_framework.scripts.action_policy_server_libero \
-    --checkpoint-path nvidia/Cosmos3-Nano-Policy-DROID --port 8000
+    --checkpoint-path ~/checkpoints/Cosmos3-Edge-Policy-DROID --port 8000
+# port taken by another service? pick another and mirror it in config.port
 
 # T2 — eval
 source env_pilot_cosmos3/bin/activate

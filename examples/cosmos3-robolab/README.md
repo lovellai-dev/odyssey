@@ -10,10 +10,11 @@ Scores a published Cosmos 3 DROID world-action policy on
    VRAM in bf16; Edge 4B fits smaller GPUs):
 
    ```bash
+   # --checkpoint-path takes a LOCAL dir — stage it first (setup.sh does this):
+   hf download nvidia/Cosmos3-Nano-Policy-DROID --local-dir ~/checkpoints/Cosmos3-Nano-Policy-DROID
    python -m cosmos_framework.scripts.action_policy_server_robolab \
-       --checkpoint-path nvidia/Cosmos3-Nano-Policy-DROID --port 8000
-   # Edge variant: add --checkpoint-path nvidia/Cosmos3-Edge-Policy-DROID \
-   #               --format-prompt-as-json True
+       --checkpoint-path ~/checkpoints/Cosmos3-Nano-Policy-DROID --port 8000
+   # Edge variant: same, plus --format-prompt-as-json True
    ```
 
 2. **RoboLab checkout** (client side; NVIDIA's docker images work):

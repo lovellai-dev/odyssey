@@ -72,7 +72,8 @@ tasks:
     config:
       pilot: cosmos3                      # -> cosmos3_libero_eval.py subprocess + HTTP client
       # Recorded in the summary only; the policy server (below) already holds
-      # the weights (an HF id or a cosmos_framework export_model directory).
+      # the weights (its --checkpoint-path takes a LOCAL directory: a staged
+      # hf download or a cosmos_framework export_model dir).
       checkpoint: nvidia/Cosmos3-Nano-Policy-DROID
       task_id: 0                          # which task within the suite (0..9)
 
