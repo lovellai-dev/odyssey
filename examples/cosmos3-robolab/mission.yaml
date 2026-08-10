@@ -1,0 +1,75 @@
+# Cosmos 3 (WAM) × RoboLab mission (eval-only, published DROID policy).
+#
+# Scores a published Cosmos 3 world-action policy (Cosmos3-Nano-Policy-DROID or
+# Cosmos3-Edge-Policy-DROID) on NVlabs/RoboLab — the client/server simulation
+# benchmark NVIDIA evaluates these checkpoints on. A WAM answers one query with
+# a predicted future video AND an action chunk; only the chunk drives the sim.
+#
+# There is no first-class RoboLab runner (promote one only if this becomes
+# recurring); the eval goes through `evaluation_type: custom` with the
+# robolab_eval.py bridge in this folder (writes the --out-json contract).
+#
+# EXTERNALLY-SERVED (two processes you start first — see README.md):
+#   1. cosmos-framework policy server (holds the weights):
+#        python -m cosmos_framework.scripts.action_policy_server_robolab \
+#            --checkpoint-path nvidia/Cosmos3-Nano-Policy-DROID --port 8000
+#      (Edge variant additionally needs --format-prompt-as-json True)
+#   2. the RoboLab checkout/docker the bridge launches run.py in.
+#
+# ⚠️ UNVERIFIED ON GPU as of this PR: the odyssey-side wiring is complete and
+# CPU-tested; the RoboLab result format the bridge parses is the thing to pin
+# on the first smoke (see robolab_eval.py docstring).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: cosmos3-robolab-droid
+  description: >-
+    Eval-only — score a published Cosmos 3 DROID world-action policy on the
+    RoboLab simulation benchmark via the custom-eval bridge, served
+    out-of-process by cosmos-framework's action policy server.
+  tags: [cosmos3, wam, nvidia, robolab, droid, eval-only]
+
+objective: |
+  Evaluate a published Cosmos 3 DROID policy checkpoint on RoboLab tasks and
+  record a real success rate in the mission summary, with the policy served
+  out-of-process by cosmos-framework.
+
+acceptance_criteria: |
+  The policy server serves the checkpoint, RoboLab rollouts complete headless,
+  and the run reports a success_rate parsed from RoboLab's results.
+
+robot:
+  embodiment: franka_panda   # DROID rig; documentation of the pilot identity only.
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        # Any Cosmos 3 family policy member works — the SERVER loads the weights;
+        # swap to nvidia/Cosmos3-Edge-Policy-DROID (+ JSON prompt flag) for Edge.
+        base: nvidia/Cosmos3-Nano-Policy-DROID
+
+tasks:
+  - name: eval-robolab-cosmos3
+    kind: evaluation
+    evaluation_type: custom
+    description: RoboLab rollouts against a pre-started Cosmos3 policy server.
+    benchmark_name: robolab
+    num_episodes: 10
+    config:
+      eval_script: examples/cosmos3-robolab/robolab_eval.py
+      # eval_python: /path/to/robolab/venv/bin/python   # bridge interpreter (optional)
+      checkpoint: nvidia/Cosmos3-Nano-Policy-DROID      # recorded in the summary
+      # --- forwarded verbatim to robolab_eval.py (snake_case -> --flags) ---
+      robolab_root: /path/to/RoboLab
+      # robolab_python: /path/to/robolab/venv/bin/python
+      task: BananaInBowlTask                            # comma-separate for a sweep
+      num_envs: 10
+      headless: true
+      # results_glob: "outputs/**/results*.json"        # prefer files over stdout scrape
+      # extra_args: "--host 127.0.0.1 --port 8000"      # run.py server flags, if any
+
+leaderboard:
+  publish: false   # Backend not live yet.
