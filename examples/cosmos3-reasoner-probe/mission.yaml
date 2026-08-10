@@ -105,6 +105,9 @@ tasks:
       max_videos: 2
       max_tokens: 1024                         # room for the Reasoner's CoT
       timeout_seconds: 180
+      # Issue #78 zoom lesson: starve the judge of pixels and every verdict
+      # collapses to NO. LIBERO rollouts are single-view 256px -> upscale only.
+      upscale: 3
 
 leaderboard:
   publish: false

@@ -88,7 +88,32 @@ QUESTIONS = (
 FRAME_POSITIONS = (0.0, 0.5, 0.75, 1.0)
 
 
-def load_probe_frames(videos_dir: Path, max_videos: int) -> list[dict[str, Any]]:
+def prepare_frame(frame: Any, view: str, upscale: int) -> Any:
+    """Crop to one half of a concat_view frame and/or upscale.
+
+    The issue #78 lesson (``check_crop``/``check_upscale``): small concat sim
+    frames starve the judge of pixels on the region that matters. ``wrist``
+    keeps the right half and ``side`` the left half of a 2:1-wide concat frame
+    (non-concat frames pass through untouched); ``upscale`` LANCZOS-resizes by
+    an integer factor.
+    """
+    import numpy as np
+    from PIL import Image
+
+    array = np.asarray(frame)
+    height, width = array.shape[:2]
+    if view in ("wrist", "side") and width == 2 * height:
+        array = array[:, width // 2 :] if view == "wrist" else array[:, : width // 2]
+    if upscale > 1:
+        img = Image.fromarray(array)
+        img = img.resize((img.width * upscale, img.height * upscale), Image.LANCZOS)
+        array = np.asarray(img)
+    return array
+
+
+def load_probe_frames(
+    videos_dir: Path, max_videos: int, view: str = "full", upscale: int = 1
+) -> list[dict[str, Any]]:
     """Frames at ``FRAME_POSITIONS`` of each rollout MP4 (sorted for determinism)."""
     import imageio.v3 as iio
 
@@ -101,7 +126,11 @@ def load_probe_frames(videos_dir: Path, max_videos: int) -> list[dict[str, Any]]
         for fraction in FRAME_POSITIONS:
             index = min(int(fraction * (len(stack) - 1)), len(stack) - 1)
             frames.append(
-                {"video": video.name, "position": f"p{int(fraction * 100)}", "image": stack[index]}
+                {
+                    "video": video.name,
+                    "position": f"p{int(fraction * 100)}",
+                    "image": prepare_frame(stack[index], view, upscale),
+                }
             )
     return frames
 
@@ -131,9 +160,18 @@ def main() -> None:
     parser.add_argument("--max_videos", type=int, default=4)
     parser.add_argument("--max_tokens", type=int, default=1024)
     parser.add_argument("--timeout_seconds", type=float, default=180.0)
+    parser.add_argument(
+        "--view",
+        choices=["full", "wrist", "side"],
+        default="full",
+        help="crop half of a 2:1 concat_view frame (issue #78 zoom lesson)",
+    )
+    parser.add_argument("--upscale", type=int, default=1, help="integer LANCZOS upscale factor")
     args = parser.parse_args()
 
-    frames = load_probe_frames(Path(args.videos_dir).expanduser(), args.max_videos)
+    frames = load_probe_frames(
+        Path(args.videos_dir).expanduser(), args.max_videos, args.view, args.upscale
+    )
 
     verdicts: list[dict[str, Any]] = []
     latencies: list[float] = []
@@ -190,6 +228,8 @@ def main() -> None:
             "endpoint": args.base_url,
             "model": args.model,
             "frames_probed": len(frames),
+            "view": args.view,
+            "upscale": args.upscale,
             "judge_calls": len(verdicts),
             "call_success_rate": round(calls_ok / len(verdicts), 3),
             "latency_s_mean": round(sum(latencies) / len(latencies), 2),

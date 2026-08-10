@@ -96,6 +96,10 @@ tasks:
       max_videos: 3
       max_tokens: 1024
       timeout_seconds: 180
+      # Issue #78 zoom lesson: the UR5e rollouts are 256x512 concat_view —
+      # crop to the wrist half (where the grasp actually is) and upscale.
+      view: wrist
+      upscale: 3
 
 leaderboard:
   publish: false

@@ -73,3 +73,14 @@ latency and a reply excerpt. Interpretation:
   failed rollouts → a real grasp-verification SPECIALIST candidate.
 - `latency_s_mean` bounds how often you could afford to gate (the multi-agent
   runtimes judge at chunk boundaries, ~every 16 env steps).
+- An all-NO grasp column is **not automatically the #78 degenerate mode**:
+  check where the grasp window actually falls. In the UR5e FlowDAgger evals
+  the pick lands in the first ~15% of the episode and the episode idles at
+  the tick cap after early success, so p50/p75/p100 samples are honestly NO.
+  Disambiguate with a dense paired-question sweep (holding? vs empty? on
+  `view: wrist` crops): H100 findings (2026-08-10) — Cosmos3-Nano answers the
+  pair consistently and flags holding=YES inside the true grasp window, so it
+  works as a *gripper-state oracle on wrist crops*; open-ended "is the task
+  done" phrasings still bias NO even post-success, and fine object-location
+  questions are unreliable at 256px. Prefer concrete perception questions
+  over task-completion phrasings when wiring it as a SPECIALIST.
