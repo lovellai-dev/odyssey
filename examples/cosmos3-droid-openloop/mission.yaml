@@ -1,0 +1,66 @@
+# Cosmos 3 open-loop ground-truth eval (custom runner, no simulator).
+#
+# Feeds real DROID frames to a served Cosmos 3 policy and compares the
+# predicted action chunk against the dataset's recorded actions: per-dim MAE +
+# gripper agreement, with zero/hold baselines for context. IN-DISTRIBUTION for
+# the published Policy-DROID checkpoints — the cheap de-risk of the decode
+# semantics before RoboLab or a LIBERO SFT (contrast the LIBERO smoke, which is
+# OOD wiring-only for these checkpoints).
+#
+# Metric-only by design: no success_rate is fabricated (the CustomEvalRunner
+# surfaces the metrics without a pass/fail grade).
+#
+# EXTERNALLY-SERVED: start the policy server first (see ../quickstart-cosmos3/
+# setup.sh, incl. the gated-guardrail note), and stage the tiny example dataset
+# per README.md.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: cosmos3-droid-openloop-gt
+  description: >-
+    Open-loop GT eval — MAE of Cosmos 3 predicted action chunks vs recorded
+    DROID actions, served out-of-process; in-distribution decode check.
+  tags: [cosmos3, wam, nvidia, droid, openloop, custom, eval-only]
+
+objective: |
+  Validate the Cosmos 3 serving + decode path in-distribution by comparing
+  predicted action chunks against ground-truth DROID actions, beating the
+  zero/hold baselines.
+
+acceptance_criteria: |
+  The eval reports per-dim MAE + gripper agreement over the sampled queries,
+  with predicted MAE below both naive baselines.
+
+robot:
+  embodiment: franka_panda   # DROID rig
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/Cosmos3-Edge-Policy-DROID
+
+tasks:
+  - name: eval-droid-openloop-gt
+    kind: evaluation
+    evaluation_type: custom
+    description: Open-loop MAE vs GT on a DROID LeRobot episode.
+    benchmark_name: droid_openloop_gt
+    num_episodes: 8              # sampled query points (see num_samples)
+    config:
+      eval_script: examples/cosmos3-droid-openloop/openloop_gt_eval.py
+      # eval_python: /path/to/env_pilot_cosmos3/bin/python   # needs pandas+pyarrow+cv2
+      checkpoint: nvidia/Cosmos3-Edge-Policy-DROID           # recorded in the summary
+      # --- forwarded verbatim to the script (snake_case -> --flags) ---
+      dataset_root: ~/datasets/droid_lerobot_example
+      host: 127.0.0.1
+      port: 8000
+      num_samples: 8
+      horizon: 16                # compare up to the server's chunk length
+      image_size: 480            # DROID recipe trains 480p concat_view
+      domain_name: droid_lerobot # must be a registered cosmos-framework embodiment
+
+leaderboard:
+  publish: false
