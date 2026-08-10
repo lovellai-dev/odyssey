@@ -125,6 +125,16 @@ if [ "$DO_DOCKER" -eq 1 ]; then
     # build_docker.sh needs docker API access (sudo unless your user is in the docker group).
     ( cd "$ROBOLAB_DIR" && sudo ./docker/build_docker.sh latest ) \
       || echo "[setup] WARNING: RoboLab docker build failed — build it manually per its README." >&2
+    # Derived image: the upstream image ships NO system libvulkan.so.1 (only
+    # stale copies buried in XR extension caches), so Isaac's kit dies at boot
+    # with "carb::graphics::createInstance failed" / "Failed to create any GPU
+    # devices". Install the loader from the image's OWN distro (do NOT bind-
+    # mount the host's loader: host glibc is typically newer and the .so won't
+    # load — verified failure mode). One extra layer, fully reproducible.
+    printf "FROM robolab:latest\nUSER root\nRUN apt-get update && apt-get install -y --no-install-recommends libvulkan1 && rm -rf /var/lib/apt/lists/*\n" \
+      | sudo docker build -q -t robolab:odyssey -f - "$ROBOLAB_DIR" >/dev/null \
+      && echo "[setup] built robolab:odyssey (= robolab:latest + libvulkan1)" \
+      || echo "[setup] WARNING: robolab:odyssey build failed — Isaac will not boot without libvulkan1." >&2
   else
     echo "[setup] WARNING: docker not found — skipping the RoboLab image build (--no-docker to silence)." >&2
   fi
@@ -147,7 +157,10 @@ echo "==> [3.5/4] eval_python wrapper (runs run.py INSIDE the robolab docker)"
 #                            (image convention, PYTHONPATH) and at its HOST path,
 #                            so the host-absolute script path Odyssey passes
 #                            resolves inside the container and results land in
-#                            the host checkout's output/.
+#                            the host checkout's output/;
+#   * robolab:odyssey image: robolab:latest + libvulkan1 (see the build step
+#                            above) — without the system Vulkan loader Isaac
+#                            dies at boot ("createInstance failed").
 WRAPPER="$HOME/robolab_python.sh"
 mkdir -p "$ROBOLAB_DIR/.cache/ov" "$ROBOLAB_DIR/.cache/kit"
 cat > "$WRAPPER" <<WRAP
@@ -163,19 +176,20 @@ exec sudo docker run --rm --entrypoint /isaac-sim/python.sh --net host --gpus al
   -v $ROBOLAB_DIR/.cache/kit:/isaac-sim/kit/cache \\
   -v $ROBOLAB_DIR:/workspace/robolab \\
   -v $ROBOLAB_DIR:$ROBOLAB_DIR \\
-  -w /workspace/robolab robolab:latest "\$@"
+  -w /workspace/robolab robolab:odyssey "\$@"
 WRAP
 chmod +x "$WRAPPER"
 echo "[setup] wrote $WRAPPER (use it as config.eval_python)"
 
-# Verify the container actually sees the GPU *with graphics* — the failure mode
-# is silent otherwise (Isaac hangs at boot). Both checks must pass.
+# Verify the container actually sees the GPU *with graphics* — the failure
+# mode is silent otherwise (Isaac hangs at boot). All three must pass:
+# NVML (device), the injected driver ICD, and the system Vulkan loader.
 if [ "$DO_DOCKER" -eq 1 ] && command -v docker >/dev/null; then
   sudo docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all \
-      --entrypoint /bin/bash robolab:latest -c \
-      "nvidia-smi --query-gpu=name --format=csv,noheader && ls /etc/vulkan/icd.d/nvidia_icd.json" \
-    && echo "[setup] container GPU + Vulkan ICD: OK" \
-    || echo "[setup] WARNING: container cannot see the GPU with graphics caps — Isaac will hang. Check nvidia-container-toolkit + host libnvidia-gl/vulkan packages." >&2
+      --entrypoint /bin/bash robolab:odyssey -c \
+      "nvidia-smi --query-gpu=name --format=csv,noheader && ls /etc/vulkan/icd.d/nvidia_icd.json && ldconfig -p | grep -q libvulkan.so.1" \
+    && echo "[setup] container GPU + Vulkan ICD + loader: OK" \
+    || echo "[setup] WARNING: GPU/Vulkan check failed in robolab:odyssey — Isaac will hang. Check nvidia-container-toolkit, host libnvidia-gl, and the derived-image build." >&2
 fi
 
 # ---------------------------------------------------------------------------

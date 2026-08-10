@@ -66,6 +66,10 @@ tasks:
       # entry_script: policies/cosmos3/run.py   # RoboLab policy backend (default)
       # instruction_type: default
       # video_mode: all
+      # On SHARED GPUs: RoboLab's subtask checker auto-spawns a ~50GB vLLM
+      # judge (Cosmos3-Nano Reasoner); disable it and keep the sim-side
+      # success signal (booleans become bare flags: true -> --disable-subtask).
+      # disable_subtask: true
 
 leaderboard:
   publish: false   # Backend not live yet.

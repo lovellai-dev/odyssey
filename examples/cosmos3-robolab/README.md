@@ -55,11 +55,14 @@ non-interactive wrapper you point `config.eval_python` at. Every flag in it
 was a real failure on the first hardware bring-up (H100, docker 27 /
 driver 580):
 
-| Symptom | Cause | Fix (in the wrapper) |
+| Symptom | Cause | Fix (in the wrapper / setup) |
 | --- | --- | --- |
 | exit **125**, `unknown or invalid runtime name: nvidia` | modern daemons don't register the legacy `nvidia` runtime | `--gpus all` |
 | exit **127** (command not found) | the image ships no bare `python` on PATH | `--entrypoint /isaac-sim/python.sh` |
 | Isaac boots then **hangs**; log shows Warp `cuDeviceGetUuid` errors, PhysX `no suitable CUDA GPU`, renderer `invalid device` | docker injects only `compute,utility` driver capabilities — no graphics/Vulkan | `-e NVIDIA_DRIVER_CAPABILITIES=all` (injects host libGLX/libEGL + Vulkan ICD) |
+| `carb::graphics::createInstance failed` / `Failed to create any GPU devices` **persisting** after the caps fix; the Warp/PhysX lines above are downstream noise (`cuInit` actually works — verified) | the image ships **no system `libvulkan.so.1`** (the Vulkan *loader* is an OS package, not part of the driver injection; only stale copies exist in XR extension caches) | build the derived image: `FROM robolab:latest` + `apt-get install libvulkan1` → `robolab:odyssey` (setup.sh does this) |
+| same, after bind-mounting the **host's** `libvulkan.so.1` | host glibc (e.g. 2.38+) newer than the container's (22.04 = 2.35) — the mounted `.so` won't load | don't mount host userland libs across glibc versions; install inside the image instead |
+| GPU **VRAM exhausted** mid-boot; a surprise `vllm serve nvidia/Cosmos3-Nano` container (~50 GB, `--gpu-memory-utilization 0.60`) appears | RoboLab's subtask progress checker auto-spawns a Cosmos3-Nano Reasoner judge via vLLM | on shared GPUs set `disable_subtask: true` in the mission config (bare store_false flag; episode success still comes from the sim's termination conditions — only per-subtask scores are lost) |
 | `ModuleNotFoundError: robolab`/`policies` | script-mode sys.path doesn't include the repo root | `-e PYTHONPATH=/workspace/robolab` + `-w /workspace/robolab` |
 | runner's host-absolute script path not found in container | container only mounts `/workspace/robolab` | dual mount: checkout also bind-mounted at its **host path** |
 
@@ -67,8 +70,10 @@ Verify before running a mission (both must pass, else Isaac hangs silently):
 
 ```bash
 sudo docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=all \
-    --entrypoint /bin/bash robolab:latest -c \
-    "nvidia-smi --query-gpu=name --format=csv,noheader && ls /etc/vulkan/icd.d/nvidia_icd.json"
+    --entrypoint /bin/bash robolab:odyssey -c \
+    "nvidia-smi --query-gpu=name --format=csv,noheader \
+     && ls /etc/vulkan/icd.d/nvidia_icd.json \
+     && ldconfig -p | grep libvulkan.so.1"
 ```
 
 If the Vulkan ICD check fails, the **host** needs the driver's graphics
