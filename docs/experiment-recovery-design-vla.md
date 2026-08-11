@@ -145,7 +145,40 @@ outcome is data; teleport ablation isolates it) · GR00T migration regression
 unverified (guarded degrade) · npz memory (~100 MB/episode pre-compression;
 per-episode save, default-off).
 
-## 5. Roadmap
+## 5. Phase 0 results (H100, 2026-08-11) — the stuck check must be two-frame
+
+Setup: `nvidia/Cosmos3-Nano` served via plain `vllm serve` (vllm-omni:v0.26.0
+image, port 8002, `--gpu-memory-utilization 0.60`, ~140 s to ready, judge
+latency 0.06-0.26 s/call). Probed on the H100's staged rollout MP4s: 2×
+cosmos3-OOD LIBERO FAIL (arm never engages) + 3× UR5e drugsort (1 fail,
+2 success; their pick lands in the first ~15%, then the episode idles at the
+tick cap). Artifacts on the box: `~/phase0_{fail,success}_probe.json`,
+`~/phase0_sweep_{fail,success}.jsonl`, server log `~/reasoner_serve_phase0.log`.
+
+| Question | Result |
+| --- | --- |
+| `retry` (single-frame, open-ended — the shipped `STUCK_PROMPT_TEMPLATE`) | **0.0 YES everywhere**, including FAIL videos — reproduces the 2026-08-10 all-NO finding exactly. Useless as a stuck detector. |
+| `control` canary | 1.0 — the judge sees the scene; this is not the #78 blindness. |
+| Concrete single-frame (`s_drop`, `s_near`) | Real but partial perception (`s_near` varies with actual proximity); not a stuck signal. |
+| **`t_frozen` (TWO frames, ~seconds apart: "is the arm essentially FROZEN in the same pose?")** | **Discriminates: 8/8 NO on active windows (arm moving), 10/10 YES on idle/stuck windows** — across both visual domains. |
+| `t_progress` (two frames, open-ended "made progress on the task?") | NO even during genuinely active successful picks — open-ended judgment biases NO, exactly per the reasoner-probe README's law. |
+
+**Design consequences (follow-up commit before Phase 2):**
+
+1. `SpecialistGate` must submit **two frames** — the previous chunk-boundary
+   frame + the current one (`RecoveryPolicy` already touches both; storing
+   the last boundary frame is one field). `OpenAICompatCompletionJudge`
+   needs a multi-image payload path.
+2. `STUCK_PROMPT_TEMPLATE` becomes the two-frame frozen-compare phrasing;
+   keep concrete single-frame add-ons (`s_drop`) as optional extra verdicts
+   rather than open-ended "failed/stuck" judgments.
+3. Honest caveat: two-frame frozen detection overlaps tier 1's kinematic
+   signal (both measure "no motion"). The VLM's *distinct* value must come
+   from semantic checks (dropped/knocked object) — untestable on the staged
+   videos (no such events); the GR00T pose-cliff FAIL corpus is the right
+   material when we pull it in.
+
+## 6. Roadmap
 
 - **PR 1 (this)**: recovery skeleton + VLA-Corrector truncation + rollout logging.
 - **PR 2**: VLA-Corrector LVM tier — vendor/adapt `siglip_dynamics`, train the
