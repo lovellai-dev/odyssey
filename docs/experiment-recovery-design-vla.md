@@ -1,7 +1,15 @@
 # Experiment: closed-loop VLA recovery (GR00T / π0.5) with VLA-Corrector integration
 
 **Branch**: `experiment-vla-recovery-closed-loop` (off `develop`)
-**Status**: design final + implementation plan agreed; implementation not started.
+**Status**: PR 1 **implemented** (2026-08-11) — all nine commits of §4 landed:
+`ChunkPilotAdapter.flush()`, `runners/agents/recovery.py` (ledger / tiered
+monitor / EE controller / policy / npz corpus), `runners/agents/specialist_gate.py`,
+the GR00T recipe migrated onto the adapter (equivalence-tested), recovery wired
+into both recipes via `evals/recovery_wiring.py` (default-off inert),
+`LiberoRunner` recovery_dir + artifacts, `examples/reasoner-probe/` (Phase 0)
+and `examples/recovery-gr00t-libero/` (arms A–D). ~90 new unit tests; suite
+green; strict mypy clean. **Next**: GPU phases 0/2/3 on the VM, then PR 2 (LVM
+tier).
 **Paper being integrated**: [VLA-Corrector — Lightweight Detect-and-Correct Inference
 for Adaptive Action Horizon](https://arxiv.org/abs/2607.01804)
 **Code being integrated**: <https://github.com/ZJU-OmniAI/vla-corrector>
