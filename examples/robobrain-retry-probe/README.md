@@ -68,3 +68,30 @@ Tunnel with `ssh -L 8002:127.0.0.1:8002` if the model is served on the H100;
 Retry's YES polarity (flip on failures) needs a failed-rollout dir; the
 mission ships that task commented out until one is collected. That run is the
 map's C3b offline-oracle test.
+
+## Iteration 2 — retry as a progress curve (`robobrain_value_probe.py`)
+
+Run 1 finding: an *eventless* failure (robot moves nominally, never
+progresses — `rollout_ep000_fail.mp4`) is invisible to single-frame YES/NO
+retry judging; every frame honestly looks like a nominal in-progress attempt.
+The failure lives in the sequence, so Iteration 2 asks RoboBrain's native
+strength instead (card: Temporal Value Estimation / Dense Progress
+Prediction): a task-progress percentage per sampled frame, reading the
+*curve* — a stalled curve is the retry signal, a threshold on a continuous
+quantity instead of a binary opinion.
+
+```bash
+python examples/robobrain-retry-probe/robobrain_value_probe.py \
+    --videos_dir ~/cosmos3_probe_videos_success \
+    --instruction "pick up the red capsule and place it in the blue tray" \
+    --view side --upscale 2 --stride 10 --out-json /tmp/value_probe.json
+```
+
+First live read (H100, 2026-08-11, stride 10): with `view: side` the stall
+detector separates cleanly — the failed rollout never rises above its opening
+value (25 → peak 25 → STALLED), while both successes rise 40–50 points in the
+early window (peaks 66/75 → progressing). `wrist` view is noisy (the crop
+hides the trays), confirming the Specialist Map's camera hypothesis: retry
+wants workspace geometry, not the gripper close-up. Caveats: n=3 rollouts
+(one failure), and raw values are noisy — the discriminative quantity is
+rise-over-opening by the 60% checkpoint (`MIN_RISE`), not any single value.
