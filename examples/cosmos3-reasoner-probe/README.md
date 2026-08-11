@@ -118,6 +118,28 @@ questions (the PR #68 posture) over completion-style ones.
 3. Re-run against confirmed-UR10e rollouts with the campaign's real task
    instruction; fix the `embodiment` label accordingly.
 
+## Watch it happen: the probe visualizer
+
+The model never sees the video — it sees isolated frames, one independent
+image+text call per (frame, question). `utils/visualize_probe.py` makes that
+loop visible: it replays it over one rollout MP4, streams a table row per
+answer to the terminal, and writes a self-contained HTML report — the
+playable video, the judged (cropped/upscaled) thumbnails, and the growing
+Q/A table with the *full prompt sent* per row; clicking a row seeks the
+video to that frame. The page auto-refreshes while the run is live. It also
+asks the paired `empty` question (the degeneracy detector from Run 3).
+
+```bash
+python examples/cosmos3-reasoner-probe/utils/visualize_probe.py \
+    --video ~/videos/rollout_ep001_success.mp4 \
+    --instruction "pick up the red capsule and place it in the blue tray" \
+    --view wrist --upscale 3 --stride 10 --out /tmp/probe_report.html
+open /tmp/probe_report.html
+```
+
+Tunnel first (`ssh -L 8002:127.0.0.1:8002 <gpu-box>`) when the model is
+served remotely; `--fake` exercises the viewer without any server.
+
 ## Reproduce
 
 1. Serve the model (recipe above; any Edge/Nano/Super Reasoner id works —
