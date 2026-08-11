@@ -120,6 +120,14 @@ if [ ! -d "$ROBOLAB_DIR/.git" ]; then
 else
   echo "[setup] RoboLab already at $ROBOLAB_DIR — reusing"
 fi
+# CRITICAL: RoboLab's scene/asset files (.usda, textures) are git-lfs objects.
+# Without lfs the clone holds 4KB pointer files and USD dies at task import
+# with pxr.Tf.ErrorException "Failed to open layer" — silently swallowed by
+# the class-name task discovery (it looks like "Task not found").
+command -v git-lfs >/dev/null || sudo apt-get install -y -qq git-lfs
+( cd "$ROBOLAB_DIR" && git lfs install >/dev/null && git lfs pull ) \
+  && echo "[setup] git-lfs assets pulled ($(du -sh "$ROBOLAB_DIR/assets" | cut -f1))" \
+  || echo "[setup] WARNING: git lfs pull failed — scenes will not load." >&2
 if [ "$DO_DOCKER" -eq 1 ]; then
   if command -v docker >/dev/null; then
     # build_docker.sh needs docker API access (sudo unless your user is in the docker group).

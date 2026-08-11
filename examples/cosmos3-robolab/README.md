@@ -47,7 +47,36 @@ Contract details (pinned from RoboLab source): `benchmark_name` → `--task`;
 jsonl is copied into the task's output dir as an artifact. Passthrough config
 keys reach `run.py` with underscores dashed (`remote_port` → `--remote-port`).
 
-## Running inside docker: the wrapper (and why)
+## Native route (no docker) — RECOMMENDED
+
+Validated end-to-end on the H100 bring-up after the docker route dead-ended
+(see the table below: on some hosts the nvidia toolkit never injects the
+driver's *graphics* libs into containers, and Isaac's Vulkan cannot start).
+RoboLab supports a fully self-contained pip env:
+
+```bash
+cd RoboLab
+git lfs install && git lfs pull        # assets are LFS objects (see table)
+uv sync --extra isaac51 --python 3.11  # IsaacSim 5.1 + IsaacLab 2.3.2 pip (~18 GB)
+                                       # (3.13 default FAILS: no isaaclab wheels)
+uv pip install openpi-client           # policies/cosmos3/client.py needs it
+```
+
+Then `config.eval_python` is a tiny wrapper (no docker at all):
+
+```bash
+#!/usr/bin/env bash
+export OMNI_KIT_ACCEPT_EULA=YES ACCEPT_EULA=Y ISAACSIM_ACCEPT_EULA=YES  # else an interactive EULA prompt hangs headless runs
+export PYTHONPATH=/path/to/RoboLab
+exec /path/to/RoboLab/.venv/bin/python "$@"
+```
+
+`benchmark_name` must be the task **class name** (`ToolOrganizationTask`) —
+the file-name form registers the env but the later lookup misses it. Host
+needs working Vulkan (`vulkaninfo --summary` shows the GPU) and ~15-20 GB
+free VRAM for Isaac.
+
+## Docker route: the wrapper (and why)
 
 RoboLab's own `docker/run_docker.sh` is interactive-only and assumes a legacy
 docker setup. `setup.sh` therefore generates `~/robolab_python.sh` — a
@@ -62,7 +91,7 @@ driver 580):
 | Isaac boots then **hangs**; log shows Warp `cuDeviceGetUuid` errors, PhysX `no suitable CUDA GPU`, renderer `invalid device` | docker injects only `compute,utility` driver capabilities — no graphics/Vulkan | `-e NVIDIA_DRIVER_CAPABILITIES=all` (injects host libGLX/libEGL + Vulkan ICD) |
 | `carb::graphics::createInstance failed` / `Failed to create any GPU devices` **persisting** after the caps fix; the Warp/PhysX lines above are downstream noise (`cuInit` actually works — verified) | the image ships **no system `libvulkan.so.1`** (the Vulkan *loader* is an OS package, not part of the driver injection; only stale copies exist in XR extension caches) | build the derived image: `FROM robolab:latest` + `apt-get install libvulkan1` → `robolab:odyssey` (setup.sh does this) |
 | same, after bind-mounting the **host's** `libvulkan.so.1` | host glibc (e.g. 2.38+) newer than the container's (22.04 = 2.35) — the mounted `.so` won't load | don't mount host userland libs across glibc versions; install inside the image instead |
-| GPU **VRAM exhausted** mid-boot; a surprise `vllm serve nvidia/Cosmos3-Nano` container (~50 GB, `--gpu-memory-utilization 0.60`) appears | RoboLab's subtask progress checker auto-spawns a Cosmos3-Nano Reasoner judge via vLLM | on shared GPUs set `disable_subtask: true` in the mission config (bare store_false flag; episode success still comes from the sim's termination conditions — only per-subtask scores are lost) |
+| `CUDA error: out of memory` at env creation (Isaac needs ~15-20 GB) | **VRAM co-tenants on a shared box** — in our bring-up, a `vllm serve nvidia/Cosmos3-Nano` server (~53 GB) from a parallel workflow; policy servers and other jobs add up | audit `nvidia-smi` compute apps before launching; pause/relocate co-tenants. `disable_subtask: true` also skips RoboLab's subtask judging (bare store_false flag; episode success still comes from the sim's termination conditions) |
 | `ModuleNotFoundError: robolab`/`policies` | script-mode sys.path doesn't include the repo root | `-e PYTHONPATH=/workspace/robolab` + `-w /workspace/robolab` |
 | runner's host-absolute script path not found in container | container only mounts `/workspace/robolab` | dual mount: checkout also bind-mounted at its **host path** |
 
