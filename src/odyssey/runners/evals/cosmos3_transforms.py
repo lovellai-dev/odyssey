@@ -165,5 +165,5 @@ def cosmos3_action_to_libero(chunk, k, *, translation_only: bool = False) -> np.
             )
     if translation_only:
         action[3:6] = 0.0
-        action[6] = 1.0  # gripper forced open
+        action[6] = -1.0  # gripper forced open (LIBERO: -1 = open, +1 = close)
     return action.astype(np.float32)

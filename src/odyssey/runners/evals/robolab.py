@@ -100,7 +100,10 @@ def build_robolab_argv(
 ) -> list[str]:
     """Build ``run.py`` argv: contract flags + config passthrough.
 
-    ``num_episodes`` maps to ``--num-runs`` x ``num_envs``; every other config
+    ``num_episodes`` maps to ``--num-runs`` x ``num_envs`` — rounded UP, so a
+    ``num_episodes`` that isn't a multiple of ``num_envs`` runs extra episodes
+    (e.g. ``num_episodes: 10`` with ``num_envs: 4`` -> 3 runs = 12 episodes;
+    the summary reports the real count). Every other config
     key passes through as ``--key value`` with underscores dashed
     (``remote_port`` → ``--remote-port``): RoboLab's own flags are
     kebab-case-first (the backend-specific ones exclusively so), minus the

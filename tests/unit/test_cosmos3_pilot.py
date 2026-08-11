@@ -169,7 +169,7 @@ def test_cosmos3_pilot_action_translation_only_zeros_rotation() -> None:
     row = [0.1, 0.1, 0.1, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0]
     action = t.cosmos3_action_to_libero({"action": [row]}, 0, translation_only=True)
     np.testing.assert_allclose(action[3:6], [0.0, 0.0, 0.0])
-    assert action[6] == pytest.approx(1.0)  # gripper forced open
+    assert action[6] == pytest.approx(-1.0)  # gripper forced open (LIBERO: -1 = open)
 
 
 # ---------------------------------------------------------------------------

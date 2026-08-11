@@ -129,3 +129,6 @@ git history if needed):
   embodiment path).
 - The Cosmos 3 Reasoner SPECIALIST probe lives on the
   `experiment-specialist-grasp-verification` branch.
+
+> Note: if PR #95 was squash-merged, those commits are not reachable from
+> `develop` — run `git fetch origin pull/95/head` first, then `git show <sha>`.

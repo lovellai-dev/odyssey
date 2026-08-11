@@ -27,9 +27,12 @@ injectable for tests, so this module imports and unit-tests on a CPU box.
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class Cosmos3HttpClient:
@@ -48,10 +51,18 @@ class Cosmos3HttpClient:
         self._timeout = float(timeout_seconds)
 
     def info(self) -> dict[str, Any]:
-        with urllib.request.urlopen(
-            f"{self._base}/info", timeout=self._timeout
-        ) as resp:
-            return dict(json.loads(resp.read().decode("utf-8")))
+        try:
+            with urllib.request.urlopen(
+                f"{self._base}/info", timeout=self._timeout
+            ) as resp:
+                return dict(json.loads(resp.read().decode("utf-8")))
+        except urllib.error.URLError as e:
+            raise RuntimeError(
+                f"Cosmos3 policy server unreachable at {self._base}/info: {e}. "
+                "Start it first, e.g. python -m "
+                "cosmos_framework.scripts.action_policy_server_libero "
+                "--checkpoint-path <hf-id-or-export> --port <port>."
+            ) from e
 
     def infer(self, request: dict[str, Any]) -> dict[str, Any]:
         req = urllib.request.Request(
@@ -116,8 +127,16 @@ def make_cosmos3_pilot(
             n_action_steps = int(policy.info().get(
                 "action_chunk_size", COSMOS3_DEFAULT_CHUNK_SIZE
             ))
-        except Exception:  # /info unreachable -> family default, fail late in act()
+        except Exception as e:  # /info unreachable -> family default, fail late in act()
             n_action_steps = COSMOS3_DEFAULT_CHUNK_SIZE
+            logger.warning(
+                "Cosmos3 GET /info failed (%s); assuming the family-default "
+                "action_chunk_size=%d. If the server's real chunk size differs, "
+                "act() will fail with an index error — pass n_action_steps "
+                "explicitly to override.",
+                e,
+                n_action_steps,
+            )
 
     def observation_builder(raw_obs: Any, instruction: str) -> Any:
         # raw_obs is the kwargs dict shaped by the eval recipe from the env
