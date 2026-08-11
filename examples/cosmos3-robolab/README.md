@@ -116,6 +116,16 @@ mounts persist them across runs.
 Any Cosmos 3 policy member works — the server loads the weights; the mission
 only records the id. `config.entry_script` selects the RoboLab policy backend
 (default `policies/cosmos3/run.py`) — a future backend is a mission edit, not
-a new runner. For LIBERO evals of the family use `examples/quickstart-cosmos3/`
-(`pilot: cosmos3`); for the no-sim decode check use
-`examples/cosmos3-droid-openloop/`.
+a new runner.
+
+Two sibling example missions were exercised on the same hardware bring-up and
+then trimmed from this branch to keep one canonical example (recover them from
+git history if needed):
+
+- LIBERO eval with `pilot: cosmos3` — `examples/quickstart-cosmos3/`
+  (commits `88e40c9`/`b2babcb`; OOD smoke with DROID checkpoints).
+- No-sim open-loop GT decode check — `examples/cosmos3-droid-openloop/`
+  (commit `4b83506`; validated DROID in-dist MAE + the `robomind-ur`
+  embodiment path).
+- The Cosmos 3 Reasoner SPECIALIST probe lives on the
+  `experiment-specialist-grasp-verification` branch.
