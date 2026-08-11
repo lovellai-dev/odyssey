@@ -209,6 +209,34 @@ def _build_obs(obs, instruction, *, image_key, wrist_image_key, flip):
     )
 
 
+def _make_gr00t_pilot(client, args):
+    """Wrap the msgpack policy client in the shared ``ChunkPilotAdapter``.
+
+    This retires the recipe's historical inline ``for k in range(n_action_steps)``
+    replay loop in favour of the pilot-agnostic adapter π0.5 and Cosmos 3 already
+    use — one chunk engine, and the recovery hooks (``flush()``, chunk-boundary
+    bookkeeping) come for free. The adapter re-queries with the observation of
+    the boundary step, exactly when the old loop rebuilt the wire obs; tuple
+    results from ``client.get_action`` are unwrapped adapter-side.
+    """
+    from odyssey.runners.agents.chunk_pilot import ChunkPilotAdapter
+
+    t = _transforms()
+    return ChunkPilotAdapter(
+        predict_chunk=client.get_action,
+        action_decoder=lambda chunk, k: t.gr00t_action_to_libero(
+            chunk, k, translation_only=args.translation_only,
+        ),
+        n_action_steps=args.n_action_steps,
+        observation_builder=lambda raw_obs, instr: _build_obs(
+            raw_obs, instr,
+            image_key=args.image_key,
+            wrist_image_key=args.wrist_image_key,
+            flip=args.flip_images,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Run path (heavy imports live here)
 # ---------------------------------------------------------------------------
@@ -220,7 +248,6 @@ def run_eval(args: argparse.Namespace) -> dict:
     )
     from odyssey.runners.video import save_rollout_video, to_uint8_frame
 
-    t = _transforms()
     cfg = {
         "camera_height": args.camera_height,
         "camera_width": args.camera_width,
@@ -239,6 +266,7 @@ def run_eval(args: argparse.Namespace) -> dict:
     client = _server().connect_policy_client(
         host=args.host, port=args.port, timeout_ms=args.timeout_ms
     )
+    pilot = _make_gr00t_pilot(client, args)
 
     successes, returns = 0, []
     video_dir = args.video_dir or None
@@ -252,35 +280,25 @@ def run_eval(args: argparse.Namespace) -> dict:
 
         ep_return, success = 0.0, False
         frames: list = []
+        # Drop any partially-replayed chunk from the previous episode — the old
+        # inline loop did this implicitly by re-querying at the top of the while.
+        pilot.reset()
         step = 0
         try:
             while step < args.max_steps_per_episode and not success:
-                observation = _build_obs(
-                    obs, instruction,
-                    image_key=args.image_key,
-                    wrist_image_key=args.wrist_image_key,
-                    flip=args.flip_images,
-                )
-                result = client.get_action(observation)
-                chunk = result[0] if isinstance(result, tuple) else result
-                for k in range(args.n_action_steps):
-                    if step >= args.max_steps_per_episode:
-                        break
-                    action = t.gr00t_action_to_libero(
-                        chunk, k, translation_only=args.translation_only,
-                    )
-                    obs, reward, done, _info = env.step(action.tolist())
-                    ep_return += float(reward)
-                    if video_dir is not None:
-                        # match the pilot's orientation: LIBERO's agentview is stored
-                        # 180°-rotated, so flip the video frame too (else it's upside down).
-                        frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
-                        if frame is not None:
-                            frames.append(frame)
-                    step += 1
-                    if done:  # LIBERO sets done=True when the task is solved
-                        success = True
-                        break
+                action = pilot.act(obs, instruction)
+                obs, reward, done, _info = env.step(action.tolist())
+                ep_return += float(reward)
+                if video_dir is not None:
+                    # match the pilot's orientation: LIBERO's agentview is stored
+                    # 180°-rotated, so flip the video frame too (else it's upside down).
+                    frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
+                    if frame is not None:
+                        frames.append(frame)
+                step += 1
+                if done:  # LIBERO sets done=True when the task is solved
+                    success = True
+                    break
         except Exception as ep_exc:
             # A flaky get_action()/env.step() must not abort the whole sweep (that
             # would drop the remaining episodes AND the final ODYSSEY_RESULT line).

@@ -243,3 +243,133 @@ def test_argv_parses_back_into_the_recipe() -> None:
     assert args.task_id == 2
     assert args.serve_checkpoint is True
     assert args.n_action_steps == 8
+
+
+# ---------------------------------------------------------------------------
+# ChunkPilotAdapter migration — the adapter-driven loop is action-for-action
+# and query-for-query identical to the recipe's historical inline chunk loop.
+# ---------------------------------------------------------------------------
+
+
+class _FakeChunkClient:
+    """msgpack-client stand-in: records wire obs, returns tagged (tuple) chunks."""
+
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def get_action(self, observation: Any) -> Any:
+        self.calls.append(observation)
+        return (f"chunk-{len(self.calls)}", {"latency_ms": 1})  # tuple, like the real client
+
+
+class _CountingEnv:
+    """Gym-4-tuple env: obs is a step counter; done fires at ``done_at`` steps."""
+
+    def __init__(self, *, done_at: int | None = None) -> None:
+        self._done_at = done_at
+        self._steps = 0
+
+    def reset(self) -> dict[str, Any]:
+        self._steps = 0
+        return {"tick": 0}
+
+    def step(self, action: Any) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
+        self._steps += 1
+        done = self._done_at is not None and self._steps >= self._done_at
+        return {"tick": self._steps}, 0.0, done, {}
+
+
+def _fake_decode(chunk: Any, k: int, *, translation_only: bool = False) -> Any:
+    return (chunk, k, translation_only)
+
+
+def _patched_pilot(monkeypatch: Any, client: _FakeChunkClient, *, n: int) -> Any:
+    class _T:
+        gr00t_action_to_libero = staticmethod(_fake_decode)
+
+    monkeypatch.setattr(E, "_transforms", lambda: _T)
+    monkeypatch.setattr(
+        E, "_build_obs",
+        lambda obs, instr, *, image_key, wrist_image_key, flip: ("wire", obs["tick"], instr),
+    )
+    args = E.build_parser().parse_args(
+        ["--task", "libero_object", "--checkpoint", "/ckpt", "--n_action_steps", str(n)]
+    )
+    return E._make_gr00t_pilot(client, args)
+
+
+def _drive_adapter(pilot: Any, env: _CountingEnv, *, max_steps: int) -> list[Any]:
+    """The migrated run_eval loop shape (per-step act, break on done/max)."""
+    actions: list[Any] = []
+    obs = env.reset()
+    pilot.reset()
+    step, success = 0, False
+    while step < max_steps and not success:
+        action = pilot.act(obs, "pick up the milk")
+        actions.append(action)
+        obs, _r, done, _i = env.step(action)
+        step += 1
+        if done:
+            success = True
+    return actions
+
+
+def _drive_inline(client: _FakeChunkClient, env: _CountingEnv, *, n: int,
+                  max_steps: int) -> list[Any]:
+    """The recipe's PRE-migration inline chunk loop, reimplemented verbatim."""
+    actions: list[Any] = []
+    obs = env.reset()
+    step, success = 0, False
+    while step < max_steps and not success:
+        observation = ("wire", obs["tick"], "pick up the milk")
+        result = client.get_action(observation)
+        chunk = result[0] if isinstance(result, tuple) else result
+        for k in range(n):
+            if step >= max_steps:
+                break
+            action = _fake_decode(chunk, k)
+            actions.append(action)
+            obs, _r, done, _i = env.step(action)
+            step += 1
+            if done:
+                success = True
+                break
+    return actions
+
+
+def _assert_equivalent(monkeypatch: Any, *, n: int, max_steps: int,
+                       done_at: int | None) -> None:
+    old_client = _FakeChunkClient()
+    old = _drive_inline(old_client, _CountingEnv(done_at=done_at), n=n, max_steps=max_steps)
+
+    new_client = _FakeChunkClient()
+    pilot = _patched_pilot(monkeypatch, new_client, n=n)
+    new = _drive_adapter(pilot, _CountingEnv(done_at=done_at), max_steps=max_steps)
+
+    assert new == old  # identical action sequence (chunk tag, cursor, flags)
+    assert new_client.calls == old_client.calls  # identical query count AND wire obs
+
+
+def test_gr00t_pilot_adapter_matches_inline_loop_clean_drain(monkeypatch: Any) -> None:
+    _assert_equivalent(monkeypatch, n=4, max_steps=8, done_at=None)
+
+
+def test_gr00t_pilot_adapter_matches_inline_loop_done_midchunk(monkeypatch: Any) -> None:
+    _assert_equivalent(monkeypatch, n=4, max_steps=20, done_at=6)
+
+
+def test_gr00t_pilot_adapter_matches_inline_loop_max_steps_midchunk(monkeypatch: Any) -> None:
+    _assert_equivalent(monkeypatch, n=4, max_steps=6, done_at=None)
+
+
+def test_gr00t_pilot_reset_between_episodes_drops_partial_chunk(monkeypatch: Any) -> None:
+    client = _FakeChunkClient()
+    pilot = _patched_pilot(monkeypatch, client, n=4)
+
+    _drive_adapter(pilot, _CountingEnv(done_at=2), max_steps=10)  # ends mid-chunk
+    assert len(client.calls) == 1
+    _drive_adapter(pilot, _CountingEnv(done_at=2), max_steps=10)  # fresh episode
+
+    # Episode 2 re-queried instead of replaying episode 1's leftover actions.
+    assert len(client.calls) == 2
+    assert [obs for _w, obs, _i in client.calls] == [0, 0]  # both queries at reset obs
