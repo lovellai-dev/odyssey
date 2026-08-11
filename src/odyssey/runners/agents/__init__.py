@@ -8,11 +8,14 @@ Protocols:
 Implementations:
   * ``LLMPlanner`` — planning logic, takes any TextGenerator
   * ``PlannedEvalRuntime`` — composes planner + pilot with phase transitions
+  * ``OpenAICompatCompletionJudge`` — CompletionDetector over any
+    OpenAI-compatible chat endpoint (e.g. a served Cosmos 3 Reasoner)
 
 Model loading (``VLARuntime``, ``GemmaVLMGenerator``) lives in
 ``runners/models/``.
 """
 
+from odyssey.runners.agents.openai_judge import OpenAICompatCompletionJudge
 from odyssey.runners.agents.planned import (
     PhaseConfig,
     PhaseStrategy,
@@ -24,6 +27,7 @@ from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGen
 
 __all__ = [
     "LLMPlanner",
+    "OpenAICompatCompletionJudge",
     "PhaseConfig",
     "PhaseStrategy",
     "PilotRuntime",

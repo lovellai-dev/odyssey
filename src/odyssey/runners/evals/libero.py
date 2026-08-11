@@ -238,6 +238,8 @@ class LiberoRunner(Runner):
             return await self._run_gr00t_pilot(context, spec)
         if pilot == "pi05":
             return await self._run_pi05_pilot(context, spec)
+        if pilot == "cosmos3":
+            return await self._run_cosmos3_pilot(context, spec)
 
         suite_name = spec.benchmark_name
         task_id = int(cfg.get("task_id", 0))
@@ -506,6 +508,57 @@ class LiberoRunner(Runner):
             eval_script=script,
         )
 
+    async def _run_cosmos3_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a Cosmos 3 (WAM) pilot on LIBERO via the subprocess recipe.
+
+        Mirrors ``_run_pi05_pilot`` — same shared bridge (``EvalProtocolCollector``
+        + ``summarize`` + the subprocess helper); only the eval script
+        (``cosmos3_libero_eval.py``, which talks to cosmos-framework's pre-started
+        HTTP ``action_policy_server_libero`` and replays chunks through the
+        pilot-agnostic ``ChunkPilotAdapter``) and the argv builder differ. Any
+        Cosmos3 family member works — the checkpoint is whatever the server was
+        started with; this process only orchestrates and scores.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "cosmos3_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=cosmos3",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_cosmos3_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(cosmos3) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"cosmos3_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
 
 # Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
 # to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
@@ -565,6 +618,37 @@ def build_pi05_libero_argv(
         argv += ["--video_dir", str(video_dir)]
     for key, value in cfg.items():
         if key in _PI05_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
+
+
+# Cosmos3 shares the same handled-keys contract: video is wired via the resolved
+# --video_dir, and pilot/checkpoint/runner are consumed by the runner itself.
+_COSMOS3_HANDLED_CONFIG_KEYS = _GR00T_HANDLED_CONFIG_KEYS
+
+
+def build_cosmos3_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``cosmos3_libero_eval.py`` argv: contract flags + config passthrough.
+
+    Same contract as ``build_pi05_libero_argv`` (the shared GR00T-LIBERO bridge):
+    the eval script uses argparse snake_case flags, so ``task.config`` keys pass
+    through verbatim (``host``/``port`` → the cosmos-framework policy server
+    address, ``domain_name``/``image_size``/``n_action_steps`` → the family-wide
+    Cosmos3 knobs), minus the keys the runner consumes itself.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _COSMOS3_HANDLED_CONFIG_KEYS:
             continue
         argv += [f"--{key}", str(value)]
     return argv

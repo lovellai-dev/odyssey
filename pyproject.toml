@@ -186,6 +186,17 @@ module = [
 ]
 ignore_errors = true
 
+# The Cosmos 3 (WAM) glue is the same category again: numpy wire packers/decoders
+# mirroring cosmos-framework's untyped action_policy_server_libero contract, and
+# the subprocess eval recipe around them. Pinned by tests/unit/test_cosmos3_*.py.
+[[tool.mypy.overrides]]
+module = [
+    "odyssey.runners.evals.cosmos3_transforms",
+    "odyssey.runners.evals.cosmos3_libero_eval",
+    "odyssey.runners.models.cosmos3",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
