@@ -92,6 +92,18 @@ class ChunkPilotAdapter:
         self._cursor = 0
         self._instruction = None
 
+    def flush(self) -> None:
+        """Truncate the buffered chunk so the next ``act`` re-queries.
+
+        The trigger-side counterpart of flush-on-instruction-change: a recovery
+        or drift monitor calls this to discard the remaining open-loop actions
+        of a stale chunk (VLA-Corrector's event-triggered truncation) without
+        touching the instruction. ``steps_remaining`` reads 0 afterwards, so
+        chunk-boundary bookkeeping fires naturally on the next step.
+        """
+        self._chunk = None
+        self._cursor = 0
+
     # -- PilotRuntime surface --------------------------------------------------
 
     def _needs_requery(self, instruction: str) -> bool:
