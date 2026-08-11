@@ -1,0 +1,90 @@
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: recovery-gr00t-libero
+  description: >-
+    Closed-loop recovery experiment (shadow arm) — GR00T-N1.7 pilot on the LIBERO
+    object suite with a tiered stuck detector running in the loop and a served
+    Cosmos3-Nano Reasoner SPECIALIST polled asynchronously at chunk boundaries.
+    Shadow mode: every would-be intervention is detected and logged
+    (recovery_events.jsonl) but never applied — the zero-risk arm that measures
+    detector precision/recall before recovery goes live.
+  tags: [recovery, gr00t, libero, specialist, multi-agent, vla-corrector]
+
+objective: |
+  Measure the stuck-detector tiers (kinematic + specialist VLM) against real
+  GR00T rollouts on LIBERO, and collect the per-step (frame, action) corpus the
+  trained LVM tier will need — without changing pilot behavior (shadow mode).
+
+acceptance_criteria: |
+  The run completes with today's baseline success rate (shadow mode must not
+  change behavior), recovery_events.jsonl records the shadow triggers, and one
+  npz rollout log per episode lands under the task's recovery/rollouts dir.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-LIBERO
+
+    # Declarative: records the experiment loadout. The recipe wires the judge
+    # through config.specialist_base_url below (the multi-agent _has_specialist
+    # path only applies to the in-process OpenVLA pilot, not pilot: gr00t).
+    - id: stuck-judge
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: nvidia/Cosmos3-Nano
+        modality: multimodal
+
+tasks:
+  - name: eval-libero-object-gr00t-recovery-shadow
+    kind: evaluation
+    evaluation_type: libero
+    description: >-
+      GR00T on LIBERO object task_id=0 with the recovery stack in SHADOW mode:
+      detect + log, never intervene (experiment arm B).
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      pilot: gr00t
+      checkpoint: nvidia/GR00T-N1.7-LIBERO
+      task_id: 0
+
+      # --- GR00T policy server (closed-loop auto-serve; see franka-libero) ---
+      serve_checkpoint: true
+      embodiment_tag: LIBERO_PANDA
+      sim_policy_wrapper: true
+      port: 5555
+      n_action_steps: 16
+      capture_video: true
+
+      # --- recovery: experiment arm B (shadow) ------------------------------
+      # Arms (see README):
+      #   A baseline    -> drop every recovery/shadow/specialist key
+      #   B shadow      -> this file as shipped
+      #   C kinematic   -> recovery: true, shadow_mode: false, NO specialist_base_url
+      #   D delegation  -> recovery: true, shadow_mode: false, specialist_base_url set
+      shadow_mode: true
+      # recovery: true
+      # recovery_mode: command        # or: teleport (sim-state restore ablation)
+      # max_recoveries: 3
+      # recovery_steps: 24
+
+      # Tier 1 — kinematic (commanded motion vs EE displacement):
+      stuck_window_steps: 12
+      stuck_eps_m: 0.005
+      # Tier 2 — inter-chunk continuity (0 disables; enable after calibration):
+      # continuity_eps: 0.75
+
+      # Tier 4 — specialist VLM (serve Cosmos3-Nano first; see README):
+      specialist_base_url: "http://127.0.0.1:8002/v1"
+      specialist_model: nvidia/Cosmos3-Nano
+      poll_every_chunks: 2
+
+      # LVM corpus (PR 2): one npz of (frames, actions) per episode.
+      log_actions: true
