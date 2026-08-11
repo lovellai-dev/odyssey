@@ -75,7 +75,8 @@ QUESTIONS = (
     ("retry", RETRY_TEMPLATE),
 )
 
-ANSWER_COLOR = {"YES": "#1a7f37", "NO": "#b3261e", "FAIL": "#8a8a8a"}
+# Serene Ocean semantic colors (lai-trainer command-center theme).
+ANSWER_COLOR = {"YES": "#34d399", "NO": "#c94a4a", "FAIL": "#5a7a8f"}
 
 
 def _fake_transport(payload: dict[str, Any]) -> dict[str, Any]:
@@ -124,45 +125,111 @@ def render_shell(out: Path, *, video_path: Path, meta: dict[str, Any]) -> None:
         {"questions": names, "colors": ANSWER_COLOR, "data_src": data_path_for(out).name}
     )
     out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
-<title>Reasoner probe — {html.escape(video_path.name)}</title><style>
-body {{ font-family: -apple-system, sans-serif; margin: 1.5rem; }}
-table {{ border-collapse: collapse; font-size: 13px; margin-top: 1rem; }}
-td, th {{ border: 1px solid #ddd; padding: 4px 8px; vertical-align: middle; }}
-tr:hover {{ background: #f6f8fa; cursor: pointer; }}
-tr.now {{ background: #fff3c4; }}
-td.q {{ max-width: 440px; color: #555; font-size: 11px; }}
-.meta {{ color: #555; margin-bottom: 1rem; }}
-.badge {{ display: inline-flex; flex-direction: column; align-items: center;
-  border: 1px solid #ddd; border-radius: 8px; padding: 4px 10px; margin: 2px;
-  min-width: 76px; }}
-.badge b {{ font-size: 18px; }}
-.speed button {{ margin-right: 4px; }}
-#timeline {{ margin-top: 10px; width: 512px; position: relative; }}
-.tlrow {{ display: flex; align-items: center; height: 20px; margin: 2px 0; }}
-.tlabel {{ width: 84px; font-size: 11px; color: #555; text-align: right;
-  padding-right: 6px; }}
-.tband {{ position: relative; flex: 1; height: 16px; background: #eee;
-  cursor: pointer; border-radius: 3px; overflow: hidden; }}
-.seg {{ position: absolute; top: 0; bottom: 0; }}
-#playhead {{ position: absolute; top: 0; bottom: 0; width: 2px;
-  background: #000; pointer-events: none; left: 84px; }}
-</style></head><body>
+<title>Reasoner probe — {html.escape(video_path.name)}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+/* Serene Ocean Oasis — lai-trainer command-center theme tokens */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+:root {{
+  --bg-primary:#070c10; --bg-secondary:#0c1318; --bg-tertiary:#121c22;
+  --bg-elevated:#18252d; --bg-glass:rgba(145,174,193,.07);
+  --bg-glass-hover:rgba(145,174,193,.12);
+  --text-primary:#eaf2f7; --text-secondary:#9ab5c7; --text-muted:#5a7a8f;
+  --border-primary:rgba(145,174,193,.12); --border-secondary:rgba(145,174,193,.22);
+  --primary:#508ca4; --pale-sky:#bfd7ea; --sea-green:#0a8754;
+  --emerald:#34d399; --error:#c94a4a; --warning:#d9a441;
+  --gradient-card:linear-gradient(160deg,rgba(12,19,24,.94) 0%,rgba(7,12,16,.98) 100%);
+  --shadow-md:0 3px 8px rgba(0,0,0,.3),0 2px 4px rgba(0,0,0,.2);
+  --font-primary:'DM Sans',-apple-system,sans-serif;
+  --font-mono:'Space Mono','Fira Code',monospace;
+}}
+body {{ font-family:var(--font-primary); margin:0; padding:1.5rem 2rem;
+  background:var(--bg-primary); color:var(--text-primary);
+  background-image:radial-gradient(ellipse at 30% 20%,rgba(80,140,164,.08) 0%,transparent 40%),
+    radial-gradient(ellipse at 70% 80%,rgba(10,135,84,.06) 0%,transparent 40%); }}
+h2 {{ font-weight:600; letter-spacing:-.015em; margin:0 0 4px; font-size:1.375rem; }}
+.card {{ background:var(--gradient-card); border:1px solid var(--border-primary);
+  border-radius:14px; box-shadow:var(--shadow-md); padding:14px 16px;
+  margin-bottom:14px; backdrop-filter:blur(16px); }}
+.layout {{ max-width: 1120px; }}
+.status-badge {{ display:inline-flex; align-items:center; gap:6px;
+  font-family:var(--font-mono); font-size:.6875rem; letter-spacing:.08em;
+  text-transform:uppercase; padding:3px 10px; border-radius:999px;
+  vertical-align:middle; margin-left:10px; }}
+.status-badge.running {{ background:rgba(10,135,84,.12); color:var(--emerald);
+  border:1px solid rgba(10,135,84,.25); }}
+.status-badge.running::before {{ content:''; width:6px; height:6px;
+  border-radius:50%; background:var(--emerald); animation:pulse 1.4s infinite; }}
+.status-badge.done {{ background:rgba(80,140,164,.12); color:var(--pale-sky);
+  border:1px solid rgba(80,140,164,.3); }}
+@keyframes pulse {{ 50% {{ opacity:.3; }} }}
+.meta {{ color:var(--text-secondary); font-size:.8125rem; margin:0 0 16px;
+  line-height:1.55; }}
+.meta b {{ color:var(--text-primary); font-weight:500; }}
+video {{ border-radius:10px; border:1px solid var(--border-primary);
+  display:block; background:#000; }}
+.speed {{ margin-top:8px; }}
+.speed span {{ font-family:var(--font-mono); font-size:.6875rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
+  margin-right:6px; }}
+.speed button {{ font-family:var(--font-mono); font-size:.6875rem;
+  background:var(--bg-glass); color:var(--text-secondary);
+  border:1px solid var(--border-primary); border-radius:7px;
+  padding:4px 10px; margin-right:4px; cursor:pointer; }}
+.speed button:hover {{ background:var(--bg-glass-hover); color:var(--text-primary);
+  border-color:var(--border-secondary); }}
+.badges {{ display:flex; gap:8px; margin:12px 0 2px; flex-wrap:wrap; }}
+.badge {{ display:inline-flex; flex-direction:column; align-items:center;
+  background:var(--bg-glass); border:1px solid var(--border-primary);
+  border-radius:10px; padding:6px 14px; min-width:82px; }}
+.badge small {{ font-family:var(--font-mono); font-size:.625rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }}
+.badge b {{ font-size:1.125rem; font-family:var(--font-mono); }}
+#timeline {{ margin-top:4px; width:560px; position:relative; }}
+.tlrow {{ display:flex; align-items:center; height:22px; margin:3px 0; }}
+.tlabel {{ width:92px; font-family:var(--font-mono); font-size:.625rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
+  text-align:right; padding-right:8px; }}
+.tband {{ position:relative; flex:1; height:14px; background:var(--bg-tertiary);
+  cursor:pointer; border-radius:4px; overflow:hidden;
+  border:1px solid var(--border-primary); }}
+.seg {{ position:absolute; top:0; bottom:0; opacity:.85; }}
+#playhead {{ position:absolute; top:0; bottom:0; width:2px;
+  background:var(--pale-sky); box-shadow:0 0 8px rgba(191,215,234,.6);
+  pointer-events:none; left:92px; }}
+table {{ border-collapse:collapse; font-size:.8125rem; width:100%; }}
+th {{ font-family:var(--font-mono); font-size:.625rem; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text-muted); text-align:left; }}
+td, th {{ border-bottom:1px solid var(--border-primary); padding:6px 10px;
+  vertical-align:middle; }}
+tr:hover td {{ background:var(--bg-glass-hover); cursor:pointer; }}
+tr.now td {{ background:rgba(217,164,65,.12);
+  box-shadow:inset 2px 0 0 var(--warning); }}
+td.q {{ max-width:440px; color:var(--text-muted); font-size:.6875rem;
+  line-height:1.4; }}
+td img {{ border-radius:6px; border:1px solid var(--border-primary); }}
+.ans {{ font-family:var(--font-mono); font-weight:700; }}
+</style></head><body><div class="layout">
 <h2>Grasp-verification probe — {html.escape(video_path.name)}
-<small id="status">(waiting for data…)</small></h2>
+<span class="status-badge running" id="status">waiting</span></h2>
 <div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
-“{html.escape(meta["instruction"])}” · view {meta["view"]} x{meta["upscale"]} ·
-stride {meta["stride"]} · slow-motion 0.25x by default — badges and timeline
-follow the playhead; click a band or a row to seek; new judgements stream in
-without reloading</div>
-<video id="v" controls width="512" src="data:video/mp4;base64,{video_b64}"></video>
-<div class="speed">speed:
+“{html.escape(meta["instruction"])}” · view <b>{meta["view"]}</b>
+x{meta["upscale"]} · stride {meta["stride"]} · slow-motion 0.25x by default —
+badges and timeline follow the playhead; click a band or a row to seek; new
+judgements stream in without reloading</div>
+<div class="card">
+<video id="v" controls width="560" src="data:video/mp4;base64,{video_b64}"></video>
+<div class="speed"><span>speed</span>
 <button onclick="rate(0.1)">0.1x</button><button onclick="rate(0.25)">0.25x</button>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
-<div style="margin-top:8px">{badges}</div>
+<div class="badges">{badges}</div>
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
+</div>
+<div class="card">
 <table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>question</th>
 <th>answer</th><th>latency</th><th>full prompt sent</th></tr></table>
-<script>
+</div>
+</div><script>
 const CFG = {config};
 const v = document.getElementById("v");
 v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; }});
@@ -173,9 +240,9 @@ let records = [], done = false, rendered = 0, thumbs = {{}};
 function onData(d) {{
   if (!d || d.records.length === records.length && done === d.done) return;
   records = d.records; done = d.done;
-  document.getElementById("status").textContent =
-      done ? "(finished — " + records.length + " judgements)"
-           : "(RUNNING — " + records.length + " judgements so far)";
+  const st = document.getElementById("status");
+  st.textContent = (done ? "finished · " : "running · ") + records.length + " judgements";
+  st.className = "status-badge " + (done ? "done" : "running");
   const tbl = document.getElementById("tbl");
   for (; rendered < records.length; rendered++) {{
     const r = records[rendered];
@@ -186,7 +253,7 @@ function onData(d) {{
     const thumb = r.thumb ? '<img src="' + r.thumb + '" height="72">' : "";
     tr.innerHTML = "<td>" + r.frame + "</td><td>" + r.time_s.toFixed(1) +
         "s</td><td>" + thumb + "</td><td>" + r.question +
-        '</td><td style="font-weight:bold;color:' + CFG.colors[r.answer] + '">' +
+        '</td><td class="ans" style="color:' + CFG.colors[r.answer] + '">' +
         r.answer + "</td><td>" + r.latency_s.toFixed(2) + "s</td>" +
         '<td class="q"></td>';
     tr.lastChild.textContent = r.prompt;
