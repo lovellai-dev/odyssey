@@ -43,9 +43,27 @@ Gotchas:
    `upscale: 3`.
 3. `odyssey run examples/robobrain-retry-probe/mission.yaml`
 4. Metrics land in the task's `out.json`: per-question YES rates, latency,
-   per-frame verdicts with raw-reply excerpts. The visualizer from the Cosmos
-   probe (`examples/cosmos3-reasoner-probe/utils/visualize_probe.py`) reads
-   this format unchanged.
+   per-frame verdicts with raw-reply excerpts.
+
+## Watching it live
+
+`utils/visualize_probe.py` (this example's copy of the Cosmos probe viewer,
+already pointed at RoboBrain defaults) replays the judging loop over one MP4
+and renders the streaming HTML report — playable slow-motion video, live
+answer badges, per-question timeline bands with a synced playhead, and the
+full Q/A table (it adds the `empty` degeneracy-detector question on top of
+the mission's four):
+
+```bash
+python examples/robobrain-retry-probe/utils/visualize_probe.py \
+    --video ~/cosmos3_probe_videos_success/rollout_ep001_success.mp4 \
+    --instruction "pick up the red capsule and place it in the blue tray" \
+    --view wrist --upscale 3 --stride 5 --out /tmp/robobrain_report.html
+open /tmp/robobrain_report.html   # rows stream in without reloading
+```
+
+Tunnel with `ssh -L 8002:127.0.0.1:8002` if the model is served on the H100;
+`--fake` exercises the viewer with no server at all.
 
 Retry's YES polarity (flip on failures) needs a failed-rollout dir; the
 mission ships that task commented out until one is collected. That run is the
