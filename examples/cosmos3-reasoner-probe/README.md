@@ -26,8 +26,9 @@ perception questions.
   `CompletionDetector` that drops into `ChunkCompletionGate`; it gained the
   `extra_body` knob for this experiment).
 - The **PILOT records provenance, not execution**: the judged rollouts were
-  driven on the H100 by the GR00T-based DAgger drug-sort policy (finetuned
-  from `nvidia/GR00T-N1.7`) — that is what the loadout's PILOT names. This
+  driven on the H100 by the GR00T + FlowDAgger drug-sort policy (a frozen
+  GR00T flow pilot finetuned from `nvidia/GR00T-N1.7`, FlowDAgger-steered) —
+  that is what the loadout's PILOT (`gr00t-flowdagger-pilot`) names. This
   mission never loads it; the spec simply requires a PILOT.
 - **Video provenance**: drug-sort DAgger evaluation rollouts from the UR-arm
   drugsort campaign (the H100 scripts label the campaign **UR10e** DAgger

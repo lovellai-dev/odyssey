@@ -14,9 +14,9 @@
 # WHO IS WHO (nothing simulated here):
 #   * SPECIALIST — nvidia/Cosmos3-Nano, served by vLLM, the ONLY agent this
 #     mission exercises (via OpenAICompatCompletionJudge over HTTP).
-#   * PILOT — the GR00T-based DAgger drug-sort policy that PRODUCED the judged
-#     rollouts on the H100 (recorded for provenance; this mission never loads
-#     or runs it — the spec simply requires a PILOT in the loadout).
+#   * PILOT — the GR00T + FlowDAgger drug-sort policy that PRODUCED the
+#     judged rollouts on the H100 (recorded for provenance; this mission never
+#     loads or runs it — the spec simply requires a PILOT in the loadout).
 #
 # It exercises `OpenAICompatCompletionJudge` — the CompletionDetector surface a
 # multi-agent mission would drop this model into — over frames sampled at
@@ -66,11 +66,13 @@ acceptance_criteria: |
 robot:
   embodiment: ur10e   # the drug-sort DAgger rig the judged rollouts ran on
   agents:
-    # PROVENANCE ONLY — the GR00T-based DAgger drug-sort policy (finetuned
-    # from this base) is what actually drove the robot in the judged rollout
-    # videos, on the H100. This mission never loads or executes it; the spec
-    # requires a PILOT in the loadout and this records the honest one.
-    - id: pilot
+    # PROVENANCE ONLY — the GR00T + FlowDAgger drug-sort policy (a frozen
+    # GR00T flow pilot finetuned from this base, steered per the FlowDAgger
+    # recipe over DAgger iterations) is what actually drove the robot in the
+    # judged rollout videos, on the H100. This mission never loads or
+    # executes it; the spec requires a PILOT in the loadout and this records
+    # the honest one.
+    - id: gr00t-flowdagger-pilot
       role: PILOT
       model:
         source: huggingface
