@@ -124,8 +124,9 @@ questions (the PR #68 posture) over completion-style ones.
    family-wide by construction).
 2. Point the mission's `config.videos_dir` at a directory of rollout MP4s
    and set `config.instruction` to what those rollouts attempted; set
-   `config.eval_python` to a venv with `imageio` + `pillow` (e.g.
-   `env_pilot_cosmos3` from `../quickstart-cosmos3/setup.sh`).
+   `config.eval_python` to a venv with `imageio` + `pillow` (e.g. the
+   `env_pilot_cosmos3` venv that `quickstart-cosmos3/setup.sh` builds on the
+   `cosmos3-integration` branch — this branch keeps only this experiment).
 3. `odyssey run examples/cosmos3-reasoner-probe/mission.yaml`. Metrics land
    in the task's `custom_eval_metrics.json`; per-frame verdicts under
    `metrics.verdicts`.
