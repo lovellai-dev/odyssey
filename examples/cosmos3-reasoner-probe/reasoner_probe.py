@@ -56,15 +56,17 @@ CONTROL_TEMPLATE = (
     "{instruction:.0s}"  # template must consume the instruction slot
 )
 
+# Iteration 2 (dense-sweep + visualizer finding): the original long,
+# task-anchored phrasing ("the robot is attempting {instruction} ... secured
+# ... NOT a grasp if ...") biased to NO even inside the true grasp window,
+# while short pure-perception phrasing tracked it. Grasp verification is
+# asked as perception, not as task judgement.
 GRASP_TEMPLATE = (
-    "You are a strict visual judge verifying a robot grasp. "
-    "The robot is attempting this instruction: {instruction!r}. "
-    "Look at the image and answer whether the target object is CURRENTLY "
-    "secured in the robot's gripper — held between the gripper fingers, lifted "
-    "off the surface or clearly attached to the end-effector. An object still "
-    "resting on the table, already released at its destination, or a gripper "
-    "merely near the object is NOT a grasp. "
+    "You are a strict visual judge for a robot manipulation scene. "
+    "Look at the image and answer whether the robot gripper is CURRENTLY "
+    "holding an object between its fingers. "
     "Answer with exactly one word: YES or NO."
+    "{instruction:.0s}"
 )
 
 RETRY_TEMPLATE = (
