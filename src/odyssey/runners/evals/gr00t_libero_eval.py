@@ -120,6 +120,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--server_device", default="cuda:0")
     ap.add_argument("--server_ready_timeout", type=int, default=900)
     ap.add_argument("--server_denoising_steps", type=int, default=0)
+    # --- recovery (closed-loop stuck detection + rollback; default off) ---
+    from odyssey.runners.evals.recovery_wiring import add_recovery_args
+
+    add_recovery_args(ap, bool_type=_bool)
     return ap
 
 
@@ -268,6 +272,13 @@ def run_eval(args: argparse.Namespace) -> dict:
     )
     pilot = _make_gr00t_pilot(client, args)
 
+    from odyssey.runners.evals import recovery_wiring as rw
+    recovery = rw.make_recovery(args)
+    rollout_log = rw.make_rollout_log(args)
+    if recovery is not None:
+        log.info("recovery enabled: mode=%s shadow=%s specialist=%s",
+                 args.recovery_mode, args.shadow_mode, bool(args.specialist_base_url))
+
     successes, returns = 0, []
     video_dir = args.video_dir or None
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
@@ -283,11 +294,42 @@ def run_eval(args: argparse.Namespace) -> dict:
         # Drop any partially-replayed chunk from the previous episode — the old
         # inline loop did this implicitly by re-querying at the top of the while.
         pilot.reset()
+        if recovery is not None:
+            recovery.begin_episode(ep)
+        if rollout_log is not None:
+            rollout_log.begin_episode(ep)
         step = 0
         try:
             while step < args.max_steps_per_episode and not success:
-                action = pilot.act(obs, instruction)
-                obs, reward, done, _info = env.step(action.tolist())
+                chunk_start = False
+                if recovery is not None and recovery.recovering:
+                    # Command-mode rollback: the controller drives; the pilot waits.
+                    eef_pos, eef_quat, _grip = rw.proprio(obs)
+                    maybe = recovery.recovery_action(
+                        eef_pos=eef_pos, eef_quat_xyzw=eef_quat
+                    )
+                    if maybe is None:  # arrived/exhausted: fresh chunk from here
+                        pilot.flush()
+                        continue
+                    action_list = maybe
+                else:
+                    chunk_start = recovery is not None and pilot.steps_remaining == 0
+                    if chunk_start:
+                        # Snapshot the pose the arm actually holds at the boundary
+                        # (before the boundary act) + hand the frame to the specialist.
+                        eef_pos, eef_quat, grip = rw.proprio(obs)
+                        recovery.on_chunk_boundary(
+                            step=step,
+                            frame=_frame(obs, args.image_key, flip=args.flip_images),
+                            instruction=instruction,
+                            eef_pos=eef_pos,
+                            eef_quat_xyzw=eef_quat,
+                            gripper_qpos=grip,
+                            sim_state=(rw.maybe_sim_state(env)
+                                       if args.recovery_mode == "teleport" else None),
+                        )
+                    action_list = pilot.act(obs, instruction).tolist()
+                obs, reward, done, _info = env.step(action_list)
                 ep_return += float(reward)
                 if video_dir is not None:
                     # match the pilot's orientation: LIBERO's agentview is stored
@@ -295,6 +337,36 @@ def run_eval(args: argparse.Namespace) -> dict:
                     frame = to_uint8_frame(_frame(obs, args.image_key, flip=args.flip_images))
                     if frame is not None:
                         frames.append(frame)
+                if rollout_log is not None:
+                    rollout_log.add(
+                        frame=_frame(obs, args.image_key, flip=args.flip_images),
+                        action=action_list,
+                    )
+                if recovery is not None:
+                    eef_pos, _quat, _grip = rw.proprio(obs)
+                    decision = recovery.after_step(
+                        step=step, action=action_list, eef_pos=eef_pos,
+                        chunk_start=chunk_start,
+                    )
+                    if decision.kind == "flush":
+                        pilot.flush()
+                    elif decision.kind == "rollback":
+                        pilot.flush()
+                        if args.recovery_mode == "teleport":
+                            state = (decision.snapshot.sim_state
+                                     if decision.snapshot is not None else None)
+                            applied = False
+                            if state is not None:
+                                try:
+                                    env.set_init_state(state)
+                                    applied = True
+                                except Exception:
+                                    log.warning("teleport restore failed; continuing",
+                                                exc_info=True)
+                            recovery.note_teleport(applied=applied)
+                            if applied:  # let physics settle at the restored state
+                                for _ in range(args.recovery_settle_steps):
+                                    obs, _, _, _ = env.step(dummy)
                 step += 1
                 if done:  # LIBERO sets done=True when the task is solved
                     success = True
@@ -305,6 +377,10 @@ def run_eval(args: argparse.Namespace) -> dict:
             log.warning("episode %d/%d aborted (%s) — recording as fail, continuing.",
                         ep, args.num_episodes, ep_exc, exc_info=True)
 
+        if recovery is not None:
+            recovery.end_episode(success=success)
+        if rollout_log is not None:
+            rollout_log.save_episode(success=success)
         successes += int(success)
         returns.append(ep_return)
         log.info("episode %d/%d: %s (steps=%d, return=%.3f)",
@@ -319,15 +395,20 @@ def run_eval(args: argparse.Namespace) -> dict:
     env.close()
     n = max(args.num_episodes, 1)
     success_rate = successes / n
+    metrics = {
+        "successes": successes,
+        "episode_returns": [round(r, 4) for r in returns],
+        "benchmark": f"{args.task}[task={args.task_id}]",
+        "instruction": instruction,
+    }
+    if recovery is not None:
+        # Recovery counters ride the ODYSSEY_RESULT metrics into result_summary;
+        # finalize also writes recovery_events.jsonl and closes the specialist.
+        metrics["recovery"] = rw.finalize(recovery, args)
     summary = {
         "success_rate": success_rate,
         "performance_score": success_rate,
-        "metrics": {
-            "successes": successes,
-            "episode_returns": [round(r, 4) for r in returns],
-            "benchmark": f"{args.task}[task={args.task_id}]",
-            "instruction": instruction,
-        },
+        "metrics": metrics,
     }
     _emit(result_line(**summary))
     return summary

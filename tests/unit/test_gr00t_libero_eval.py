@@ -373,3 +373,140 @@ def test_gr00t_pilot_reset_between_episodes_drops_partial_chunk(monkeypatch: Any
     # Episode 2 re-queried instead of replaying episode 1's leftover actions.
     assert len(client.calls) == 2
     assert [obs for _w, obs, _i in client.calls] == [0, 0]  # both queries at reset obs
+
+
+# ---------------------------------------------------------------------------
+# Recovery wiring — flags default off; enabled path runs end-to-end on fakes.
+# ---------------------------------------------------------------------------
+
+
+def _base_argv(*extra: str) -> list[str]:
+    return ["--task", "libero_object", "--checkpoint", "/ckpt", *extra]
+
+
+def test_parser_accepts_recovery_flags_defaulting_off() -> None:
+    args = E.build_parser().parse_args(_base_argv())
+    assert args.recovery is False and args.shadow_mode is False
+    assert args.recovery_mode == "command"
+    assert args.log_actions is False and args.recovery_dir == ""
+
+    on = E.build_parser().parse_args(_base_argv(
+        "--recovery", "true", "--recovery_mode", "teleport",
+        "--specialist_base_url", "http://judge:8002/v1",
+        "--stuck_window_steps", "6", "--log_actions", "true",
+        "--recovery_dir", "/out/recovery",
+    ))
+    assert on.recovery is True and on.recovery_mode == "teleport"
+    assert on.specialist_base_url == "http://judge:8002/v1"
+    assert on.stuck_window_steps == 6 and on.log_actions is True
+
+
+class _StaticLiberoEnv:
+    """LIBERO-shaped env whose arm never moves — a guaranteed kinematic stuck."""
+
+    def __init__(self) -> None:
+        self.steps = 0
+        self.restored: list[Any] = []
+
+    def _obs(self) -> dict[str, Any]:
+        import numpy as np
+        return {
+            "robot0_eef_pos": np.zeros(3),
+            "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+            "robot0_gripper_qpos": np.array([0.04, -0.04]),
+            "agentview_image": np.zeros((4, 4, 3), dtype=np.uint8),
+            "robot0_eye_in_hand_image": np.zeros((4, 4, 3), dtype=np.uint8),
+        }
+
+    def reset(self) -> dict[str, Any]:
+        return self._obs()
+
+    def set_init_state(self, state: Any) -> None:
+        self.restored.append(state)
+
+    def step(self, action: Any):
+        self.steps += 1
+        return self._obs(), 0.0, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def _run_recovery_eval(monkeypatch: Any, tmp_path: Path, *extra: str) -> tuple[dict, Any]:
+    """Drive run_eval end-to-end on fakes; return (summary, fake client)."""
+    import numpy as np
+
+    from odyssey.runners.evals import libero as runner_mod
+
+    def fake_decode(chunk: Any, k: int, *, translation_only: bool = False) -> Any:
+        return np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
+
+    class _T:
+        gr00t_action_to_libero = staticmethod(fake_decode)
+
+    client = _FakeChunkClient()
+
+    class _S:
+        @staticmethod
+        def connect_policy_client(*, host: str, port: int, timeout_ms: int) -> Any:
+            return client
+
+    env = _StaticLiberoEnv()
+    monkeypatch.setattr(E, "_transforms", lambda: _T)
+    monkeypatch.setattr(E, "_server", lambda: _S)
+    monkeypatch.setattr(
+        E, "_build_obs",
+        lambda obs, instr, *, image_key, wrist_image_key, flip: {"wire": instr},
+    )
+    monkeypatch.setattr(
+        runner_mod, "_make_libero_env", lambda *a, **k: (env, object(), [0])
+    )
+    monkeypatch.setattr(runner_mod, "_resolve_libero_instruction", lambda *a, **k: "pick")
+
+    args = E.build_parser().parse_args(_base_argv(
+        "--num_episodes", "1", "--max_steps_per_episode", "30",
+        "--num_warmup_steps", "0", "--n_action_steps", "4", *extra,
+    ))
+    return E.run_eval(args), client
+
+
+def test_run_eval_recovery_off_is_inert(monkeypatch: Any, tmp_path: Path) -> None:
+    summary, client = _run_recovery_eval(monkeypatch, tmp_path)
+    assert "recovery" not in summary["metrics"]
+    assert len(client.calls) == 8  # ceil(30 / 4) chunks, no extra queries
+    assert not list(tmp_path.iterdir())  # nothing written anywhere
+
+
+def test_run_eval_kinematic_stuck_flushes_and_writes_events(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    summary, client = _run_recovery_eval(
+        monkeypatch, tmp_path,
+        "--recovery", "true", "--stuck_window_steps", "6",
+        "--recovery_settle_steps", "0", "--max_recoveries", "2",
+        "--recovery_dir", str(tmp_path),
+    )
+    recovery = summary["metrics"]["recovery"]
+    assert recovery["flushes"] >= 1  # the static arm tripped tier 1
+    assert len(client.calls) > 8  # each flush forces an extra re-query
+
+    events_file = tmp_path / "recovery_events.jsonl"
+    assert events_file.exists()
+    events = [json.loads(line) for line in events_file.read_text().splitlines()]
+    assert any(e["kind"] == "flush" and e["cause"] == "kinematic" for e in events)
+
+
+def test_run_eval_log_actions_writes_npz_corpus(monkeypatch: Any, tmp_path: Path) -> None:
+    import numpy as np
+
+    summary, _client = _run_recovery_eval(
+        monkeypatch, tmp_path,
+        "--shadow_mode", "true", "--log_actions", "true",
+        "--recovery_dir", str(tmp_path),
+    )
+    assert "recovery" in summary["metrics"]
+    npz_files = sorted((tmp_path / "rollouts").glob("*.npz"))
+    assert len(npz_files) == 1 and npz_files[0].name == "episode_01_FAIL.npz"
+    data = np.load(npz_files[0])
+    assert data["frames"].shape == (30, 4, 4, 3)
+    assert data["actions"].shape == (30, 7)

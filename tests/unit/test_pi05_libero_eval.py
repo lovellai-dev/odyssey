@@ -221,3 +221,119 @@ def test_argv_parses_back_into_the_recipe() -> None:
     assert args.port == 9000
     assert args.n_action_steps == 10
     assert args.translation_only is True
+
+
+# ---------------------------------------------------------------------------
+# Recovery wiring — flags parse, round-trip through the builder, shadow mode
+# logs without intervening.
+# ---------------------------------------------------------------------------
+
+
+def test_parser_accepts_recovery_flags_defaulting_off() -> None:
+    args = E.build_parser().parse_args(
+        ["--task", "libero_object", "--checkpoint", "/ckpt"]
+    )
+    assert args.recovery is False and args.shadow_mode is False
+    assert args.recovery_mode == "command" and args.recovery_dir == ""
+
+
+def test_argv_roundtrips_recovery_keys_through_builder() -> None:
+    task = _eval_task(config={
+        "pilot": "pi05",
+        "checkpoint": "lerobot/pi05_libero",
+        "shadow_mode": "true",
+        "specialist_base_url": "http://judge:8002/v1",
+        "poll_every_chunks": 3,
+        "log_actions": "true",
+    })
+    argv = build_pi05_libero_argv(
+        spec=task, checkpoint=Path("lerobot/pi05_libero"), video_dir=None,
+    )
+    args = E.build_parser().parse_args(argv)
+    assert args.shadow_mode is True
+    assert args.specialist_base_url == "http://judge:8002/v1"
+    assert args.poll_every_chunks == 3 and args.log_actions is True
+
+
+class _RecordingChunkPilot:
+    """make_pi05_pilot stand-in: constant-motion chunks + call recording."""
+
+    def __init__(self, n: int = 4) -> None:
+        self._n = n
+        self._cursor = n  # empty buffer: first act "re-queries"
+        self.flush_calls = 0
+        self.reset_calls = 0
+
+    @property
+    def steps_remaining(self) -> int:
+        return 0 if self._cursor >= self._n else self._n - self._cursor
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+        self._cursor = self._n
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+        self._cursor = self._n
+
+    def act(self, raw_obs: Any, instruction: str) -> Any:
+        import numpy as np
+        if self._cursor >= self._n:
+            self._cursor = 0
+        self._cursor += 1
+        return np.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float32)
+
+
+class _StaticLiberoEnv:
+    def _obs(self) -> dict[str, Any]:
+        import numpy as np
+        return {
+            "robot0_eef_pos": np.zeros(3),
+            "robot0_eef_quat": np.array([0.0, 0.0, 0.0, 1.0]),
+            "robot0_gripper_qpos": np.array([0.04, -0.04]),
+            "agentview_image": np.zeros((4, 4, 3), dtype=np.uint8),
+            "robot0_eye_in_hand_image": np.zeros((4, 4, 3), dtype=np.uint8),
+        }
+
+    def reset(self) -> dict[str, Any]:
+        return self._obs()
+
+    def set_init_state(self, state: Any) -> None:
+        pass
+
+    def step(self, action: Any):
+        return self._obs(), 0.0, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+def test_run_eval_shadow_mode_logs_but_never_intervenes(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    import odyssey.runners.models.pi05 as pi05_mod
+    from odyssey.runners.evals import libero as runner_mod
+
+    pilot = _RecordingChunkPilot(n=4)
+    monkeypatch.setattr(pi05_mod, "make_pi05_pilot", lambda **kwargs: pilot)
+    monkeypatch.setattr(
+        runner_mod, "_make_libero_env", lambda *a, **k: (_StaticLiberoEnv(), object(), [0])
+    )
+    monkeypatch.setattr(runner_mod, "_resolve_libero_instruction", lambda *a, **k: "pick")
+
+    args = E.build_parser().parse_args([
+        "--task", "libero_object", "--checkpoint", "/ckpt",
+        "--num_episodes", "1", "--max_steps_per_episode", "30",
+        "--num_warmup_steps", "0", "--n_action_steps", "4",
+        "--shadow_mode", "true", "--stuck_window_steps", "6",
+        "--recovery_dir", str(tmp_path),
+    ])
+    summary = E.run_eval(args)
+
+    recovery = summary["metrics"]["recovery"]
+    assert recovery["shadow_triggers"] >= 1  # the static arm was detected
+    assert recovery["flushes"] == 0
+    assert pilot.flush_calls == 0  # never intervened
+    events = (tmp_path / "recovery_events.jsonl").read_text().splitlines()
+    assert events and all(json.loads(e)["applied"] is False
+                          for e in events if "applied" in json.loads(e))
