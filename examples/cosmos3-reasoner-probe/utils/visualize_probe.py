@@ -5,10 +5,11 @@ isolated frames, and per frame each question is one independent image+text
 HTTP call. This tool replays that loop over a single rollout MP4 and shows it:
 
 * terminal — one table row per (frame, question) as each answer arrives;
-* HTML report — the playable video, the judged (cropped/upscaled) thumbnail
-  per sampled frame, and the growing Q/A table; clicking a row seeks the
-  video to that frame. The file is rewritten after every frame and
-  auto-refreshes while the run is live, so you can watch it fill in.
+* HTML report — the playable video (slow-motion by default), live answer
+  badges, per-question timeline bands with a synced playhead, and the Q/A
+  table. The page loads ONCE and polls a sidecar ``*_data.js`` file, so new
+  rows stream in with no page reload — playback is never interrupted.
+  Clicking a timeline band or a table row seeks the video.
 
 Usage (server recipe in ../README.md; tunnel with `ssh -L 8002:127.0.0.1:8002`
 if the model is served on the H100):
@@ -16,7 +17,7 @@ if the model is served on the H100):
     python examples/cosmos3-reasoner-probe/utils/visualize_probe.py \\
         --video ~/videos/rollout_ep001_success.mp4 \\
         --instruction "pick up the red capsule and place it in the blue tray" \\
-        --view wrist --upscale 3 --stride 10 --out /tmp/probe_report.html
+        --view wrist --upscale 3 --stride 5 --out /tmp/probe_report.html
 
     open /tmp/probe_report.html      # while the run is live, or after
 
@@ -94,47 +95,35 @@ def _png_data_uri(array: Any, max_side: int = 240) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def render_html(
-    out: Path,
-    *,
-    video_path: Path,
-    records: list[dict[str, Any]],
-    meta: dict[str, Any],
-    done: bool,
-) -> None:
-    video_b64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
-    refresh = "" if done else '<meta http-equiv="refresh" content="2">'
-    status = "finished" if done else "RUNNING — page auto-refreshes"
-    names = [name for name, _ in QUESTIONS]
+def data_path_for(out: Path) -> Path:
+    return out.with_name(out.stem + "_data.js")
 
+
+def write_data(out: Path, records: list[dict[str, Any]], done: bool) -> None:
+    """Sidecar the page polls — atomic-ish single write per judged frame."""
+    payload = json.dumps({"records": records, "done": done})
+    data_path_for(out).write_text(f"window.PROBE_DATA = {payload};")
+
+
+def render_shell(out: Path, *, video_path: Path, meta: dict[str, Any]) -> None:
+    """Static page, written ONCE: video + empty containers. All rows/segments
+    are rendered client-side from the polled sidecar, so nothing here ever
+    reloads and playback is never interrupted."""
+    video_b64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
+    names = [name for name, _ in QUESTIONS]
     badges = "".join(
         f'<span class="badge" id="badge-{n}"><small>{n}</small><b id="bv-{n}">?</b></span>'
         for n in names
     )
     tl_rows = "".join(
         f'<div class="tlrow"><span class="tlabel">{n}</span>'
-        f'<div class="tband" data-q="{n}" id="band-{n}"></div></div>'
+        f'<div class="tband" id="band-{n}"></div></div>'
         for n in names
     )
-    rows = []
-    for r in records:
-        color = ANSWER_COLOR[r["answer"]]
-        thumb = (
-            f'<img src="{r["thumb"]}" height="72">' if r["question"] == QUESTIONS[0][0] else ""
-        )
-        rows.append(
-            f'<tr id="r{r["frame"]}-{r["question"]}" onclick="seek({r["time_s"]:.2f})">'
-            f'<td>{r["frame"]}</td><td>{r["time_s"]:.1f}s</td><td>{thumb}</td>'
-            f'<td>{r["question"]}</td>'
-            f'<td style="color:{color};font-weight:bold">{r["answer"]}</td>'
-            f'<td>{r["latency_s"]:.2f}s</td>'
-            f'<td class="q">{html.escape(r["prompt"])}</td></tr>'
-        )
-    lean = [
-        {k: r[k] for k in ("frame", "time_s", "question", "answer")} for r in records
-    ]
-    data = json.dumps({"records": lean, "questions": names, "colors": ANSWER_COLOR})
-    out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">{refresh}
+    config = json.dumps(
+        {"questions": names, "colors": ANSWER_COLOR, "data_src": data_path_for(out).name}
+    )
+    out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Reasoner probe — {html.escape(video_path.name)}</title><style>
 body {{ font-family: -apple-system, sans-serif; margin: 1.5rem; }}
 table {{ border-collapse: collapse; font-size: 13px; margin-top: 1rem; }}
@@ -158,43 +147,73 @@ td.q {{ max-width: 440px; color: #555; font-size: 11px; }}
 #playhead {{ position: absolute; top: 0; bottom: 0; width: 2px;
   background: #000; pointer-events: none; left: 84px; }}
 </style></head><body>
-<h2>Grasp-verification probe — {html.escape(video_path.name)} <small>({status})</small></h2>
+<h2>Grasp-verification probe — {html.escape(video_path.name)}
+<small id="status">(waiting for data…)</small></h2>
 <div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
 “{html.escape(meta["instruction"])}” · view {meta["view"]} x{meta["upscale"]} ·
-stride {meta["stride"]} · {len(records)} judgements · slow-motion 0.25x by
-default — the badges and timeline follow the playhead; click a band or a row
-to seek</div>
+stride {meta["stride"]} · slow-motion 0.25x by default — badges and timeline
+follow the playhead; click a band or a row to seek; new judgements stream in
+without reloading</div>
 <video id="v" controls width="512" src="data:video/mp4;base64,{video_b64}"></video>
 <div class="speed">speed:
 <button onclick="rate(0.1)">0.1x</button><button onclick="rate(0.25)">0.25x</button>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
 <div style="margin-top:8px">{badges}</div>
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
-<table><tr><th>frame</th><th>t</th><th>judged image</th><th>question</th>
-<th>answer</th><th>latency</th><th>full prompt sent</th></tr>
-{"".join(rows)}
-</table><script>
-const DATA = {data};
+<table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>question</th>
+<th>answer</th><th>latency</th><th>full prompt sent</th></tr></table>
+<script>
+const CFG = {config};
 const v = document.getElementById("v");
-v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; buildTimeline(); }});
+v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; }});
 function rate(x) {{ v.playbackRate = x; }}
 function seek(t) {{ v.currentTime = t + 0.001; }}
-const byQ = {{}};
-for (const q of DATA.questions) byQ[q] = DATA.records
-    .filter(r => r.question === q).sort((a, b) => a.time_s - b.time_s);
+let records = [], done = false, rendered = 0, thumbs = {{}};
+
+function onData(d) {{
+  if (!d || d.records.length === records.length && done === d.done) return;
+  records = d.records; done = d.done;
+  document.getElementById("status").textContent =
+      done ? "(finished — " + records.length + " judgements)"
+           : "(RUNNING — " + records.length + " judgements so far)";
+  const tbl = document.getElementById("tbl");
+  for (; rendered < records.length; rendered++) {{
+    const r = records[rendered];
+    if (r.thumb) thumbs[r.frame] = r.thumb;
+    const tr = document.createElement("tr");
+    tr.id = "r" + r.frame + "-" + r.question;
+    tr.onclick = () => seek(r.time_s);
+    const thumb = r.thumb ? '<img src="' + r.thumb + '" height="72">' : "";
+    tr.innerHTML = "<td>" + r.frame + "</td><td>" + r.time_s.toFixed(1) +
+        "s</td><td>" + thumb + "</td><td>" + r.question +
+        '</td><td style="font-weight:bold;color:' + CFG.colors[r.answer] + '">' +
+        r.answer + "</td><td>" + r.latency_s.toFixed(2) + "s</td>" +
+        '<td class="q"></td>';
+    tr.lastChild.textContent = r.prompt;
+    tbl.appendChild(tr);
+  }}
+  buildTimeline();
+}}
+
+function byQuestion(q) {{
+  return records.filter(r => r.question === q).sort((a, b) => a.time_s - b.time_s);
+}}
+
 function buildTimeline() {{
-  const D = v.duration || 1;
-  for (const q of DATA.questions) {{
+  const D = v.duration;
+  if (!D) {{ v.addEventListener("loadedmetadata", buildTimeline, {{once: true}}); return; }}
+  for (const q of CFG.questions) {{
     const band = document.getElementById("band-" + q);
     band.innerHTML = "";
-    const pts = byQ[q];
+    const pts = byQuestion(q);
     for (let i = 0; i < pts.length; i++) {{
-      const start = pts[i].time_s, end = (i + 1 < pts.length) ? pts[i + 1].time_s : D;
+      const start = pts[i].time_s;
+      const end = (i + 1 < pts.length) ? pts[i + 1].time_s : (done ? D : start + 0.2);
       const seg = document.createElement("div");
       seg.className = "seg";
       seg.style.left = (start / D * 100) + "%";
       seg.style.width = (Math.max(end - start, 0.02) / D * 100) + "%";
-      seg.style.background = DATA.colors[pts[i].answer];
+      seg.style.background = CFG.colors[pts[i].answer];
       band.appendChild(seg);
     }}
     band.onclick = (e) => {{
@@ -203,6 +222,7 @@ function buildTimeline() {{
     }};
   }}
 }}
+
 let lastFrame = null;
 function refreshUI() {{
   const t = v.currentTime, D = v.duration || 1;
@@ -210,18 +230,18 @@ function refreshUI() {{
   document.getElementById("playhead").style.left =
       (band.offsetLeft + t / D * band.offsetWidth) + "px";
   let current = null;
-  for (const r of byQ[DATA.questions[0]]) if (r.time_s <= t + 1e-6) current = r.frame;
-  for (const q of DATA.questions) {{
+  for (const r of byQuestion(CFG.questions[0])) if (r.time_s <= t + 1e-6) current = r.frame;
+  for (const q of CFG.questions) {{
     let pt = null;
-    for (const r of byQ[q]) if (r.time_s <= t + 1e-6) pt = r;
+    for (const r of byQuestion(q)) if (r.time_s <= t + 1e-6) pt = r;
     const ans = pt ? pt.answer : "?";
     const el = document.getElementById("bv-" + q);
     el.textContent = ans;
-    el.style.color = DATA.colors[ans] || "#333";
+    el.style.color = CFG.colors[ans] || "#333";
   }}
   if (current !== lastFrame) {{
     document.querySelectorAll("tr.now").forEach(el => el.classList.remove("now"));
-    for (const q of DATA.questions) {{
+    for (const q of CFG.questions) {{
       const row = document.getElementById("r" + current + "-" + q);
       if (row) row.classList.add("now");
     }}
@@ -230,6 +250,17 @@ function refreshUI() {{
 }}
 v.addEventListener("timeupdate", refreshUI);
 setInterval(refreshUI, 150);
+
+function poll() {{
+  if (done) return;
+  const s = document.createElement("script");
+  s.src = CFG.data_src + "?t=" + Date.now();
+  s.onload = () => {{ s.remove(); onData(window.PROBE_DATA); }};
+  s.onerror = () => s.remove();
+  document.body.appendChild(s);
+}}
+poll();
+setInterval(poll, 1500);
 </script></body></html>""")
 
 
@@ -241,7 +272,7 @@ def main() -> None:
     parser.add_argument("--model", default="nvidia/Cosmos3-Nano")
     parser.add_argument("--view", choices=["full", "wrist", "side"], default="full")
     parser.add_argument("--upscale", type=int, default=1)
-    parser.add_argument("--stride", type=int, default=10, help="judge every Nth frame")
+    parser.add_argument("--stride", type=int, default=5, help="judge every Nth frame")
     parser.add_argument("--max_tokens", type=int, default=64)
     parser.add_argument("--timeout_seconds", type=float, default=120.0)
     parser.add_argument("--out", default="/tmp/probe_report.html")
@@ -296,15 +327,17 @@ def main() -> None:
     }
     out = Path(args.out).expanduser()
     records: list[dict[str, Any]] = []
+    render_shell(out, video_path=video_path, meta=meta)
+    write_data(out, records, done=False)
 
     indexes = list(range(0, len(stack), args.stride))
     print(f"{len(stack)} frames, judging {len(indexes)} of them x {len(QUESTIONS)} questions")
-    print(f"report: {out}  (open it now — it fills in live)\n")
+    print(f"report: {out}  (open it now — rows stream in without reloading)\n")
     print(f"{'frame':>6} {'question':>10}  answer  latency")
     for index in indexes:
         frame = prepare_frame(stack[index], args.view, args.upscale)
         thumb = _png_data_uri(frame)
-        for name, _template in QUESTIONS:
+        for position, (name, _template) in enumerate(QUESTIONS):
             replies_before = len(replies)
             start = time.monotonic()
             answer = "YES" if judges[name].is_complete(frame, args.instruction) else "NO"
@@ -319,12 +352,12 @@ def main() -> None:
                     "answer": answer,
                     "latency_s": elapsed,
                     "prompt": templates[name].format(instruction=args.instruction),
-                    "thumb": thumb,
+                    "thumb": thumb if position == 0 else None,
                 }
             )
             print(f"{index:6d} {name:>10}  {answer:<6} {elapsed:.2f}s")
-        render_html(out, video_path=video_path, records=records, meta=meta, done=False)
-    render_html(out, video_path=video_path, records=records, meta=meta, done=True)
+        write_data(out, records, done=False)
+    write_data(out, records, done=True)
 
     summary_path = out.with_suffix(".json")
     lean = [{k: v for k, v in r.items() if k != "thumb"} for r in records]
