@@ -424,6 +424,7 @@ class LiberoRunner(Runner):
         video_dir: Path | None = None
         if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
             video_dir = context.output_dir / "videos"
+        recovery_dir = _resolve_recovery_dir(cfg, context.output_dir)
 
         await context.emit_progress(
             "executing",
@@ -436,7 +437,8 @@ class LiberoRunner(Runner):
             timeout_seconds=getattr(spec, "timeout_seconds", None),
             script_path=script,
             argv_extra=build_gr00t_libero_argv(
-                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir,
+                recovery_dir=recovery_dir,
             ),
             line_parser=collector.parse,
         )
@@ -448,12 +450,15 @@ class LiberoRunner(Runner):
         if rc != 0:
             raise RuntimeError(f"gr00t_libero_eval exited with code {rc}")
 
-        return summarize(
+        summary = summarize(
             collector=collector,
             spec=spec,
             checkpoint=checkpoint,
             eval_script=script,
         )
+        if recovery_dir is not None:
+            _attach_recovery_artifacts(summary, recovery_dir)
+        return summary
 
     async def _run_pi05_pilot(
         self, context: TaskContext, spec: EvaluationTask
@@ -475,6 +480,7 @@ class LiberoRunner(Runner):
         video_dir: Path | None = None
         if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
             video_dir = context.output_dir / "videos"
+        recovery_dir = _resolve_recovery_dir(cfg, context.output_dir)
 
         await context.emit_progress(
             "executing",
@@ -487,7 +493,8 @@ class LiberoRunner(Runner):
             timeout_seconds=getattr(spec, "timeout_seconds", None),
             script_path=script,
             argv_extra=build_pi05_libero_argv(
-                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir,
+                recovery_dir=recovery_dir,
             ),
             line_parser=collector.parse,
         )
@@ -499,24 +506,68 @@ class LiberoRunner(Runner):
         if rc != 0:
             raise RuntimeError(f"pi05_libero_eval exited with code {rc}")
 
-        return summarize(
+        summary = summarize(
             collector=collector,
             spec=spec,
             checkpoint=checkpoint,
             eval_script=script,
         )
+        if recovery_dir is not None:
+            _attach_recovery_artifacts(summary, recovery_dir)
+        return summary
 
 
 # Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
 # to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
-# the resolved --video_dir, not the raw capture_video/*_fps/*_format keys.
+# the resolved --video_dir, not the raw capture_video/*_fps/*_format keys;
+# recovery_dir is likewise runner-resolved (an explicit config value overrides).
 _GR00T_HANDLED_CONFIG_KEYS = {
     "pilot", "checkpoint", "runner", "capture_video", "video_fps", "video_format",
+    "recovery_dir",
 }
 
 
+def _truthy(value: Any) -> bool:
+    """Config values arrive as YAML bools or forwarded strings — accept both."""
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _resolve_recovery_dir(cfg: dict[str, Any], output_dir: Path | None) -> Path | None:
+    """Where the recipe's recovery artifacts land (the ``--video_dir`` pattern).
+
+    An explicit ``config.recovery_dir`` wins; otherwise any recovery-flavoured
+    flag (``recovery``/``shadow_mode``/``log_actions``) resolves the task's
+    ``output_dir/recovery``. ``None`` = the recipe gets no ``--recovery_dir``.
+    """
+    explicit = cfg.get("recovery_dir")
+    if explicit:
+        return Path(str(explicit))
+    wants = any(_truthy(cfg.get(k, False)) for k in ("recovery", "shadow_mode", "log_actions"))
+    if wants and output_dir is not None:
+        return output_dir / "recovery"
+    return None
+
+
+def _attach_recovery_artifacts(summary: dict[str, Any], recovery_dir: Path) -> None:
+    """Register the recipe-written recovery outputs on the result summary.
+
+    Nothing is copied — the subprocess wrote in place (the video precedent);
+    the counters already arrived via the ``ODYSSEY_RESULT`` metrics.
+    """
+    artifacts: dict[str, Any] = {}
+    events = recovery_dir / "recovery_events.jsonl"
+    if events.exists():
+        artifacts["recovery_events"] = str(events)
+    rollouts = sorted((recovery_dir / "rollouts").glob("*.npz"))
+    if rollouts:
+        artifacts["rollout_logs"] = [str(p) for p in rollouts]
+    if artifacts:
+        summary.setdefault("artifacts", {}).update(artifacts)
+
+
 def build_gr00t_libero_argv(
-    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None,
+    recovery_dir: Path | None = None,
 ) -> list[str]:
     """Build ``gr00t_libero_eval.py`` argv: contract flags + config passthrough.
 
@@ -532,6 +583,8 @@ def build_gr00t_libero_argv(
     ]
     if video_dir is not None:
         argv += ["--video_dir", str(video_dir)]
+    if recovery_dir is not None:
+        argv += ["--recovery_dir", str(recovery_dir)]
     for key, value in cfg.items():
         if key in _GR00T_HANDLED_CONFIG_KEYS:
             continue
@@ -545,7 +598,8 @@ _PI05_HANDLED_CONFIG_KEYS = _GR00T_HANDLED_CONFIG_KEYS
 
 
 def build_pi05_libero_argv(
-    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None,
+    recovery_dir: Path | None = None,
 ) -> list[str]:
     """Build ``pi05_libero_eval.py`` argv: contract flags + config passthrough.
 
@@ -563,6 +617,8 @@ def build_pi05_libero_argv(
     ]
     if video_dir is not None:
         argv += ["--video_dir", str(video_dir)]
+    if recovery_dir is not None:
+        argv += ["--recovery_dir", str(recovery_dir)]
     for key, value in cfg.items():
         if key in _PI05_HANDLED_CONFIG_KEYS:
             continue
