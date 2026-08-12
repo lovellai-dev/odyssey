@@ -1,0 +1,88 @@
+# Molmo 2 SPECIALIST probe — grasp verification, direction B (eval-only,
+# custom runner, no simulator).
+#
+# Direction B measures Molmo 2 in its NATIVE modality: spatio-temporal
+# reasoning over a frame SEQUENCE (K chronological frames in one multi-image
+# request) instead of single-frame VQA. Per rollout it answers the map's own
+# phrasing of the role — "does the vial travel WITH the gripper during the
+# lift?" — plus a measurable localization question ("in which frame does the
+# grasp first occur?", scored against the known early pick window).
+#
+# PRE-REGISTERED as a separate direction: NOT comparable with direction A
+# (mission-molmo2.yaml) or the Cosmos arm — different prompts, different
+# granularity (per-rollout, not per-frame). The comparison it feeds is
+# single-frame-VQA vs sequence-native, the same lesson the retry bake-off
+# learned with the value probe (the signal lives in the sequence).
+#
+# Serving: same Molmo2 server as direction A (port 8003) — the
+# `--limit-mm-per-prompt '{"image": 16}'` flag in that recipe is REQUIRED
+# here (multi-image requests). See mission-molmo2.yaml header.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: molmo2-tracking-grasp-probe
+  description: >-
+    Eval-only probe of Molmo2-8B in its native spatio-temporal modality —
+    per-rollout carry verdict ("does the object travel with the gripper?")
+    and grasp-frame localization over K chronological frames in one
+    multi-image request. Direction B of the Molmo 2 grasp arm.
+  tags: [molmo2, ai2, specialist, grasp, tracking, temporal, custom, eval-only]
+
+objective: |
+  Measure whether sequence-native questioning recovers the grasp signal that
+  single-frame VQA judges miss: carry should discriminate successful from
+  failed rollouts, and the claimed grasp frame should fall in the known early
+  pick window on successes.
+
+acceptance_criteria: |
+  All multi-image calls succeed (the server accepts K images per request);
+  carry answers YES on successful rollouts and NO on failures; grasp_frame
+  fraction lands in the early episode window on successes.
+
+robot:
+  embodiment: ur10e   # the drug-sort DAgger rig the judged rollouts ran on
+  agents:
+    # PROVENANCE ONLY — the policy that drove the judged rollouts.
+    - id: gr00t-flowdagger-pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7
+    # The agent under test: Molmo2-8B, served by vanilla vLLM.
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: allenai/Molmo2-8B
+
+tasks:
+  - name: probe-grasp-tracking-molmo2
+    kind: evaluation
+    evaluation_type: custom
+    description: >-
+      Per-rollout sequence judgements (carry + grasp-frame localization) over
+      the drug-sort rollouts through the endpoint serving Molmo2-8B.
+    benchmark_name: molmo2_tracking_grasp_probe
+    num_episodes: 3
+    config:
+      eval_script: examples/cosmos3-reasoner-probe/molmo2_tracking_probe.py
+      # eval_python: /path/to/env_probe/bin/python   # needs imageio+pillow
+      checkpoint: allenai/Molmo2-8B            # recorded in the summary only
+      # --- forwarded verbatim to the script (snake_case -> --flags) ---
+      base_url: http://127.0.0.1:8003/v1
+      model: allenai/Molmo2-8B
+      videos_dir: ~/cosmos3_probe_videos_success
+      instruction: pick up the red capsule and place it in the blue tray
+      max_videos: 3
+      num_frames: 8                            # <= the server's image limit
+      max_tokens: 64
+      timeout_seconds: 300
+      # Full frames: sequence reasoning wants the whole workspace, and the
+      # multi-image request keeps per-image resolution modest anyway.
+      view: full
+      upscale: 2
+
+leaderboard:
+  publish: false
