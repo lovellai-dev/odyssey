@@ -1,0 +1,95 @@
+# SAM 3.1 SPECIALIST probe — OBJECT VERIFICATION (eval-only, custom runner,
+# no simulator).
+#
+# The SAM 3.1 arm of the Specialist Model Map v0.5 object-verification bake-off,
+# the challenger to the RoboBrain 2.5 arm (mission-robobrain.yaml). Same rollout
+# frames, same object set — but SAM is promptable CONCEPT SEGMENTATION, not a
+# YES/NO chat, so this arm turns "best mask score >= threshold" into the same
+# present/absent verdict. What is held constant across arms is the objects and
+# the pixels, NOT a verbatim prompt. See README.md.
+#
+# WHO IS WHO (nothing simulated here):
+#   * SPECIALIST — SAM 3.1 (Meta), served by the repo's reference sam_server.py
+#     on its OWN port/venv, the ONLY agent this mission exercises (over HTTP).
+#   * PILOT — the GR00T + FlowDAgger drug-sort policy that PRODUCED the judged
+#     rollouts on the H100 (provenance only; never loaded here).
+#
+# EXTERNALLY-SERVED — the reference server, SYMMETRIC with the RoboBrain vLLM
+# endpoint (its own port 8003, its own venv with the SAM 3.1 deps):
+#
+#     python examples/specialist-objectverification-probe/sam_server.py \
+#         --host 0.0.0.0 --port 8003 --model facebook/sam3.1
+#     # SAM_SERVER_FAKE=1 python sam_server.py   # smoke with no weights
+#
+# The concept-segmentation call is isolated in SamBackend.segment — adapt that
+# one method to the released SAM 3.1 API (see sam_server.py header).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: sam31-objectverification-specialist-probe
+  description: >-
+    Eval-only probe of SAM 3.1 as an object-verification SPECIALIST —
+    promptable concept segmentation turned into present/absent verdicts over
+    drug-sort rollout frames, the SAM arm of the Specialist Model Map v0.5
+    bake-off against RoboBrain 2.5, on the same frames and object set.
+  tags: [sam, sam3, meta, object-verification, specialist, bakeoff, segmentation, custom, eval-only]
+
+objective: |
+  Verify that a served SAM 3.1 recognises the objects the scene contains
+  (best-mask score clears threshold -> recall) while rejecting distractor
+  objects it does not (specificity) — the grounding an object-verification
+  SPECIALIST needs, on the same frames and object set as the RoboBrain arm.
+
+acceptance_criteria: |
+  All segment calls succeed against the endpoint; the control concept
+  ("robot arm") is detected (no always-empty degenerate mode); present-object
+  recall is high and distractor false-positive rate is low; per-call latency is
+  workable for chunk-boundary gating.
+
+robot:
+  embodiment: ur10e   # the drug-sort DAgger rig the judged rollouts ran on
+  agents:
+    # PROVENANCE ONLY — the policy that drove the robot in the judged videos.
+    - id: gr00t-flowdagger-pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7
+    # The agent under test: SAM 3.1, served by the reference server.
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: facebook/sam3.1
+
+tasks:
+  - name: probe-objectverification
+    kind: evaluation
+    evaluation_type: custom
+    description: >-
+      Segment named concepts in frames of UR-arm drug-sort DAgger rollouts via
+      the SAM 3.1 endpoint — recognise present objects, reject distractors.
+    benchmark_name: sam31_objectverification_probe
+    num_episodes: 12
+    config:
+      eval_script: examples/specialist-objectverification-probe/sam_probe.py
+      # eval_python: /path/to/env_sam/bin/python   # needs imageio+pillow (+SAM deps if not served)
+      checkpoint: facebook/sam3.1               # recorded in the summary only
+      # --- forwarded verbatim to the script (snake_case -> --flags) ---
+      base_url: http://127.0.0.1:8003           # the reference SAM server
+      model: facebook/sam3.1                    # served model id
+      videos_dir: ~/cosmos3_probe_videos_success
+      instruction: pick up the red capsule and place it in the blue tray
+      objects: red capsule, blue tray
+      distractors: green bottle, yellow block
+      score_threshold: 0.5                      # best-mask score for PRESENT
+      max_videos: 3
+      timeout_seconds: 180
+      # Match the RoboBrain arm exactly for the apples-to-apples read.
+      view: wrist
+      upscale: 3
+
+leaderboard:
+  publish: false

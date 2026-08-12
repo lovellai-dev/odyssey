@@ -1,0 +1,101 @@
+# RoboBrain 2.5 SPECIALIST probe — OBJECT VERIFICATION (eval-only, custom
+# runner, no simulator).
+#
+# The RoboBrain arm of the Specialist Model Map v0.5 object-verification
+# bake-off: does the model recognise the named objects in a manipulation frame?
+# Challenged against SAM 3.1 (mission-sam.yaml) on the SAME rollout frames and
+# the SAME object set. The two arms do NOT share a prompt surface (SAM is
+# concept segmentation, not YES/NO chat) — what is held constant is the objects
+# and the pixels. See README.md.
+#
+# WHO IS WHO (nothing simulated here):
+#   * SPECIALIST — BAAI/RoboBrain2.5-8B-NV (Qwen3-VL-8B base, NV spatial
+#     variant), served by VANILLA vLLM, the ONLY agent this mission exercises
+#     (via OpenAICompatCompletionJudge over HTTP).
+#   * PILOT — the GR00T + FlowDAgger drug-sort policy that PRODUCED the judged
+#     rollouts on the H100 (provenance only; never loaded here).
+#
+# EXTERNALLY-SERVED — vanilla vLLM >= 0.11 (Qwen3-VL support), in its OWN venv:
+#
+#     vllm serve BAAI/RoboBrain2.5-8B-NV --host 0.0.0.0 --port 8002 \
+#         --gpu-memory-utilization 0.60 --max-model-len 32768
+#
+# GATED on HF: accept the conditions and export HF_TOKEN (mind HF_HUB_OFFLINE —
+# the first download must be online). No `modalities` extra_body knob needed
+# (that is a vLLM-Omni/Cosmos quirk).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: robobrain25-objectverification-specialist-probe
+  description: >-
+    Eval-only probe of RoboBrain 2.5 (8B-NV) as an object-verification
+    SPECIALIST — control / present-object / distractor recognition over
+    drug-sort rollout frames via the OpenAI-compatible judge surface, the
+    RoboBrain arm of the Specialist Model Map v0.5 bake-off against SAM 3.1.
+  tags: [robobrain, baai, object-verification, specialist, bakeoff, judge, custom, eval-only]
+
+objective: |
+  Verify that a served RoboBrain 2.5 loads and answers a per-object presence
+  protocol, and measure whether it RECOGNISES the objects the scene contains
+  (recall) while REJECTING distractor objects it does not (specificity) — the
+  grounding an object-verification SPECIALIST needs, on the same frames and
+  object set as the SAM 3.1 arm.
+
+acceptance_criteria: |
+  All judge calls succeed; the control question answers YES (no always-NO
+  degenerate mode); present-object recall is high and distractor false-positive
+  rate is low; per-call latency is workable for chunk-boundary gating.
+
+robot:
+  embodiment: ur10e   # the drug-sort DAgger rig the judged rollouts ran on
+  agents:
+    # PROVENANCE ONLY — the GR00T + FlowDAgger drug-sort policy that drove the
+    # robot in the judged rollout videos. Never loaded here.
+    - id: gr00t-flowdagger-pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7
+    # The agent under test: RoboBrain 2.5 NV, served by vanilla vLLM.
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: BAAI/RoboBrain2.5-8B-NV
+
+tasks:
+  # Drug-sort DAgger rollouts — the SAME videos the SAM arm runs on, so the
+  # comparison is apples-to-apples. `objects` are what the scene contains
+  # (recall); `distractors` are absent objects (false-positive check).
+  - name: probe-objectverification
+    kind: evaluation
+    evaluation_type: custom
+    description: >-
+      Judge frames of UR-arm drug-sort DAgger rollouts through the endpoint
+      serving RoboBrain 2.5 — recognise present objects, reject distractors.
+    benchmark_name: robobrain25_objectverification_probe
+    num_episodes: 12
+    config:
+      eval_script: examples/specialist-objectverification-probe/robobrain_probe.py
+      # eval_python: /path/to/env_probe/bin/python   # needs imageio+pillow
+      checkpoint: BAAI/RoboBrain2.5-8B-NV      # recorded in the summary only
+      # --- forwarded verbatim to the script (snake_case -> --flags) ---
+      base_url: http://127.0.0.1:8002/v1       # the vanilla vLLM endpoint
+      model: BAAI/RoboBrain2.5-8B-NV           # served model id
+      videos_dir: ~/cosmos3_probe_videos_success
+      instruction: pick up the red capsule and place it in the blue tray
+      objects: red capsule, blue tray
+      distractors: green bottle, yellow block
+      max_videos: 3
+      max_tokens: 1024
+      timeout_seconds: 180
+      # Match the SAM arm exactly (view: wrist, upscale: 3) for the
+      # apples-to-apples read. `view: side` (workspace geometry) is the
+      # follow-up run once the matched one is in.
+      view: wrist
+      upscale: 3
+
+leaderboard:
+  publish: false
