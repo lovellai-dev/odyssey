@@ -61,27 +61,29 @@ def verdicts_for(metrics: dict[str, Any], question: str) -> list[dict[str, Any]]
     return [v for v in metrics.get("verdicts", []) if v["question"] == question]
 
 
-def cell_data(metrics: dict[str, Any], kind: str, name: str) -> dict[str, Any]:
-    """One (model, row) cell: headline pct, goodness 0..1, and heat cells.
+def cell_data(metrics: dict[str, Any], kind: str, index: int) -> dict[str, Any]:
+    """One (model, row) cell: headline pct, goodness, heat, and the concept string.
 
-    ``kind`` in {"present", "absent", "control"}. Heat correctness: present
-    wants YES, absent wants NO, control wants YES.
+    Rows align by POSITION, not by string — each model resolves its OWN phrasing
+    of the same physical object at ``index`` (RoboBrain's "red capsule" and SAM's
+    "capsule" are the same row). ``kind`` in {"present", "absent", "control"};
+    heat correctness: present wants YES, absent wants NO, control wants YES.
     """
-    if kind == "present":
-        question = f"present:{name}"
-        pct = (metrics.get("per_object_yes_rate") or {}).get(name)
-        want_yes = True
-        label = "recall"
-    elif kind == "absent":
-        question = f"absent:{name}"
-        pct = (metrics.get("per_distractor_yes_rate") or {}).get(name)
-        want_yes = False
-        label = "false-pos"
-    else:
-        question = "control"
+    if kind == "control":
+        name, question, want_yes, label = "robot arm", "control", True, "sanity"
         pct = metrics.get("control_yes_rate")
-        want_yes = True
-        label = "sanity"
+    else:
+        key = "objects" if kind == "present" else "distractors"
+        names = metrics.get(key) or []
+        if index >= len(names):
+            return {"pct": None, "goodness": None, "label": "", "heat": [], "concept": None}
+        name = names[index]
+        if kind == "present":
+            question, want_yes, label = f"present:{name}", True, "recall"
+            pct = (metrics.get("per_object_yes_rate") or {}).get(name)
+        else:
+            question, want_yes, label = f"absent:{name}", False, "false-pos"
+            pct = (metrics.get("per_distractor_yes_rate") or {}).get(name)
 
     rows = verdicts_for(metrics, question)
     heat = []
@@ -94,7 +96,7 @@ def cell_data(metrics: dict[str, Any], kind: str, name: str) -> dict[str, Any]:
             heat.append(("good" if correct else "bad", v))
 
     goodness = None if pct is None else (pct if want_yes else 1.0 - pct)
-    return {"pct": pct, "goodness": goodness, "label": label, "heat": heat}
+    return {"pct": pct, "goodness": goodness, "label": label, "heat": heat, "concept": name}
 
 
 def render_cell(cell: dict[str, Any]) -> str:
@@ -108,11 +110,15 @@ def render_cell(cell: dict[str, Any]) -> str:
         f'{v["answer"]}"></i>'
         for klass, v in cell["heat"]
     )
+    # each column shows the phrasing THAT model used for this physical object
+    concept = cell.get("concept")
+    prompt = f'<div class="cprompt">“{html.escape(concept)}”</div>' if concept else ""
     return (
         '<td class="mcell">'
         f'<div class="pctline"><b style="color:{color}">{round(pct * 100)}%</b>'
         f'<span class="lbl">{cell["label"]}</span></div>'
         f'<div class="bar"><span style="width:{round(pct * 100)}%;background:{color}"></span></div>'
+        f"{prompt}"
         f'<div class="heat">{strip}</div>'
         "</td>"
     )
@@ -126,8 +132,14 @@ def render(
     pending: list[str],
 ) -> None:
     ref = results[0][1] if results else {}
-    objects = ref.get("objects", [])
-    distractors = ref.get("distractors", [])
+    # rows align by POSITION; labels default to the first model's phrasing but
+    # each cell shows the string that model actually used.
+    n_objects = max((len(m.get("objects", [])) for _, m in results), default=0)
+    n_distractors = max((len(m.get("distractors", [])) for _, m in results), default=0)
+    objects = [ref.get("objects", [f"object {i}"])[i] if i < len(ref.get("objects", [])) else f"object {i}"
+               for i in range(n_objects)]
+    distractors = [ref.get("distractors", [])[i] if i < len(ref.get("distractors", [])) else f"distractor {i}"
+                   for i in range(n_distractors)]
     n_frames = ref.get("frames_probed", "?")
     model_labels = [label for label, _ in results] + pending
 
@@ -150,29 +162,29 @@ def render(
     sum_cols = "".join(f'<th class="mhead">{summary(m)}</th>' for _, m in results)
     sum_cols += "".join('<th class="mhead"><div class="msum pend">no data yet</div></th>' for _ in pending)
 
-    def row(kind: str, name: str, display: str, css: str = "") -> str:
-        cells = "".join(render_cell(cell_data(m, kind, name)) for _, m in results)
+    def row(kind: str, index: int, display: str, css: str = "") -> str:
+        cells = "".join(render_cell(cell_data(m, kind, index)) for _, m in results)
         cells += "".join('<td class="mcell pend">pending</td>' for _ in pending)
         return f'<tr class="{css}"><td class="oname">{html.escape(display)}</td>{cells}</tr>'
 
     body = []
     body.append(
         f'<tr class="section"><td colspan="{len(model_labels) + 1}">'
-        f"present objects &nbsp;<span>want high recall</span></td></tr>"
+        f"present objects &nbsp;<span>want high recall · each column shows that model's phrasing</span></td></tr>"
     )
-    for obj in objects:
-        body.append(row("present", obj, obj))
+    for i, obj in enumerate(objects):
+        body.append(row("present", i, obj))
     body.append(
         f'<tr class="section"><td colspan="{len(model_labels) + 1}">'
         f"distractors &nbsp;<span>want 0% — false positives</span></td></tr>"
     )
-    for obj in distractors:
-        body.append(row("absent", obj, obj, "distractor"))
+    for i, obj in enumerate(distractors):
+        body.append(row("absent", i, obj, "distractor"))
     body.append(
         f'<tr class="section"><td colspan="{len(model_labels) + 1}">'
         f"sanity</td></tr>"
     )
-    body.append(row("control", "control", "control (arm visible)"))
+    body.append(row("control", 0, "control (arm visible)"))
 
     out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{html.escape(title)}</title>
@@ -223,6 +235,8 @@ tr.distractor .oname {{ color:var(--text-secondary); }}
 .bar {{ height:6px; background:var(--bg-tertiary); border-radius:3px; margin:5px 0 6px;
   overflow:hidden; max-width:150px; }}
 .bar span {{ display:block; height:100%; border-radius:3px; }}
+.cprompt {{ font-family:var(--font-mono); font-size:.625rem; color:var(--text-muted);
+  margin:1px 0 4px; }}
 .heat {{ display:flex; gap:2px; flex-wrap:wrap; max-width:150px; }}
 .hc {{ width:9px; height:9px; border-radius:2px; display:inline-block; }}
 .hc.good {{ background:{GOOD}; }} .hc.bad {{ background:{BAD}; }}
