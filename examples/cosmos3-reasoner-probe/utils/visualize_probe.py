@@ -281,10 +281,6 @@ h3 small {{ color:var(--text-muted); font-weight:400; font-size:.75rem; }}
   background:var(--warning); box-shadow:0 0 6px rgba(217,164,65,.6); }}
 .latverdict {{ font-family:var(--font-mono); font-size:.6875rem; font-weight:700;
   min-width:110px; text-align:right; }}
-.latnote {{ color:var(--text-muted); font-size:.6875rem; line-height:1.55;
-  margin-top:10px; padding-top:8px; border-top:1px solid var(--border-primary);
-  max-width:760px; }}
-.latnote b {{ color:var(--text-secondary); font-weight:500; }}
 </style></head><body><div class="layout">
 <h2>Grasp-verification probe — {html.escape(video_path.name)}
 <span class="status-badge running" id="status">waiting</span></h2>
@@ -306,19 +302,6 @@ reloading</div>
 <h3>latency per decision <small>budget {meta["latency_budget_ms"]} ms
 (Specialist Map v0.5) · bar = p95 on a log scale · updates live</small></h3>
 <div id="latbox"></div>
-<div class="latnote"><b>What this measures.</b> One decision = one usable
-verdict (one frame + one question → YES/NO). The clock runs client-side
-around the whole HTTP call: image encode &amp; transfer, server queue, vision
-encoder, answer generation. <b>Why p95 drives the verdict:</b> a judge in the
-control loop must be fast <i>almost always</i>, not just on average — a model
-that is quick at the median but stalls 2 s one call in ten cannot gate chunk
-boundaries. <b>max</b> catches warmup outliers (the first call to a fresh
-server compiles caches and is not representative). <b>The
-{meta["latency_budget_ms"]} ms budget</b> is the Specialist Map's ceiling for
-consulting a specialist at phase transitions without stalling control
-(~9 Hz cameras, 20 Hz loop). Sequence probes (direction B: K images per
-request) are per-<i>episode</i> decisions on a different cadence — they do
-not compete against this budget. FAIL calls are excluded from the stats.</div>
 </div>
 <div class="card">
 <table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>arm</th>
