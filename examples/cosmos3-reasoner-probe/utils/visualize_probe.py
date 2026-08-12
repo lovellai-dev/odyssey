@@ -173,6 +173,7 @@ def render_shell(
             "arms": labels,
             "colors": ANSWER_COLOR,
             "data_src": data_path_for(out).name,
+            "budget_ms": meta["latency_budget_ms"],
         }
     )
     out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
@@ -266,6 +267,20 @@ td.arm {{ font-family:var(--font-mono); font-size:.6875rem;
   color:var(--pale-sky); }}
 td img {{ border-radius:6px; border:1px solid var(--border-primary); }}
 .ans {{ font-family:var(--font-mono); font-weight:700; }}
+h3 {{ font-weight:600; font-size:.9375rem; margin:0 0 10px; }}
+h3 small {{ color:var(--text-muted); font-weight:400; font-size:.75rem; }}
+.latrow {{ display:flex; align-items:center; gap:10px; margin:6px 0; }}
+.latstats {{ font-family:var(--font-mono); font-size:.6875rem;
+  color:var(--text-secondary); min-width:340px; }}
+.latstats b {{ color:var(--text-primary); }}
+.latbar {{ position:relative; flex:1; height:14px; background:var(--bg-tertiary);
+  border-radius:4px; border:1px solid var(--border-primary); overflow:visible; }}
+.latfill {{ position:absolute; top:0; bottom:0; left:0; border-radius:3px;
+  opacity:.85; }}
+.latbudget {{ position:absolute; top:-3px; bottom:-3px; width:2px;
+  background:var(--warning); box-shadow:0 0 6px rgba(217,164,65,.6); }}
+.latverdict {{ font-family:var(--font-mono); font-size:.6875rem; font-weight:700;
+  min-width:110px; text-align:right; }}
 </style></head><body><div class="layout">
 <h2>Grasp-verification probe — {html.escape(video_path.name)}
 <span class="status-badge running" id="status">waiting</span></h2>
@@ -282,6 +297,11 @@ reloading</div>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
 {badge_rows}
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
+</div>
+<div class="card">
+<h3>latency per decision <small>budget {meta["latency_budget_ms"]} ms
+(Specialist Map v0.5) · bar = p95 on a log scale · updates live</small></h3>
+<div id="latbox"></div>
 </div>
 <div class="card">
 <table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>arm</th>
@@ -318,6 +338,46 @@ function onData(d) {{
     tbl.appendChild(tr);
   }}
   buildTimeline();
+  buildLatency();
+}}
+
+function quantile(sorted, q) {{
+  if (!sorted.length) return null;
+  const pos = (sorted.length - 1) * q, lo = Math.floor(pos);
+  return sorted[lo] + (sorted[Math.min(lo + 1, sorted.length - 1)] - sorted[lo]) * (pos - lo);
+}}
+
+function buildLatency() {{
+  // Live per-arm latency stats from the streamed records. The bar is p95 on
+  // a log scale (10ms..10s) against the pre-registered per-decision budget.
+  const box = document.getElementById("latbox");
+  const budget = CFG.budget_ms / 1000;
+  const logPos = s => Math.max(0, Math.min(1,
+      (Math.log10(s) - Math.log10(0.01)) / (Math.log10(10) - Math.log10(0.01))));
+  let html = "";
+  for (const arm of CFG.arms) {{
+    const lats = records.filter(r => r.arm === arm && r.answer !== "FAIL")
+        .map(r => r.latency_s).sort((a, b) => a - b);
+    if (!lats.length) {{ html += ""; continue; }}
+    const mean = lats.reduce((a, b) => a + b, 0) / lats.length;
+    const p50 = quantile(lats, 0.5), p95 = quantile(lats, 0.95);
+    const max = lats[lats.length - 1];
+    const under = p95 <= budget;
+    const color = under ? CFG.colors.YES : CFG.colors.NO;
+    html += '<div class="latrow"><span class="armtag">' + arm + "</span>" +
+        '<span class="latstats">n=' + lats.length +
+        " · mean <b>" + (mean * 1000).toFixed(0) + "ms</b>" +
+        " · p50 <b>" + (p50 * 1000).toFixed(0) + "ms</b>" +
+        " · p95 <b>" + (p95 * 1000).toFixed(0) + "ms</b>" +
+        " · max <b>" + (max * 1000).toFixed(0) + "ms</b></span>" +
+        '<span class="latbar"><span class="latfill" style="width:' +
+        (logPos(p95) * 100) + "%;background:" + color + '"></span>' +
+        '<span class="latbudget" style="left:' + (logPos(budget) * 100) +
+        '%"></span></span>' +
+        '<span class="latverdict" style="color:' + color + '">' +
+        (under ? "UNDER BUDGET" : "OVER BUDGET") + "</span></div>";
+  }}
+  box.innerHTML = html;
 }}
 
 function byQA(q, arm) {{
@@ -411,6 +471,12 @@ def main() -> None:
     parser.add_argument("--max_tokens", type=int, default=64)
     parser.add_argument("--timeout_seconds", type=float, default=120.0)
     parser.add_argument("--out", default="/tmp/probe_report.html")
+    parser.add_argument(
+        "--latency_budget_ms",
+        type=int,
+        default=300,
+        help="per-decision latency budget (Specialist Map v0.5) drawn in the latency panel",
+    )
     parser.add_argument("--fake", action="store_true", help="no server: deterministic answers")
     args = parser.parse_args()
 
@@ -461,6 +527,7 @@ def main() -> None:
     meta = {
         "instruction": args.instruction,
         "view": args.view, "upscale": args.upscale, "stride": args.stride,
+        "latency_budget_ms": args.latency_budget_ms,
     }
     out = Path(args.out).expanduser()
     records: list[dict[str, Any]] = []
