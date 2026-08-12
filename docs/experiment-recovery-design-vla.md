@@ -220,9 +220,21 @@ Findings:
   (`_resolve_served_path`'s `snapshot_download(local_files_only=True)`
   requires the FULL repo cached).
 
-**Still pending in Phase 2**: shadow on perturbation-induced *failures*
-(the pose-cliff corpus) — detector recall is unmeasurable on clean episodes;
-then live arms A/C/D.
+**OOD half (2026-08-12, same setup + `object_dx: 0.10` — the pose cliff,
+via the cherry-picked perturbation knob `a550477`)**: success 0/10 (cliff
+reproduced exactly). Detector, same gap-2 config that scored 0 FP on clean
+episodes:
+
+- **Episode recall 10/10**; 126 would-be triggers (~12.6/episode — stuck is
+  persistent, re-confirmed at boundary after boundary).
+- **Tiers complement**: specialist frozen-compare 105 (the volume detector),
+  kinematic 21 (silent on every clean episode and grasp pause; fires only on
+  real stuck). 160 specialist polls, 0 stale, 0 errors.
+- **Early detection**: first trigger at steps 77-144 of 520 (15-28% of the
+  budget) — a live recovery would have ~380+ steps left to act.
+
+Phase 2 verdict: detector characterized (clean: 0 FP / failures: 100%
+episode recall, early). **Green light for Phase 3 (live arms A/C/D).**
 
 ## 7. Roadmap
 
