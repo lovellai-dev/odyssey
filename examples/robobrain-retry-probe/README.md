@@ -87,6 +87,20 @@ python examples/robobrain-retry-probe/robobrain_value_probe.py \
     --view side --upscale 2 --stride 10 --out-json /tmp/value_probe.json
 ```
 
+`utils/visualize_value_probe.py` is the Iteration-2 companion of the frame-
+by-frame viewer (same streaming pattern — one MP4, sidecar `_data.js`, page
+never reloads): playable video with a synced playhead over the live progress
+curve, opening/peak/verdict badges computed with the same stall rule, and the
+per-frame table with raw replies. `--fake` exercises it with no server.
+
+```bash
+python examples/robobrain-retry-probe/utils/visualize_value_probe.py \
+    --video ~/cosmos3_probe_videos_success/rollout_ep000_fail.mp4 \
+    --instruction "pick up the red capsule and place it in the blue tray" \
+    --view side --upscale 2 --stride 5 --out /tmp/fail_value_report.html
+# copy BOTH the .html and its _data.js sidecar if viewing on another machine
+```
+
 First live read (H100, 2026-08-11, stride 10): with `view: side` the stall
 detector separates cleanly — the failed rollout never rises above its opening
 value (25 → peak 25 → STALLED), while both successes rise 40–50 points in the
