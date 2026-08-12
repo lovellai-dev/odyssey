@@ -28,8 +28,12 @@ REPO_SRC="$(cd "$HERE/../.." && pwd)/src"
 # ---- knobs (override via env) ----------------------------------------------
 VIDEOS_DIR="${VIDEOS_DIR:-$HOME/cosmos3_probe_videos_success}"
 INSTRUCTION="${INSTRUCTION:-pick up the red capsule and place it in the blue tray}"
-OBJECTS="${OBJECTS:-red capsule, blue tray}"
+OBJECTS="${OBJECTS:-red capsule, blue tray}"        # RoboBrain (VLM) likes descriptive phrasing
 DISTRACTORS="${DISTRACTORS:-green bottle, yellow block}"
+# SAM PCS wants BARE nouns — "capsule" scores 0.69, "red capsule" only 0.03. Rows
+# align by object position, so each arm may phrase the same object its own way.
+SAM_OBJECTS="${SAM_OBJECTS:-capsule, blue tray}"
+SAM_THRESHOLD="${SAM_THRESHOLD:-0.4}"
 MAX_VIDEOS="${MAX_VIDEOS:-3}"
 
 RB_MODEL="${RB_MODEL:-BAAI/RoboBrain2.5-8B-NV}"
@@ -39,7 +43,10 @@ RB_MAXLEN="${RB_MAXLEN:-8192}"
 RB_IMAGE="${RB_IMAGE:-vllm/vllm-omni:v0.26.0}"   # plain `vllm serve`, NOT --omni
 RB_CTR="${RB_CTR:-robobrain-objverif}"
 
-SAM_MODEL="${SAM_MODEL:-facebook/sam3.1}"         # GATED: manual approval required (see serve-sam)
+# facebook/sam3 (has model.safetensors) is the IMAGE PCS checkpoint used per-frame.
+# facebook/sam3.1 ships only sam3.1_multiplex.pt (video multiplex, no safetensors),
+# so Sam3Model can't load it — 3.1's win is real-time VIDEO tracking, not single-frame.
+SAM_MODEL="${SAM_MODEL:-facebook/sam3}"           # GATED: manual approval required (see serve-sam)
 SAM_PORT="${SAM_PORT:-8006}"
 SAM_VENV="${SAM_VENV:-$HOME/sam3-venv}"
 SAM_PY="$SAM_VENV/bin/python"
@@ -91,7 +98,8 @@ sam_venv() {
     log "creating SAM venv at $SAM_VENV (transformers>=5.14 for Sam3)"
     python3 -m venv "$SAM_VENV"
     "$SAM_PY" -m pip install -q --upgrade pip
-    "$SAM_PY" -m pip install -q "transformers>=5.14" torch pillow numpy
+    # torchvision is REQUIRED — Sam3ImageProcessor imports it, or from_pretrained fails.
+    "$SAM_PY" -m pip install -q "transformers>=5.14" torch torchvision pillow numpy
   fi
   "$SAM_PY" -c "from transformers import Sam3Model" 2>/dev/null \
     || die "Sam3Model still not importable — bump transformers in $SAM_VENV"
@@ -130,13 +138,14 @@ serve_sam_fake() {
 }
 
 run_sam() {
-  log "probing SAM 3.1 over $MAX_VIDEOS rollouts"
+  local view="${1:-side}"   # side = workspace plane; small objects need it (same lesson as RoboBrain)
+  log "probing SAM (view=$view, objects='$SAM_OBJECTS') over $MAX_VIDEOS rollouts"
   "$CLIENT_PY" "$HERE/sam_probe.py" \
     --checkpoint "$SAM_MODEL" --out-json "$OUT_DIR/sam.json" \
     --base_url "http://127.0.0.1:$SAM_PORT" --model "$SAM_MODEL" \
     --videos_dir "$VIDEOS_DIR" --instruction "$INSTRUCTION" \
-    --objects "$OBJECTS" --distractors "$DISTRACTORS" \
-    --view wrist --upscale 3 --max_videos "$MAX_VIDEOS" --score_threshold 0.5
+    --objects "$SAM_OBJECTS" --distractors "$DISTRACTORS" \
+    --view "$view" --upscale 3 --max_videos "$MAX_VIDEOS" --score_threshold "$SAM_THRESHOLD"
   log "wrote $OUT_DIR/sam.json"
 }
 
@@ -161,7 +170,7 @@ case "$cmd" in
   run-robobrain)   run_robobrain "${1:-side}" ;;
   serve-sam)       serve_sam ;;
   serve-sam-fake)  serve_sam_fake ;;
-  run-sam)         run_sam ;;
+  run-sam)         run_sam "${1:-side}" ;;
   scoreboard)      scoreboard ;;
   all-fake)        ( serve_sam_fake & ) ; sleep 3 ; run_sam ; scoreboard ;;
   *) grep -E '^#( |$|  )' "$0" | sed 's/^# \{0,1\}//' | head -30 ;;
