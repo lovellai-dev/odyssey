@@ -184,7 +184,47 @@ tick cap). Artifacts on the box: `~/phase0_{fail,success}_probe.json`,
    the staged videos; the GR00T pose-cliff FAIL corpus is the right material
    when we pull it in.
 
-## 6. Roadmap
+## 6. Phase 2 shadow results — in-distribution arm B (H100, 2026-08-12)
+
+Full closed-loop shadow run: GR00T-N1.7-LIBERO (auto-served, `libero_object`
+task 0, 10 episodes) + the recovery stack in shadow + the two-frame specialist
+polled async at chunk boundaries. Specialist = **`BAAI/RoboBrain2.5-8B-NV`**
+(reusing an already-serving vLLM endpoint on the box; validated on the Phase-0
+frozen-compare sweep first — same clean discrimination as Cosmos3-Nano, zero
+extra VRAM; the judge is model-agnostic config by design).
+
+| Run | success_rate | shadow_triggers | specialist_polls | stale/errors |
+| --- | --- | --- | --- | --- |
+| `stuck_pair_gap_chunks: 1` (~0.8 s pair) | 10/10 | **10** — all `specialist`, clustered at step≈48 (the **grasp micro-pause**: two frames 0.8 s apart look identical while the gripper closes) | 39 | 0 |
+| `stuck_pair_gap_chunks: 2` (~1.6 s pair) | 10/10 | **0** | 42 | 0 |
+
+Findings:
+
+- **The async plumbing works end-to-end** on hardware: ~40 judge calls/run,
+  zero stale verdicts, zero errors, sim never blocked, shadow mode left the
+  success rate untouched (10/10, matching the historical in-domain result).
+- **Grasp micro-pause = the frozen-compare's false-positive class** at gap 1;
+  widening the pair to 2 chunks eliminates it entirely at equal poll rate.
+  `stuck_pair_gap_chunks: 2` is the calibrated default for GR00T/LIBERO
+  (set in the example mission; code default stays 1).
+- The kinematic tier fired **zero** times on clean episodes — stricter than
+  the VLM at gap 1, redundant at gap 2. Its precision/recall on *failures*
+  needs the perturbation runs.
+- Corpus: 10 npz rollout logs (136 MB) — first LVM training material.
+- H100 bring-up notes (worth keeping): eval venv must be **python 3.10**
+  (tf/robosuite wheels), uv venvs need `ensurepip` before the setup script,
+  `mujoco==2.3.7` pinned (robosuite 1.4 breaks on mujoco 3.x `mj_fullM`),
+  eval venv needs `huggingface_hub` + `transformers` + `msgpack/pyzmq` for
+  suite-subdir resolution and the GR00T client import chain, and a partial
+  HF cache needs `served_model_path` pointed at the suite subdir
+  (`_resolve_served_path`'s `snapshot_download(local_files_only=True)`
+  requires the FULL repo cached).
+
+**Still pending in Phase 2**: shadow on perturbation-induced *failures*
+(the pose-cliff corpus) — detector recall is unmeasurable on clean episodes;
+then live arms A/C/D.
+
+## 7. Roadmap
 
 - **PR 1 (this)**: recovery skeleton + VLA-Corrector truncation + rollout logging.
 - **PR 2**: VLA-Corrector LVM tier — vendor/adapt `siglip_dynamics`, train the

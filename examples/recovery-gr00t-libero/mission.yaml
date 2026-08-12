@@ -85,6 +85,10 @@ tasks:
       specialist_base_url: "http://127.0.0.1:8002/v1"
       specialist_model: nvidia/Cosmos3-Nano
       poll_every_chunks: 2
+      # H100 shadow calibration (2026-08-12): gap 1 (~0.8 s pair) misreads the
+      # grasp micro-pause as frozen (10 FP / 10 clean episodes); gap 2 (~1.6 s)
+      # -> 0 FP with the same judge poll rate. Keep 2 for GR00T/LIBERO.
+      stuck_pair_gap_chunks: 2
 
       # LVM corpus (PR 2): one npz of (frames, actions) per episode.
       log_actions: true
