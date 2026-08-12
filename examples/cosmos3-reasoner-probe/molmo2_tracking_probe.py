@@ -63,24 +63,33 @@ GRASP_FRAME_TEMPLATE = (
 
 
 def frames_data_uris(
-    video: Path, num_frames: int, view: str, upscale: int
-) -> tuple[list[str], list[int]]:
-    """K evenly-spaced frames of the rollout, mission-prepped, as PNG data URIs."""
+    video: Path, num_frames: int, view: str, upscale: int, window: str = "0.0,1.0"
+) -> tuple[list[str], list[int], int]:
+    """K evenly-spaced frames within an episode-fraction window, as data URIs.
+
+    ``window`` (iteration 2): "0.0,0.4" densifies sampling where the action
+    actually is — the pick lands in the first ~15% of these episodes, so
+    whole-episode spacing wastes most frames on the post-place idle tail.
+    """
     import imageio.v3 as iio
     from PIL import Image
 
     stack = iio.imread(video)
+    start_frac, end_frac = (float(x) for x in window.split(","))
+    lo = int(start_frac * (len(stack) - 1))
+    hi = max(int(end_frac * (len(stack) - 1)), lo + 1)
     indexes = [
-        min(int(i * (len(stack) - 1) / max(num_frames - 1, 1)), len(stack) - 1)
+        min(lo + int(i * (hi - lo) / max(num_frames - 1, 1)), len(stack) - 1)
         for i in range(num_frames)
     ]
+    total_frames = len(stack)
     uris = []
     for index in indexes:
         array = prepare_frame(stack[index], view, upscale)
         buf = io.BytesIO()
         Image.fromarray(array).save(buf, format="PNG")
         uris.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii"))
-    return uris, indexes
+    return uris, indexes, total_frames
 
 
 def ask_sequence(
@@ -139,6 +148,11 @@ def main() -> None:
     parser.add_argument("--timeout_seconds", type=float, default=300.0)
     parser.add_argument("--view", choices=["full", "wrist", "side"], default="full")
     parser.add_argument("--upscale", type=int, default=1)
+    parser.add_argument(
+        "--window",
+        default="0.0,1.0",
+        help='episode-fraction sampling window, e.g. "0.0,0.4" (iteration 2: densify the pick)',
+    )
     args = parser.parse_args()
 
     videos = sorted(Path(args.videos_dir).expanduser().glob("*.mp4"))[: args.max_videos]
@@ -148,7 +162,9 @@ def main() -> None:
     results: list[dict[str, Any]] = []
     latencies: list[float] = []
     for video in videos:
-        uris, indexes = frames_data_uris(video, args.num_frames, args.view, args.upscale)
+        uris, indexes, total_frames = frames_data_uris(
+            video, args.num_frames, args.view, args.upscale, args.window
+        )
         carry_raw, carry_latency = ask_sequence(
             uris, CARRY_TEMPLATE.format(instruction=args.instruction), args
         )
@@ -161,10 +177,11 @@ def main() -> None:
         )
         latencies += [carry_latency, frame_latency]
         grasp_frame = parse_frame_index(frame_raw)
-        # Which real video frame the claimed grasp index maps to, as an episode
-        # fraction — comparable against the known early pick window.
+        # Which real video frame the claimed grasp index maps to, as a fraction
+        # of the WHOLE episode (not the window) — comparable against the known
+        # early pick window regardless of sampling.
         grasp_fraction = (
-            round(indexes[grasp_frame] / max(indexes[-1], 1), 3)
+            round(indexes[grasp_frame] / max(total_frames - 1, 1), 3)
             if grasp_frame is not None and 0 <= grasp_frame < len(indexes)
             else None
         )
@@ -197,6 +214,7 @@ def main() -> None:
             "endpoint": args.base_url,
             "model": args.model,
             "num_frames_per_request": args.num_frames,
+            "window": args.window,
             "view": args.view,
             "upscale": args.upscale,
             "call_success_rate": round(ok / len(calls), 3) if calls else 0.0,
