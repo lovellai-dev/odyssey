@@ -197,3 +197,30 @@ RoboBrain 2.5 (`BAAI/RoboBrain2.5-8B-NV`, serve recipe on the
 `experiment-specialist-retry` branch) can join as a third arm labelled
 out-of-role — the map does not list it for grasp, but it feeds the
 specialist-vs-multiplexed-generalist question.
+
+### Direction B — first results and the wrong-object finding (2026-08-12)
+
+Runs 1–4 (n=3 rollouts, whole-episode and early-window sampling, full and
+wrist views): `carry` answers YES on all three videos **including
+`rollout_ep000_fail`**, and `grasp_frame` lands at episode fraction 0.0–0.57.
+Frame inspection of the fail's early window explains it: the arm visibly
+carries a YELLOW object toward the TEAL tray — a real grasp-and-carry of the
+WRONG object to the WRONG place (instruction: red capsule → blue tray).
+
+Two consequences, pre-registered for the next iteration:
+
+* Molmo 2's carry=YES is arguably CORRECT perception — the episode label
+  "fail" marks *task* failure, not *grasp* failure. The current CARRY prompt
+  asks about "the object", which a wrong-object grasp satisfies; catching
+  semantic failures needs instruction-grounded phrasing ("the RED capsule…
+  into the BLUE tray") — and that becomes a different, harder question.
+* The specialists now visibly disagree in a way that maps to their roles:
+  carry-perception (Molmo, sequence) says YES; task-progress (RoboBrain's
+  value curve on the retry branch) says stalled. Both are right about
+  different questions — grasp verification and task progress need separate
+  judges, which is exactly the map's role decomposition.
+
+Also from run 1 (direction A): photo-mode Molmo2 fires retry=YES on 8/12
+frames including successes — out of its modality it is a false-abort machine,
+consistent with the map's thesis that modality fit matters more than model
+size.
