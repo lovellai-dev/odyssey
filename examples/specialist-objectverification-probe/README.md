@@ -114,3 +114,25 @@ python examples/specialist-objectverification-probe/utils/visualize_sam_probe.py
 Distractor polarity (a good specialist answers ABSENT / low-score on the
 distractors) is the specificity half of the map's object-verification test; the
 present-object recall is the other half.
+
+## Reading the bake-off result — the scoreboard
+
+The two viewers above are for *inspecting* one rollout. To *read the benchmark
+verdict at a glance* — which objects each model recognises over the whole run,
+no playback — use `utils/scoreboard.py`. It builds a static HTML from the probe
+result JSONs: rows are objects, columns are models (RoboBrain and SAM side by
+side), each cell a recall / false-positive bar plus a per-frame heat-strip.
+Colour is **correctness**, so the board reads green = good (present→YES,
+distractor→NO, control→YES). Models with no data yet are a `pending` column.
+
+```bash
+python examples/specialist-objectverification-probe/utils/scoreboard.py \
+    --result "RoboBrain·side=/tmp/rb_side.json" \
+    --result "RoboBrain·wrist=/tmp/rb_objverif.json" \
+    --pending "SAM 3.1" \
+    --out /tmp/objverif_scoreboard.html
+```
+
+Two RoboBrain columns (`side` vs `wrist`) also make the camera effect legible:
+`red capsule` recall jumps from ~8% in the gripper close-up to ~67% in the
+workspace view — small objects need the side plane.
