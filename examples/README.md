@@ -8,7 +8,7 @@
 | `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
 | `quickstart-pi05/` | **Eval-only**: score a Physical Intelligence **π0.5** checkpoint on the LIBERO object suite (Franka), driven out-of-process via a pre-started openpi policy server. Chunk-emitting pilot (issue #74). **Wiring done; GPU smoke pending** — [see its README →](quickstart-pi05/README.md). | 24 GB GPU (+ an openpi/JAX server) |
 | `cosmos3-reasoner-probe/` | **Eval-only SPECIALIST probe**: Cosmos3-Nano Reasoner judged over recorded rollout frames (grasp-verification bake-off arm) via the OpenAI-compatible judge — [see its README →](cosmos3-reasoner-probe/README.md). | any GPU box serving the model (vLLM) |
-| `robobrain-retry-probe/` | **Eval-only SPECIALIST probe**: RoboBrain 2.5 retry-strategy bake-off arm — YES/NO probe + progress-curve value probe + streaming viewers — [see its README →](robobrain-retry-probe/README.md). | any GPU box serving the model (vLLM) |
+| `specialist-retry-probe/` | **Eval-only SPECIALIST probe**: retry-strategy bake-off (RoboBrain 2.5 arm first; per-model missions share the probes) — YES/NO probe + progress-curve value probe + streaming viewers — [see its README →](specialist-retry-probe/README.md). | any GPU box serving the model (vLLM) |
 
 More quickstarts (Octo) arrive in later releases. See the publication plan for
 the cadence.

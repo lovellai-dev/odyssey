@@ -17,7 +17,7 @@ single rollout MP4 and shows it:
 Usage (server recipe in ../README.md; tunnel with `ssh -L 8002:127.0.0.1:8002`
 if the model is served on the H100):
 
-    python examples/robobrain-retry-probe/utils/visualize_probe.py \\
+    python examples/specialist-retry-probe/utils/visualize_probe.py \\
         --video ~/videos/rollout_ep001_success.mp4 \\
         --instruction "pick up the red capsule and place it in the blue tray" \\
         --view wrist --upscale 3 --stride 5 --out /tmp/probe_report.html

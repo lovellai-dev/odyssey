@@ -19,7 +19,7 @@ uses the model's general-VQA mode with a strict integer-only prompt.)
 Custom-eval script (``evaluation_type: custom`` contract: ``--checkpoint`` /
 ``--out-json`` + passthrough flags), so a mission can run it; standalone use:
 
-    python examples/robobrain-retry-probe/robobrain_value_probe.py \\
+    python examples/specialist-retry-probe/robobrain_value_probe.py \\
         --videos_dir ~/cosmos3_probe_videos_success \\
         --instruction "pick up the red capsule and place it in the blue tray" \\
         --view wrist --upscale 3 --stride 5 --out-json /tmp/value_probe.json

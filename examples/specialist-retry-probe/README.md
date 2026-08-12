@@ -41,7 +41,7 @@ Gotchas:
    the same successful drug-sort rollouts as the Cosmos arm (Runs 1–2), so the
    first read is apples-to-apples, matching Cosmos Run 2's `view: wrist`,
    `upscale: 3`.
-3. `odyssey run examples/robobrain-retry-probe/mission.yaml`
+3. `odyssey run examples/specialist-retry-probe/mission.yaml`
 4. Metrics land in the task's `out.json`: per-question YES rates, latency,
    per-frame verdicts with raw-reply excerpts.
 
@@ -55,7 +55,7 @@ full Q/A table (it adds the `empty` degeneracy-detector question on top of
 the mission's four):
 
 ```bash
-python examples/robobrain-retry-probe/utils/visualize_probe.py \
+python examples/specialist-retry-probe/utils/visualize_probe.py \
     --video ~/cosmos3_probe_videos_success/rollout_ep001_success.mp4 \
     --instruction "pick up the red capsule and place it in the blue tray" \
     --view wrist --upscale 3 --stride 5 --out /tmp/robobrain_report.html
@@ -81,7 +81,7 @@ Prediction): a task-progress percentage per sampled frame, reading the
 quantity instead of a binary opinion.
 
 ```bash
-python examples/robobrain-retry-probe/robobrain_value_probe.py \
+python examples/specialist-retry-probe/robobrain_value_probe.py \
     --videos_dir ~/cosmos3_probe_videos_success \
     --instruction "pick up the red capsule and place it in the blue tray" \
     --view side --upscale 2 --stride 10 --out-json /tmp/value_probe.json
@@ -94,7 +94,7 @@ curve, opening/peak/verdict badges computed with the same stall rule, and the
 per-frame table with raw replies. `--fake` exercises it with no server.
 
 ```bash
-python examples/robobrain-retry-probe/utils/visualize_value_probe.py \
+python examples/specialist-retry-probe/utils/visualize_value_probe.py \
     --video ~/cosmos3_probe_videos_success/rollout_ep000_fail.mp4 \
     --instruction "pick up the red capsule and place it in the blue tray" \
     --view side --upscale 2 --stride 5 --out /tmp/fail_value_report.html

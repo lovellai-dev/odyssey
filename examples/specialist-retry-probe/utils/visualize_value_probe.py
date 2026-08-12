@@ -19,7 +19,7 @@ fraction of the episode, the rollout is flagged STALLED -> RETRY.
 Usage (server recipe in ../README.md; tunnel with `ssh -L 8002:127.0.0.1:8002`
 if the model is served on the H100):
 
-    python examples/robobrain-retry-probe/utils/visualize_value_probe.py \\
+    python examples/specialist-retry-probe/utils/visualize_value_probe.py \\
         --video ~/videos/rollout_ep000_fail.mp4 \\
         --instruction "pick up the red capsule and place it in the blue tray" \\
         --view side --upscale 2 --stride 5 --out /tmp/value_report.html

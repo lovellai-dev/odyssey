@@ -80,7 +80,7 @@ tasks:
     benchmark_name: robobrain25_retry_probe
     num_episodes: 12
     config:
-      eval_script: examples/robobrain-retry-probe/robobrain_probe.py
+      eval_script: examples/specialist-retry-probe/robobrain_probe.py
       # eval_python: /path/to/env_probe/bin/python   # needs imageio+pillow
       checkpoint: BAAI/RoboBrain2.5-8B-NV      # recorded in the summary only
       # --- forwarded verbatim to the script (snake_case -> --flags) ---
@@ -110,7 +110,7 @@ tasks:
   #   benchmark_name: robobrain25_retry_probe_failed
   #   num_episodes: 12
   #   config:
-  #     eval_script: examples/robobrain-retry-probe/robobrain_probe.py
+  #     eval_script: examples/specialist-retry-probe/robobrain_probe.py
   #     checkpoint: BAAI/RoboBrain2.5-8B-NV
   #     base_url: http://127.0.0.1:8002/v1
   #     model: BAAI/RoboBrain2.5-8B-NV
