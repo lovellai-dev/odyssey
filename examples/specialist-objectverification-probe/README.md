@@ -37,6 +37,25 @@ Plus a `control` (RoboBrain: "arm + tabletop visible?"; SAM: segment
 `"robot arm"`) as the always-empty degeneracy detector, and per-object rates +
 per-frame verdicts for the discriminative reading.
 
+## Quick start — `setup.sh`
+
+`setup.sh` captures the whole box setup (serving, probing, scoreboard) as
+idempotent sub-commands, so you don't retype the recipes below:
+
+```bash
+./setup.sh serve-robobrain          # RoboBrain 2.5 via docker vLLM
+./setup.sh run-robobrain side       # probe it (side = the good camera)
+./setup.sh serve-sam                # SAM 3.1 real (own transformers>=5.14 venv; gated-access guarded)
+./setup.sh run-sam                  # probe SAM
+./setup.sh scoreboard               # build the bake-off scoreboard
+./setup.sh all-fake                 # no gated weights: fake SAM + probe + scoreboard smoke
+```
+
+It encodes the two hard-won facts: the probe **client** needs a venv with
+pydantic+imageio (Isaac-GR00T's, not the minimal eval venv), and the SAM
+**server** needs its own `transformers>=5.14` venv (don't upgrade GR00T's). The
+manual sections below document what each sub-command does.
+
 ## Serving
 
 Two independent endpoints, each in its **own venv** (do not cross the deps):
