@@ -163,20 +163,26 @@ tick cap). Artifacts on the box: `~/phase0_{fail,success}_probe.json`,
 | **`t_frozen` (TWO frames, ~seconds apart: "is the arm essentially FROZEN in the same pose?")** | **Discriminates: 8/8 NO on active windows (arm moving), 10/10 YES on idle/stuck windows** — across both visual domains. |
 | `t_progress` (two frames, open-ended "made progress on the task?") | NO even during genuinely active successful picks — open-ended judgment biases NO, exactly per the reasoner-probe README's law. |
 
-**Design consequences (follow-up commit before Phase 2):**
+**Design consequences — IMPLEMENTED (follow-up commit, 2026-08-12):**
 
-1. `SpecialistGate` must submit **two frames** — the previous chunk-boundary
-   frame + the current one (`RecoveryPolicy` already touches both; storing
-   the last boundary frame is one field). `OpenAICompatCompletionJudge`
-   needs a multi-image payload path.
-2. `STUCK_PROMPT_TEMPLATE` becomes the two-frame frozen-compare phrasing;
-   keep concrete single-frame add-ons (`s_drop`) as optional extra verdicts
-   rather than open-ended "failed/stuck" judgments.
-3. Honest caveat: two-frame frozen detection overlaps tier 1's kinematic
-   signal (both measure "no motion"). The VLM's *distinct* value must come
-   from semantic checks (dropped/knocked object) — untestable on the staged
-   videos (no such events); the GR00T pose-cliff FAIL corpus is the right
-   material when we pull it in.
+1. ✅ The stuck check is now a **two-frame compare**: `RecoveryPolicy` retains
+   the last `frame_pair_gap + 1` boundary frames and submits the
+   `(frame_earlier, frame_now)` tuple (config `stuck_pair_gap_chunks`,
+   default 1 ≈ `n_action_steps` env steps apart). The episode's first
+   boundaries submit nothing — no pair exists yet (a same-frame pair would
+   read frozen=YES falsely).
+2. ✅ `OpenAICompatCompletionJudge.build_payload`: a *tuple* observation
+   emits one image content part per element, in order (a tuple is never
+   itself an image, so the single-frame contract is untouched).
+3. ✅ `STUCK_PROMPT_TEMPLATE` is the Phase-0-validated frozen-compare wording
+   verbatim, with the instruction slot consumed unrendered
+   (`{instruction:.0s}`) — task context deliberately absent since open-ended
+   task judgements bias the reasoner to NO.
+4. Honest caveat (unchanged): two-frame frozen detection overlaps tier 1's
+   kinematic signal (both measure "no motion"). The VLM's *distinct* value
+   must come from semantic checks (dropped/knocked object) — untestable on
+   the staged videos; the GR00T pose-cliff FAIL corpus is the right material
+   when we pull it in.
 
 ## 6. Roadmap
 

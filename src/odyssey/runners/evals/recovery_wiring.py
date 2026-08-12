@@ -64,6 +64,9 @@ def add_recovery_args(
                    help="tier-2 inter-chunk discrepancy threshold (0 = disabled).")
     g.add_argument("--poll_every_chunks", type=int, default=2,
                    help="specialist poll throttle (every Nth chunk boundary).")
+    g.add_argument("--stuck_pair_gap_chunks", type=int, default=1,
+                   help="chunk boundaries spanned by the specialist's two-frame "
+                        "compare (~gap * n_action_steps env steps apart).")
     g.add_argument("--specialist_base_url", default="",
                    help="OpenAI-compatible endpoint serving the stuck judge "
                         "(empty = no specialist tier).")
@@ -135,6 +138,7 @@ def make_recovery(args: argparse.Namespace) -> Any | None:
         shadow=args.shadow_mode,
         max_recoveries=args.max_recoveries,
         settle_steps=args.recovery_settle_steps,
+        frame_pair_gap=args.stuck_pair_gap_chunks,
     )
 
 

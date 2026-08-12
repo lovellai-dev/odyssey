@@ -123,12 +123,12 @@ def test_gate_detector_exception_reports_error_not_stuck() -> None:
     assert not gate.in_flight  # the failure released the in-flight slot
 
 
-def test_gate_wraps_openai_judge_with_stuck_template() -> None:
+def test_gate_wraps_openai_judge_with_two_frame_stuck_template() -> None:
     payloads: list[dict[str, Any]] = []
 
     def transport(payload: dict[str, Any]) -> dict[str, Any]:
         payloads.append(payload)
-        return {"choices": [{"message": {"content": "YES, clearly wedged."}}]}
+        return {"choices": [{"message": {"content": "YES, clearly frozen."}}]}
 
     judge = OpenAICompatCompletionJudge(
         base_url="http://judge:8002/v1",
@@ -142,17 +142,24 @@ def test_gate_wraps_openai_judge_with_stuck_template() -> None:
 
     import numpy as np
 
+    earlier = np.zeros((4, 4, 3), dtype=np.uint8)
+    now = np.full((4, 4, 3), 255, dtype=np.uint8)
     gate.submit(
-        chunk_index=0,
-        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        chunk_index=1,
+        frame=(earlier, now),  # the (frame_earlier, frame_now) pair
         instruction="put the bowl on the plate",
     )
     verdict = gate.poll()
 
-    assert verdict is not None and verdict.stuck is True  # YES == stuck
-    prompt = payloads[0]["messages"][0]["content"][1]["text"]
-    assert "FAILED or STUCK" in prompt
-    assert "put the bowl on the plate" in prompt
+    assert verdict is not None and verdict.stuck is True  # YES == frozen == stuck
+    content = payloads[0]["messages"][0]["content"]
+    images = [part for part in content if part["type"] == "image_url"]
+    assert len(images) == 2  # one image part per pair element, in order
+    prompt = content[-1]["text"]
+    assert "FROZEN" in prompt
+    # Phase 0 (design doc §5): task context deliberately absent — open-ended
+    # task judgements bias the reasoner to NO; the slot is consumed unrendered.
+    assert "put the bowl on the plate" not in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,7 @@ class _FakeGate:
 
     def __init__(self, verdicts: list[Any] | None = None) -> None:
         self.verdicts = list(verdicts or [])
-        self.submits: list[tuple[int, str]] = []
+        self.submits: list[tuple[int, Any, str]] = []
         self.episodes: list[int] = []
         self.closed = False
 
@@ -58,7 +58,7 @@ class _FakeGate:
         self.episodes.append(episode)
 
     def submit(self, *, chunk_index: int, frame: Any, instruction: str) -> bool:
-        self.submits.append((chunk_index, instruction))
+        self.submits.append((chunk_index, frame, instruction))
         return True
 
     def poll(self) -> Any | None:
@@ -76,6 +76,7 @@ def _policy(
     max_recoveries: int = 3,
     settle_steps: int = 0,
     window_steps: int = 3,
+    frame_pair_gap: int = 1,
 ) -> RecoveryPolicy:
     return RecoveryPolicy(
         ledger=ChunkLedger(),
@@ -86,13 +87,14 @@ def _policy(
         shadow=shadow,
         max_recoveries=max_recoveries,
         settle_steps=settle_steps,
+        frame_pair_gap=frame_pair_gap,
     )
 
 
 def _boundary(policy: RecoveryPolicy, *, step: int, pos=(0.0, 0.0, 0.0)) -> None:
     policy.on_chunk_boundary(
         step=step,
-        frame="frame",
+        frame=f"f{step}",  # distinct per boundary so pair contents are assertable
         instruction="pick up the bowl",
         eef_pos=pos,
         eef_quat_xyzw=IDENTITY,
@@ -298,28 +300,61 @@ def test_policy_tier1_trigger_yields_flush_decision() -> None:
 
 
 def test_policy_specialist_stuck_yields_rollback_to_last_good() -> None:
-    # Realistic timeline: the verdict about chunk k's frame lands one boundary
-    # late. Chunk 0 is vouched clean; chunk 1 is judged stuck -> roll back to 0.
-    clean0 = SimpleNamespace(episode=1, chunk_index=0, stuck=False)
-    stuck1 = SimpleNamespace(episode=1, chunk_index=1, stuck=True)
-    gate = _FakeGate(verdicts=[None, clean0, stuck1])
+    # Two-frame timeline: the first boundary has no pair (no submit); verdicts
+    # about chunk k land one boundary late. Chunk 1 is vouched clean; chunk 2
+    # is judged stuck -> roll back to 1.
+    clean1 = SimpleNamespace(episode=1, chunk_index=1, stuck=False)
+    stuck2 = SimpleNamespace(episode=1, chunk_index=2, stuck=True)
+    gate = _FakeGate(verdicts=[None, None, clean1, stuck2])
     policy = _policy(specialist=gate)
     policy.begin_episode(1)
 
-    _boundary(policy, step=0, pos=(0.0, 0.0, 0.0))  # chunk 0 (the clean one)
+    _boundary(policy, step=0, pos=(0.0, 0.0, 0.0))  # chunk 0: no pair yet
     policy.after_step(step=0, action=IDLE, eef_pos=(0.0, 0.0, 0.0), chunk_start=True)
-    _boundary(policy, step=1, pos=(0.5, 0.0, 0.0))  # chunk 1: clean0 drained
-    policy.after_step(step=1, action=IDLE, eef_pos=(0.5, 0.0, 0.0), chunk_start=True)
-    _boundary(policy, step=2, pos=(0.6, 0.0, 0.0))  # chunk 2: stuck1 drained
+    _boundary(policy, step=1, pos=(0.4, 0.0, 0.0))  # chunk 1 (the clean one)
+    policy.after_step(step=1, action=IDLE, eef_pos=(0.4, 0.0, 0.0), chunk_start=True)
+    _boundary(policy, step=2, pos=(0.5, 0.0, 0.0))  # chunk 2: clean1 drained
+    policy.after_step(step=2, action=IDLE, eef_pos=(0.5, 0.0, 0.0), chunk_start=True)
+    _boundary(policy, step=3, pos=(0.6, 0.0, 0.0))  # chunk 3: stuck2 drained
     decision = policy.after_step(
-        step=2, action=IDLE, eef_pos=(0.6, 0.0, 0.0), chunk_start=True
+        step=3, action=IDLE, eef_pos=(0.6, 0.0, 0.0), chunk_start=True
     )
 
     assert decision.kind == "rollback" and decision.cause == "specialist"
-    assert decision.snapshot is not None and decision.snapshot.chunk_index == 0
+    assert decision.snapshot is not None and decision.snapshot.chunk_index == 1
     assert policy.recovering  # command mode started the controller
-    assert [chunk for chunk, _ in gate.submits] == [0, 1, 2]
+    assert [chunk for chunk, _f, _i in gate.submits] == [1, 2, 3]
     assert policy.metrics()["recoveries_triggered"] == 1
+
+
+def test_policy_first_boundary_submits_nothing_then_pairs() -> None:
+    gate = _FakeGate()
+    policy = _policy(specialist=gate)
+    policy.begin_episode(1)
+
+    _boundary(policy, step=0)
+    assert gate.submits == []  # no pair to compare yet
+
+    _boundary(policy, step=1)
+    _boundary(policy, step=2)
+    assert [(chunk, frame) for chunk, frame, _i in gate.submits] == [
+        (1, ("f0", "f1")),  # (earlier boundary frame, current frame)
+        (2, ("f1", "f2")),  # window slides
+    ]
+
+
+def test_policy_frame_pair_gap_widens_the_compare_window() -> None:
+    gate = _FakeGate()
+    policy = _policy(specialist=gate, frame_pair_gap=2)
+    policy.begin_episode(1)
+
+    for step in range(4):
+        _boundary(policy, step=step)
+
+    assert [(chunk, frame) for chunk, frame, _i in gate.submits] == [
+        (2, ("f0", "f2")),  # first pair spans two boundaries
+        (3, ("f1", "f3")),
+    ]
 
 
 def test_policy_rollback_without_good_snapshot_degrades_to_flush() -> None:

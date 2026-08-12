@@ -38,17 +38,22 @@ from odyssey.runners.agents.completion_gate import DetectorLike, _as_callable
 
 logger = logging.getLogger(__name__)
 
-# The reasoner-probe's RETRY question (``examples/reasoner-probe/``), i.e. the
-# calibrated wording for "should the robot abort and retry from here".
+# Two-frame frozen-arm compare — the Phase 0 finding (design doc §5): the
+# single-frame open-ended retry question answered NO everywhere (twice
+# reproduced on H100), while this concrete two-frame comparison discriminated
+# cleanly (active windows 8/8 NO, idle/stuck windows 10/10 YES, 2026-08-11).
+# The wording is the validated sweep prompt verbatim. Task context is
+# deliberately ABSENT — open-ended task judgements bias the reasoner to NO —
+# so the instruction slot is consumed without being rendered
+# (``{instruction:.0s}``, the reasoner-probe control-template trick).
+# Callers submit a (frame_earlier, frame_now) TUPLE; the judge emits one
+# image part per tuple element (``OpenAICompatCompletionJudge.build_payload``).
 STUCK_PROMPT_TEMPLATE = (
-    "You are a strict visual judge monitoring a robot manipulation task. "
-    "The robot is attempting this instruction: {instruction!r}. "
-    "Look at the image and answer whether the robot is in a FAILED or STUCK "
-    "state such that it should abort and RETRY the task from the start "
-    "(e.g. object dropped or knocked over, arm wedged or flailing away from "
-    "the target, target unreachable from the current pose). "
-    "A nominal in-progress attempt is NOT a retry state. "
-    "Answer with exactly one word: YES or NO."
+    "These two images are frames of the SAME robot manipulation episode, "
+    "the first taken a few seconds BEFORE the second. Comparing them, is the "
+    "robot arm essentially FROZEN in the same pose (no meaningful movement "
+    "between the frames)? Answer with exactly one word: YES or NO."
+    "{instruction:.0s}"
 )
 
 

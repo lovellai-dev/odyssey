@@ -143,27 +143,28 @@ class OpenAICompatCompletionJudge:
             return dict(json.loads(resp.read().decode("utf-8")))
 
     def build_payload(self, observation: Any, instruction: str) -> dict[str, Any]:
-        """The chat-completions request for one judgement (exposed for tests)."""
+        """The chat-completions request for one judgement (exposed for tests).
+
+        ``observation`` is a single image, or a **tuple** of images for
+        comparative judgements (the two-frame frozen-arm stuck check — design
+        doc §5): each tuple element becomes its own image content part, in
+        order, ahead of the text. A tuple is never itself an image, so the
+        rule is unambiguous and the single-frame path is unchanged.
+        """
+        frames = observation if isinstance(observation, tuple) else (observation,)
+        content: list[dict[str, Any]] = [
+            {"type": "image_url", "image_url": {"url": _encode_data_uri(frame)}}
+            for frame in frames
+        ]
+        content.append(
+            {"type": "text", "text": self._template.format(instruction=instruction)}
+        )
         return {
             **self._extra_body,
             "model": self._model,
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": _encode_data_uri(observation)},
-                        },
-                        {
-                            "type": "text",
-                            "text": self._template.format(instruction=instruction),
-                        },
-                    ],
-                }
-            ],
+            "messages": [{"role": "user", "content": content}],
         }
 
     # -- CompletionDetector surface -------------------------------------------

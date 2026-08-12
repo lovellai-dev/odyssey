@@ -182,3 +182,40 @@ def test_openai_judge_extra_body_merges_into_payload() -> None:
     # Core fields always win over extra_body on collision.
     assert payload["model"] != "should-not-win"
     assert payload["messages"]
+
+
+def test_openai_judge_tuple_observation_emits_one_image_part_each() -> None:
+    """A tuple observation = comparative judgement: N image parts, in order."""
+    np = pytest.importorskip("numpy")
+    captured: list[dict[str, Any]] = []
+
+    def transport(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(payload)
+        return {"choices": [{"message": {"content": "NO"}}]}
+
+    judge = _judge(transport=transport)
+    earlier = np.zeros((2, 2, 3), dtype=np.uint8)
+    now = np.full((2, 2, 3), 255, dtype=np.uint8)
+    judge.is_complete((earlier, now), "compare the frames")
+
+    content = captured[0]["messages"][0]["content"]
+    images = [part for part in content if part["type"] == "image_url"]
+    assert len(images) == 2
+    # Order preserved: the all-black frame encodes differently from all-white.
+    assert images[0]["image_url"]["url"] != images[1]["image_url"]["url"]
+    assert content[-1]["type"] == "text"
+
+
+def test_openai_judge_single_observation_payload_unchanged() -> None:
+    """The pre-two-frame single-image contract is untouched."""
+    captured: list[dict[str, Any]] = []
+
+    def transport(payload: dict[str, Any]) -> dict[str, Any]:
+        captured.append(payload)
+        return {"choices": [{"message": {"content": "YES"}}]}
+
+    judge = _judge(transport=transport)
+    judge.is_complete(_image(), "grasp the bowl")
+
+    content = captured[0]["messages"][0]["content"]
+    assert [part["type"] for part in content] == ["image_url", "text"]

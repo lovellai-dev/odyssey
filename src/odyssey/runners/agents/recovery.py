@@ -26,7 +26,7 @@ import logging
 import math
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -377,6 +377,7 @@ class _EpisodeState:
     pending_specialist: Any | None = None
     stale_horizon: int = -1  # verdicts about chunks <= this predate a rollback
     had_intervention: bool = False
+    boundary_frames: list[Any] = field(default_factory=list)  # last gap+1 frames
 
 
 class RecoveryPolicy:
@@ -401,9 +402,12 @@ class RecoveryPolicy:
         shadow: bool = False,
         max_recoveries: int = 3,
         settle_steps: int = 5,
+        frame_pair_gap: int = 1,
     ) -> None:
         if mode not in ("command", "teleport"):
             raise ValueError(f"mode must be 'command' or 'teleport', got {mode!r}")
+        if int(frame_pair_gap) < 1:
+            raise ValueError(f"frame_pair_gap must be >= 1, got {frame_pair_gap}")
         self._ledger = ledger
         self._monitor = monitor
         self._controller = controller
@@ -412,6 +416,7 @@ class RecoveryPolicy:
         self._shadow = bool(shadow)
         self._max_recoveries = int(max_recoveries)
         self._settle_steps = int(settle_steps)
+        self._frame_pair_gap = int(frame_pair_gap)
         self._ep = _EpisodeState()
         self._events: list[dict[str, Any]] = []
         self._metrics = {
@@ -472,13 +477,25 @@ class RecoveryPolicy:
                 sim_state=sim_state,
             )
         )
+        # Retain the last gap+1 boundary frames: the stuck check is a TWO-frame
+        # comparison (Phase 0, design doc §5) — a single frame cannot show
+        # "not moving". The pair spans frame_pair_gap chunk boundaries
+        # (~gap * n_action_steps env steps of wall-clock separation).
+        frames = self._ep.boundary_frames
+        frames.append(frame)
+        if len(frames) > self._frame_pair_gap + 1:
+            del frames[0]
         if self._specialist is None:
             return
         verdict = self._specialist.poll()
         if verdict is not None:
             self._consume_verdict(verdict)
+        if len(frames) <= self._frame_pair_gap:
+            return  # first boundaries of the episode: no pair to compare yet
         if self._specialist.submit(
-            chunk_index=self._ep.chunk_index, frame=frame, instruction=instruction
+            chunk_index=self._ep.chunk_index,
+            frame=(frames[0], frames[-1]),
+            instruction=instruction,
         ):
             self._metrics["specialist_polls"] += 1
 

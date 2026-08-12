@@ -61,6 +61,8 @@ Run the same `task_id` + `num_episodes` across arms; success rates and the
 `max_recoveries` · `recovery_steps` · `recovery_settle_steps` ·
 `stuck_window_steps` · `stuck_eps_m` · `stuck_min_commanded` ·
 `continuity_eps` (0 = tier 2 off) · `poll_every_chunks` ·
+`stuck_pair_gap_chunks` (boundaries spanned by the specialist's two-frame
+frozen-compare; the stuck check sends a frame PAIR, not one frame) ·
 `specialist_base_url` · `specialist_model` · `specialist_max_tokens` ·
 `specialist_timeout_s` · `specialist_text_modality` ·
 `specialist_api_key_env` · `log_actions` · `recovery_dir`
