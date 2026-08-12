@@ -185,10 +185,12 @@ h2 {{ font-weight:600; letter-spacing:-.015em; margin:0 0 4px; font-size:1.375re
 @keyframes pulse {{ 50% {{ opacity:.3; }} }}
 .meta {{ color:var(--text-secondary); font-size:.8125rem; margin:0 0 16px; line-height:1.55; }}
 .meta b {{ color:var(--text-primary); font-weight:500; }}
-.vidwrap {{ position:relative; width:560px; }}
-video {{ border-radius:10px; border:1px solid var(--border-primary);
-  display:block; background:#000; width:560px; }}
-canvas.vidov {{ position:absolute; left:0; top:0; pointer-events:none; border-radius:10px; }}
+.viewrow {{ display:flex; gap:18px; align-items:flex-start; }}
+#det {{ border-radius:12px; border:1px solid var(--border-secondary); background:#000;
+  display:block; box-shadow:var(--shadow-md); }}
+.side {{ width:260px; }}
+video {{ border-radius:8px; border:1px solid var(--border-primary);
+  display:block; background:#000; width:260px; }}
 .legend {{ display:flex; gap:14px; margin:8px 0 2px; flex-wrap:wrap;
   font-family:var(--font-mono); font-size:.6875rem; color:var(--text-secondary); }}
 .legend .lg i {{ display:inline-block; width:11px; height:11px; border-radius:3px;
@@ -230,18 +232,20 @@ canvas.overlay {{ border-radius:6px; border:1px solid var(--border-primary); dis
 <div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
 “{html.escape(meta["instruction"])}” · view <b>{meta["view"]}</b>
 x{meta["upscale"]} · stride {meta["stride"]} · PRESENT when best score ≥
-<b>{meta["score_threshold"]}</b> · boxes drawn on the playing video (remapped to
-the full frame); click a band or a row to seek</div>
+<b>{meta["score_threshold"]}</b> · big panel = the exact crop SAM judges, zoomed,
+with its detection boxes; click a band or row to seek</div>
 <div class="card">
-<div class="vidwrap">
+<div class="viewrow">
+<canvas id="det" width="480" height="480"></canvas>
+<div class="side">
 <video id="v" controls src="data:video/mp4;base64,{video_b64}"></video>
-<canvas id="ov" class="vidov"></canvas>
-</div>
-<div class="legend">{legend}</div>
 <div class="speed"><span>speed</span>
 <button onclick="rate(0.1)">0.1x</button><button onclick="rate(0.25)">0.25x</button>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
+<div class="legend">{legend}</div>
 <div class="badges">{badges}</div>
+</div>
+</div>
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
 </div>
 <div class="card">
@@ -251,57 +255,73 @@ the full frame); click a band or a row to seek</div>
 </div><script>
 const CFG = {config};
 const v = document.getElementById("v");
-const ov = document.getElementById("ov"), octx = ov.getContext("2d");
-v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; sizeOverlay(); }});
-window.addEventListener("resize", sizeOverlay);
+const det = document.getElementById("det"), dctx = det.getContext("2d");
+v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; sizeDet(); }});
+window.addEventListener("resize", sizeDet);
 function rate(x) {{ v.playbackRate = x; }}
 function seek(t) {{ v.currentTime = t + 0.001; }}
 function idFor(s) {{ return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }}
 let records = [], done = false, rendered = 0, thumbs = {{}};
 
-function sizeOverlay() {{
-  ov.width = v.clientWidth; ov.height = v.clientHeight;
-  ov.style.width = v.clientWidth + "px"; ov.style.height = v.clientHeight + "px";
+// source-pixel crop rect matching the view the model judged (2:1 concat frame)
+function cropRect() {{
+  const VW = v.videoWidth || 2, VH = v.videoHeight || 1;
+  const concat = Math.abs(VW - 2*VH) <= 2;
+  if (CFG.view === "wrist" && concat) return {{sx:VW/2, sy:0, sw:VW/2, sh:VH}};
+  if (CFG.view === "side"  && concat) return {{sx:0,    sy:0, sw:VW/2, sh:VH}};
+  return {{sx:0, sy:0, sw:VW, sh:VH}};
+}}
+function sizeDet() {{
+  const c = cropRect(), MAX = 480;
+  det.width = MAX; det.height = Math.max(1, Math.round(MAX * c.sh / c.sw));
 }}
 
-// records grouped by frame, sorted by time, for the live video overlay
 function frameGroups() {{
   const by = {{}};
   for (const r of records) {{ (by[r.frame] = by[r.frame] || {{time_s:r.time_s, items:[]}}).items.push(r); }}
   return Object.keys(by).map(k => ({{frame:+k, ...by[k]}})).sort((a,b)=>a.time_s-b.time_s);
 }}
 
-function drawVideoOverlay() {{
-  if (!ov.width) sizeOverlay();
-  octx.clearRect(0,0,ov.width,ov.height);
+// Live detection panel: draw the current crop zoomed to fill, then the boxes
+// for the frame nearest the playhead (boxes are crop-normalized -> land exactly).
+function drawDet() {{
+  requestAnimationFrame(drawDet);
+  if (!v.videoWidth) return;
+  if (!det.height || det.height < 2) sizeDet();
+  const c = cropRect(), W = det.width, H = det.height;
+  try {{ dctx.drawImage(v, c.sx, c.sy, c.sw, c.sh, 0, 0, W, H); }}
+  catch (e) {{ dctx.fillStyle = "#000"; dctx.fillRect(0, 0, W, H); }}
   const t = v.currentTime, groups = frameGroups();
   let g = null; for (const x of groups) if (x.time_s <= t + 1e-6) g = x;
   if (!g) return;
-  const W = ov.width, H = ov.height;
   for (const r of g.items) {{
     if (r.question === "control") continue;
-    const col = CFG.conceptColors[r.question] || "#fff";
+    const boxes = r.boxes || [];
+    if (!boxes.length) continue;
     const present = r.answer === "PRESENT";
-    octx.lineWidth = present ? 2.5 : 1;
-    octx.globalAlpha = present ? 1 : 0.35;
-    octx.strokeStyle = col; octx.fillStyle = col;
-    octx.font = "600 12px 'Space Mono', monospace";
-    for (const b of (r.boxes_full || [])) {{
-      const x0=b[0]*W, y0=b[1]*H, x1=b[2]*W, y1=b[3]*H;
-      octx.strokeRect(x0, y0, x1-x0, y1-y0);
+    const col = CFG.conceptColors[r.question] || "#fff";
+    dctx.lineWidth = present ? 3 : 1.5;
+    dctx.globalAlpha = present ? 1 : 0.4;
+    dctx.strokeStyle = col; dctx.shadowColor = present ? col : "transparent";
+    dctx.shadowBlur = present ? 8 : 0;
+    for (const b of boxes) {{
+      const x0=b[0]*W, y0=b[1]*H, bw=(b[2]-b[0])*W, bh=(b[3]-b[1])*H;
+      dctx.strokeRect(x0, y0, bw, bh);
       if (present) {{
+        dctx.shadowBlur = 0;
         const label = r.question + "  " + r.best_score.toFixed(2);
-        const tw = octx.measureText(label).width + 8;
-        octx.globalAlpha = 0.85;
-        octx.fillRect(x0, Math.max(0,y0-15), tw, 15);
-        octx.globalAlpha = 1; octx.fillStyle = "#07120f";
-        octx.fillText(label, x0+4, Math.max(11,y0-4));
-        octx.fillStyle = col;
+        dctx.font = "700 13px 'Space Mono', monospace";
+        const tw = dctx.measureText(label).width + 10, ly = y0 > 20 ? y0-18 : y0+bh+2;
+        dctx.globalAlpha = 1; dctx.fillStyle = col;
+        dctx.fillRect(x0 - 1.5, ly, tw, 17);
+        dctx.fillStyle = "#07120f"; dctx.fillText(label, x0 + 4, ly + 13);
+        dctx.strokeStyle = col; dctx.shadowColor = col; dctx.shadowBlur = 8;
       }}
     }}
   }}
-  octx.globalAlpha = 1;
+  dctx.globalAlpha = 1; dctx.shadowBlur = 0;
 }}
+requestAnimationFrame(drawDet);
 
 function drawOverlay(td, r) {{  // per-row crop thumbnail with its boxes
   const img = new Image();
@@ -393,7 +413,6 @@ function refreshUI() {{
     }}
     lastFrame = current;
   }}
-  drawVideoOverlay();
 }}
 v.addEventListener("timeupdate", refreshUI);
 setInterval(refreshUI, 120);
