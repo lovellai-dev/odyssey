@@ -107,8 +107,15 @@ _CONTROL_KEYS = frozenset(
         "wan_vae_path",
         "filter_dir",
         "dataset_path",
+        "dataset_env",
     }
 )
+
+# Which env var carries the dataset path into the recipe TOML's ``${oc.env:...}``
+# interpolation — RECIPE-SPECIFIC (verified on cosmos-framework): the DROID recipe
+# reads ``DATASET_PATH``; the LIBERO recipe reads ``LIBERO_ROOT`` (via
+# LIBEROLeRobotDataset). Override per mission with ``config: {dataset_env: ...}``.
+_DEFAULT_DATASET_ENV = "DATASET_PATH"
 
 
 # cosmos-framework's train loop logs an imaginaire-style tqdm bar plus periodic
@@ -261,22 +268,29 @@ def build_cosmos3_export_argv(
 
 
 def _dataset_env(task: TrainingTask) -> dict[str, str]:
-    """Env overlay so cosmos-framework's LeRobot loader finds the dataset.
+    """Env overlay so cosmos-framework's dataset loader finds the local dataset.
 
-    Maps a LOCAL absolute ``dataset.ref`` to ``DATASET_PATH``. FOOTGUN: point at
-    the PARENT of the ``success/`` folder (not ``success/`` itself), and keep the
-    vendor DIR NAME (e.g. ``droid_plus_lerobot_640x360_20260412``) — the loader
-    infers its schema from that name. An explicit ``config['dataset_path']``
-    wins; HF/hub refs are left for the recipe TOML to resolve.
+    The env VAR NAME is recipe-specific (``config['dataset_env']``, default
+    ``DATASET_PATH``): the DROID recipe reads ``DATASET_PATH``, the LIBERO recipe
+    reads ``LIBERO_ROOT``. The VALUE is a LOCAL absolute path — explicit
+    ``config['dataset_path']`` wins, else ``dataset.ref``.
+
+    FOOTGUN (DROID): point at the PARENT of the ``success/`` folder (not
+    ``success/`` itself), keeping the vendor DIR NAME (e.g.
+    ``droid_plus_lerobot_640x360_20260412``) — the loader infers its schema from
+    that name. FOOTGUN (LIBERO): ``LIBERO_ROOT`` is the suite dir holding
+    ``meta/info.json`` (e.g. ``<dir>/libero_10``). HF/hub refs are left for the
+    recipe TOML to resolve.
     """
     config = task.config or {}
+    env_name = str(config.get("dataset_env") or _DEFAULT_DATASET_ENV)
     if config.get("dataset_path"):
-        return {"DATASET_PATH": str(config["dataset_path"])}
+        return {env_name: str(config["dataset_path"])}
     if task.dataset is None:
         return {}
     ref = task.dataset.ref
     if task.dataset.source == DatasetSource.LOCAL and os.path.isabs(ref):
-        return {"DATASET_PATH": os.path.normpath(ref)}
+        return {env_name: os.path.normpath(ref)}
     return {}
 
 

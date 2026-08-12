@@ -250,6 +250,28 @@ def test_dataset_env_maps_absolute_local_verbatim() -> None:
     assert env["DATASET_PATH"] == "/data/droid_plus_lerobot_640x360_20260412"
 
 
+def test_dataset_env_name_is_recipe_specific() -> None:
+    # LIBERO recipe reads LIBERO_ROOT, not DATASET_PATH (verified on
+    # cosmos-framework). dataset_env overrides the env VAR NAME; value unchanged.
+    task = _task(
+        config={"config_name": "action_policy_libero_10_nano", "dataset_env": "LIBERO_ROOT"},
+        dataset=DatasetRef(
+            source=DatasetSource.LOCAL, ref="/data/LIBERO_LeRobot_v3/libero_10"
+        ),
+    )
+    env = _dataset_env(task)
+    assert env == {"LIBERO_ROOT": "/data/LIBERO_LeRobot_v3/libero_10"}
+    assert "DATASET_PATH" not in env
+
+
+def test_dataset_env_defaults_to_dataset_path() -> None:
+    # No dataset_env -> DROID default DATASET_PATH.
+    task = _task(
+        dataset=DatasetRef(source=DatasetSource.LOCAL, ref="/data/droid_lerobot")
+    )
+    assert _dataset_env(task) == {"DATASET_PATH": "/data/droid_lerobot"}
+
+
 def test_dataset_env_explicit_config_wins() -> None:
     task = _task(
         config={"config_name": "c", "dataset_path": "/override/data"},

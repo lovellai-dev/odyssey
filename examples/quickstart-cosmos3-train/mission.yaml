@@ -67,10 +67,11 @@ tasks:
     dataset:
       source: local
       # ABSOLUTE path to the unpacked LeRobot-v3 dataset ON THE TRAINING BOX.
-      # FOOTGUN: point at the PARENT of the `success/` folder — i.e. the named
-      # dataset dir itself, NOT `success/`. The cosmos-framework loader infers its
-      # schema from this DIR NAME, so keep the vendor naming.
-      ref: /data/libero_lerobot_v3_20260412
+      # For LIBERO this is the SUITE dir holding meta/info.json, e.g.
+      # <dir>/libero_10. Pre-sync once:
+      #   hf download nvidia/LIBERO_LeRobot_v3 --repo-type dataset \
+      #     --include 'libero_10/**' --local-dir <dir>
+      ref: /data/LIBERO_LeRobot_v3/libero_10
       format: lerobot
     config:
       # Routes this wildcard training task to the Cosmos 3 runner (OpenVLA is the
@@ -78,7 +79,12 @@ tasks:
       runner: cosmos3
       # REQUIRED: the registered SFT recipe TOML under
       # $COSMOS_FRAMEWORK_REPO_PATH/examples/toml/sft_config/ (bare name, no .toml).
-      config_name: action_policy_libero_nano
+      # LIBERO recipes: action_policy_libero_10_nano (single suite) /
+      # action_policy_libero_all_nano (4 suites). DROID: action_policy_droid_nano.
+      config_name: action_policy_libero_10_nano
+      # The env var the recipe interpolates for the dataset path is recipe-specific:
+      # LIBERO reads LIBERO_ROOT; DROID reads DATASET_PATH (the default).
+      dataset_env: LIBERO_ROOT
       # Base model handed to convert_model_to_dcp (step 1). Defaults to the agent's
       # HF base, else Cosmos3-Nano. Set convert_dcp: false to reuse an existing DCP.
       base_model: Cosmos3-Nano

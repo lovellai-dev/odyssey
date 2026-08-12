@@ -75,7 +75,7 @@ through from your shell:
 
 | Var | Set by | Meaning |
 |-----|--------|---------|
-| `DATASET_PATH` | `dataset.ref` (or `config.dataset_path`) | LeRobot-v3 dataset root (parent of `success/`) |
+| `DATASET_PATH` / `LIBERO_ROOT` | `dataset.ref` (or `config.dataset_path`), under the name in `config.dataset_env` | LeRobot-v3 dataset path. **Recipe-specific var name**: DROID reads `DATASET_PATH` (default); LIBERO reads `LIBERO_ROOT` (the suite dir, e.g. `<dir>/libero_10`). Set `config: {dataset_env: LIBERO_ROOT}` for LIBERO. |
 | `BASE_CHECKPOINT_PATH` | `config.base_checkpoint_path`, else `<output>/base_checkpoint_dcp` | DCP dir (step 1 output) |
 | `IMAGINAIRE_OUTPUT_ROOT` | task `output_dir` | where train writes the run dir |
 | `NPROC_PER_NODE` | `config.nproc_per_node` (default 8) | torchrun workers |
@@ -86,7 +86,8 @@ through from your shell:
 ### Control keys (consumed by the runner, never forwarded as overrides)
 
 `config_name`, `runner`, `base_model`, `convert_dcp`, `export`, `nproc_per_node`,
-`base_checkpoint_path`, `wan_vae_path`, `filter_dir`, `dataset_path`.
+`base_checkpoint_path`, `wan_vae_path`, `filter_dir`, `dataset_path`,
+`dataset_env`.
 
 ## Validate without a GPU
 
