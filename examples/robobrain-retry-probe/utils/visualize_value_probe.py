@@ -54,6 +54,7 @@ from robobrain_value_probe import (  # noqa: E402
     STALL_CHECKPOINT,
     VALUE_TEMPLATE,
     ask_value,
+    stall_verdict,
 )
 
 # Serene Ocean semantic colors (lai-trainer command-center theme).
@@ -83,8 +84,13 @@ def data_path_for(out: Path) -> Path:
 
 
 def write_data(out: Path, records: list[dict[str, Any]], done: bool) -> None:
-    """Sidecar the page polls — atomic-ish single write per judged frame."""
-    payload = json.dumps({"records": records, "done": done})
+    """Sidecar the page polls — atomic-ish single write per judged frame.
+
+    The verdict ships COMPUTED (via the probe's own ``stall_verdict``, on the
+    median-smoothed curve), so the page displays exactly what the batch probe
+    would decide — no duplicated JS rule to drift."""
+    verdict = stall_verdict([r["value"] for r in records])
+    payload = json.dumps({"records": records, "done": done, "verdict": verdict})
     data_path_for(out).write_text(f"window.PROBE_DATA = {payload};")
 
 
@@ -179,9 +185,10 @@ td.raw {{ color:var(--text-muted); font-size:.6875rem; max-width:320px; }}
 <div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
 “{html.escape(meta["instruction"])}” · view <b>{meta["view"]}</b>
 x{meta["upscale"]} · stride {meta["stride"]} · progress estimate 0-100 per frame;
-verdict = STALLED → RETRY if rise over opening &lt; {MIN_RISE} points by the
-{int(STALL_CHECKPOINT * 100)}% checkpoint — the curve and rows stream in
-without reloading; click the curve or a row to seek</div>
+verdict = STALLED → RETRY if the median-smoothed rise over opening &lt;
+{MIN_RISE} points by the {int(STALL_CHECKPOINT * 100)}% checkpoint (needs
+stride &le; 5) — the curve and rows stream in without reloading; click the
+curve or a row to seek</div>
 <div class="card">
 <video id="v" controls width="560" src="data:video/mp4;base64,{video_b64}"></video>
 <div class="speed"><span>speed</span>
@@ -208,19 +215,18 @@ v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; }});
 function rate(x) {{ v.playbackRate = x; }}
 function seek(t) {{ v.currentTime = t + 0.001; }}
 const W = 560, H = 170, PAD = 26;
-let records = [], done = false, rendered = 0;
+let records = [], done = false, rendered = 0, verdictData = null;
 
 function xOf(t) {{ return PAD + (t / (v.duration || 1)) * (W - 2 * PAD); }}
 function yOf(val) {{ return H - PAD - (val / 100) * (H - 2 * PAD); }}
 
 function verdict() {{
-  const D = v.duration || 1;
-  const known = records.filter(r => r.value !== null);
-  if (!known.length) return ["?", CFG.colors.curve];
-  const window_ = known.filter(r => r.time_s <= CFG.checkpoint * D);
-  const rise = Math.max(...window_.map(r => r.value)) - known[0].value;
-  if (!done && v.currentTime < CFG.checkpoint * D) return ["rise " + rise, CFG.colors.curve];
-  return rise < CFG.min_rise
+  // Streamed pre-computed from Python (the probe's own smoothed stall rule);
+  // provisional while the run is still filling the curve.
+  if (!verdictData || verdictData.rise_by_checkpoint === null)
+      return ["?", CFG.colors.curve];
+  if (!done) return ["rise " + verdictData.rise_by_checkpoint, CFG.colors.curve];
+  return verdictData.stalled
       ? ["STALLED → RETRY", CFG.colors.fail] : ["progressing", CFG.colors.ok];
 }}
 
@@ -256,7 +262,7 @@ function drawCurve() {{
 
 function onData(d) {{
   if (!d || d.records.length === records.length && done === d.done) return;
-  records = d.records; done = d.done;
+  records = d.records; done = d.done; verdictData = d.verdict;
   const st = document.getElementById("status");
   st.textContent = (done ? "finished · " : "running · ") + records.length + " estimates";
   st.className = "status-badge " + (done ? "done" : "running");
@@ -283,14 +289,14 @@ function refreshUI() {{
   const t = v.currentTime, D = v.duration || 1;
   const ph = document.getElementById("ph");
   if (ph) {{ const x = xOf(t); ph.setAttribute("x1", x); ph.setAttribute("x2", x); }}
-  const known = records.filter(r => r.value !== null);
   let current = null;
   for (const r of records) if (r.time_s <= t + 1e-6) current = r;
   document.getElementById("bv-now").textContent =
       current && current.value !== null ? current.value : "?";
-  document.getElementById("bv-open").textContent = known.length ? known[0].value : "?";
+  document.getElementById("bv-open").textContent =
+      verdictData && verdictData.opening !== null ? verdictData.opening : "?";
   document.getElementById("bv-peak").textContent =
-      known.length ? Math.max(...known.map(r => r.value)) : "?";
+      verdictData && verdictData.peak !== null ? verdictData.peak : "?";
   const [verdictText, verdictColor] = verdict();
   const bv = document.getElementById("bv-verdict");
   bv.textContent = verdictText; bv.style.color = verdictColor;

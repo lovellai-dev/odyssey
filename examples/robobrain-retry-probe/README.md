@@ -101,11 +101,23 @@ python examples/robobrain-retry-probe/utils/visualize_value_probe.py \
 # copy BOTH the .html and its _data.js sidecar if viewing on another machine
 ```
 
-First live read (H100, 2026-08-11, stride 10): with `view: side` the stall
-detector separates cleanly — the failed rollout never rises above its opening
-value (25 → peak 25 → STALLED), while both successes rise 40–50 points in the
-early window (peaks 66/75 → progressing). `wrist` view is noisy (the crop
-hides the trays), confirming the Specialist Map's camera hypothesis: retry
-wants workspace geometry, not the gripper close-up. Caveats: n=3 rollouts
-(one failure), and raw values are noisy — the discriminative quantity is
-rise-over-opening by the 60% checkpoint (`MIN_RISE`), not any single value.
+First live read (H100, 2026-08-11/12, `view: side`, stride 5): the smoothed
+stall rule separates 3/3 — the failed rollout's spikes are single isolated
+samples that the median removes (rise 0 → STALLED), while both successes hold
+an early two-sample plateau that survives it (rise 35 → progressing). `wrist`
+view is noisy (the crop hides the trays), confirming the Specialist Map's
+camera hypothesis: retry wants workspace geometry, not the gripper close-up.
+
+Two hard-won rules about the signal:
+
+* **The verdict is computed on the median-of-3 smoothed curve** (see
+  `stall_verdict` in `robobrain_value_probe.py`, imported by both the batch
+  probe and the viewer — single source of truth). Raw per-frame estimates
+  jitter enough that one isolated spike can cross `MIN_RISE` and flip the
+  verdict with the raw rule.
+* **Sample densely: stride ≤ 5.** The median needs a real rise to span ≥2
+  samples; at stride 10 the successes' early plateau is one sample wide and
+  gets erased along with the noise.
+
+Caveats: n=3 rollouts (one failure); thresholds (`MIN_RISE`, 60% checkpoint)
+are calibrated on that tiny set and must be re-fit when more failures exist.

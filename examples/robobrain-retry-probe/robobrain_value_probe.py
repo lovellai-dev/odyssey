@@ -58,6 +58,44 @@ STALL_CHECKPOINT = 0.6
 MIN_RISE = 15
 
 
+def smooth_median3(values: list[int | None]) -> list[int | None]:
+    """Median-of-3 with edge padding — kills single-sample estimate spikes.
+
+    The per-frame estimates jitter (isolated 40/75 readings mid-way through a
+    stalled episode); a real progress plateau spans neighbouring samples, a
+    hallucinated one does not. This requires DENSE sampling (stride <= 5): at
+    stride 10 the early success plateau is one sample wide and the median
+    erases it too.
+    """
+    if not values:
+        return []
+    padded = [values[0], *values, values[-1]]
+    out: list[int | None] = []
+    for i in range(1, len(padded) - 1):
+        window = [v for v in padded[i - 1 : i + 2] if v is not None]
+        out.append(sorted(window)[len(window) // 2] if window else None)
+    return out
+
+
+def stall_verdict(raw_values: list[int | None]) -> dict[str, Any]:
+    """The retry rule on the SMOOTHED curve — the single source of truth
+    shared by the batch probe and the streaming viewer."""
+    smoothed = smooth_median3(raw_values)
+    known = [v for v in smoothed if v is not None]
+    window = [
+        v for v in smoothed[: max(1, int(len(smoothed) * STALL_CHECKPOINT))] if v is not None
+    ]
+    opening = known[0] if known else None
+    rise = (max(window) - opening) if window and opening is not None else None
+    return {
+        "opening": opening,
+        "peak": max(known) if known else None,
+        "final": known[-1] if known else None,
+        "rise_by_checkpoint": rise,
+        "stalled": rise is not None and rise < MIN_RISE,
+    }
+
+
 def ask_value(
     frame: Any, instruction: str, args: argparse.Namespace
 ) -> tuple[int | None, str, float]:
@@ -132,22 +170,11 @@ def probe_video(video: Path, args: argparse.Namespace) -> dict[str, Any]:
 
     values = [p["value"] for p in points]
     known = [v for v in values if v is not None]
-    opening = known[0] if known else None
-    # Progress reached by the stall checkpoint (fraction of the episode).
-    checkpoint = [
-        v for v in values[: max(1, int(len(values) * STALL_CHECKPOINT))] if v is not None
-    ]
-    rise_by_checkpoint = (max(checkpoint) - opening) if checkpoint and opening is not None else None
-    stalled = rise_by_checkpoint is not None and rise_by_checkpoint < MIN_RISE
     return {
         "video": video.name,
         "curve": sparkline(values),
         "points": points,
-        "opening": opening,
-        "final": known[-1] if known else None,
-        "peak": max(known) if known else None,
-        "rise_by_checkpoint": rise_by_checkpoint,
-        "stalled": stalled,
+        **stall_verdict(values),
         "parse_rate": round(len(known) / len(values), 3) if values else 0.0,
     }
 
