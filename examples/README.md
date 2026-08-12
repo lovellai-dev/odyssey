@@ -7,9 +7,31 @@
 | `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
 | `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
 | `quickstart-pi05/` | **Eval-only**: score a Physical Intelligence **π0.5** checkpoint on the LIBERO object suite (Franka), driven out-of-process via a pre-started openpi policy server. Chunk-emitting pilot (issue #74). **Wiring done; GPU smoke pending** — [see its README →](quickstart-pi05/README.md). | 24 GB GPU (+ an openpi/JAX server) |
+| `cosmos3-reasoner-probe/` | **Eval-only SPECIALIST probe**: Cosmos3-Nano Reasoner judged over recorded rollout frames (grasp-verification bake-off arm) via the OpenAI-compatible judge — [see its README →](cosmos3-reasoner-probe/README.md). | any GPU box serving the model (vLLM) |
+| `robobrain-retry-probe/` | **Eval-only SPECIALIST probe**: RoboBrain 2.5 retry-strategy bake-off arm — YES/NO probe + progress-curve value probe + streaming viewers — [see its README →](robobrain-retry-probe/README.md). | any GPU box serving the model (vLLM) |
 
 More quickstarts (Octo) arrive in later releases. See the publication plan for
 the cadence.
+
+## Where do SPECIALIST (judge) models live in the code?
+
+Not in `src/odyssey/runners/models/` — and that is by design, not an
+omission. A model earns a file there only when it needs model-specific Python
+glue inside `src/`: training runners (`openvla.py`, `gr00t.py`,
+`pi05_train.py`), chunk-emitting **pilot** factories with wire-format
+transforms (`pi05.py`, `cosmos3.py` — the WAM *policy*, not the Reasoner),
+or judges loaded in-process via transformers (`gemma_vlm.py`).
+
+HTTP-served specialists — the Cosmos3-Nano Reasoner, RoboBrain 2.5, or any
+future OpenAI-compatible judge — need **zero model-specific code**: they are
+served externally (vLLM/NIM) and spoken to through the generic
+`OpenAICompatCompletionJudge`, where the model id is mission config (an
+`agents:` entry with `role: SPECIALIST`, plus `config.model` /
+`config.base_url` on the task). Their entire footprint is a probe example
+directory like the two above. They graduate into `runners/models/` only when
+promoted into the engine with reusable glue (e.g. a pointing-coordinate
+parser for commit gating, or a value-curve recovery gate wired into the
+multi-agent runtime).
 
 ## LIBERO eval (`franka-libero/`)
 
