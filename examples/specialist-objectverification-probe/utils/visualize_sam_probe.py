@@ -1,22 +1,24 @@
-"""Watch the SAM 3.1 arm segment named concepts, frame by frame.
+"""Watch the SAM 3.1 arm segment named concepts, LIVE over the playing video.
 
 The SAM counterpart of ``visualize_probe.py`` — the **variation** the object-
 verification bake-off needs because SAM does not answer YES/NO: it returns
-masks/boxes. So instead of an answer badge this viewer **overlays the returned
-detections** on each judged frame and reads the best mask score. Per sampled
-frame each named concept is one independent POST to the served SAM 3.1 endpoint
-("segment <concept>"); a concept counts PRESENT when its best score clears
+masks/boxes. The headline view here is a **bounding box drawn on the playing
+video**, synced to the playhead: as the rollout plays you see, per named
+concept, the box SAM put around the object it recognised and its score. Per
+sampled frame each concept is one POST to the served SAM endpoint ("segment
+<concept>"); a concept counts PRESENT when its best score clears
 ``--score_threshold``.
 
-Same streaming shell as the RoboBrain viewer (Serene Ocean theme, sidecar
-``*_data.js`` polled with no page reload, playable slow-motion video, per-concept
-timeline bands, synced playhead), plus:
+Crop→full-frame mapping: the model judges a *crop* of the 2:1 concat frame
+(``wrist`` = right half, ``side`` = left half), but the video shows the whole
+concat frame, so the returned boxes are remapped to full-frame coordinates —
+they land on the actual object on screen, not the wrong half.
 
-* per-row canvas — the judged frame with the concept's boxes drawn on it and the
-  best score labelled, so you SEE what SAM latched onto;
-* badges show each concept's best score, coloured PRESENT / ABSENT.
+Also keeps the streaming shell (Serene Ocean theme, sidecar ``*_data.js`` polled
+with no reload, per-concept timeline bands, synced playhead) and a per-row
+canvas showing the exact judged crop with its boxes.
 
-Usage (server recipe in ../README.md; tunnel with `ssh -L 8003:127.0.0.1:8003`
+Usage (server recipe in ../README.md; tunnel with `ssh -L 8006:127.0.0.1:8006`
 if SAM is served on the H100):
 
     python utils/visualize_sam_probe.py \\
@@ -28,7 +30,7 @@ if SAM is served on the H100):
     open /tmp/sam_report.html      # while the run is live, or after
 
 ``--fake`` draws deterministic boxes without any server — for checking the
-viewer itself.
+viewer itself (the live overlay works the same, with fake boxes).
 """
 
 from __future__ import annotations
@@ -54,8 +56,10 @@ from sam_probe import (  # noqa: E402
     segment,
 )
 
-# PRESENT / ABSENT / FAIL — Serene Ocean semantic colors.
+# PRESENT / ABSENT / FAIL — Serene Ocean semantic colors (for the % / table).
 ANSWER_COLOR = {"PRESENT": "#34d399", "ABSENT": "#c94a4a", "FAIL": "#5a7a8f"}
+# Distinct per-concept colors for the boxes drawn on the video.
+CONCEPT_PALETTE = ["#34d399", "#508ca4", "#d9a441", "#c084fc", "#f472b6", "#38bdf8"]
 
 
 def _png_data_uri(array: Any, max_side: int = 320) -> str:
@@ -77,9 +81,46 @@ def write_data(out: Path, records: list[dict[str, Any]], done: bool) -> None:
     data_path_for(out).write_text(f"window.PROBE_DATA = {payload};")
 
 
+def _normalize_boxes(result: dict[str, Any], frame: Any) -> list[list[float]]:
+    """SAM returns pixel boxes + image_size; normalize to 0..1 over the CROP."""
+    import numpy as np
+
+    detections = result.get("detections") or []
+    size = result.get("image_size")
+    if size and size[0] and size[1]:
+        width, height = float(size[0]), float(size[1])
+    else:
+        arr = np.asarray(frame)
+        height, width = float(arr.shape[0]), float(arr.shape[1])
+    boxes: list[list[float]] = []
+    for det in detections:
+        box = det.get("box")
+        if not box:
+            continue
+        boxes.append([box[0] / width, box[1] / height, box[2] / width, box[3] / height])
+    return boxes
+
+
+def _to_full_frame(boxes: list[list[float]], view: str) -> list[list[float]]:
+    """Map crop-normalized xyxy boxes onto the full 2:1 concat frame.
+
+    ``wrist`` judged the right half -> x' = 0.5 + x/2; ``side`` the left half ->
+    x' = x/2; ``full`` passes through. Height is untouched (the crop keeps all
+    rows).
+    """
+    if view == "full":
+        return boxes
+    shift = 0.5 if view == "wrist" else 0.0
+    return [[shift + b[0] / 2, b[1], shift + b[2] / 2, b[3]] for b in boxes]
+
+
 def render_shell(
-    out: Path, *, video_path: Path, meta: dict[str, Any], names: list[str]
+    out: Path, *, video_path: Path, meta: dict[str, Any], concepts: list[tuple[str, str]]
 ) -> None:
+    names = [n for n, _ in concepts]
+    concept_colors = {
+        q: CONCEPT_PALETTE[i % len(CONCEPT_PALETTE)] for i, (q, _) in enumerate(concepts)
+    }
     video_b64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
     badges = "".join(
         f'<span class="badge" id="badge-{html.escape(n)}"><small>{html.escape(n)}</small>'
@@ -91,10 +132,17 @@ def render_shell(
         f'<div class="tband" id="band-{html.escape(n)}"></div></div>'
         for n in names
     )
+    # legend: which colour is which concept on the video
+    legend = "".join(
+        f'<span class="lg"><i style="background:{concept_colors[n]}"></i>{html.escape(n)}</span>'
+        for n in names
+        if n != "control"
+    )
     config = json.dumps(
         {
             "questions": names,
             "colors": ANSWER_COLOR,
+            "conceptColors": concept_colors,
             "data_src": data_path_for(out).name,
             "threshold": meta["score_threshold"],
         }
@@ -106,16 +154,14 @@ def render_shell(
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 :root {{
   --bg-primary:#070c10; --bg-secondary:#0c1318; --bg-tertiary:#121c22;
-  --bg-elevated:#18252d; --bg-glass:rgba(145,174,193,.07);
-  --bg-glass-hover:rgba(145,174,193,.12);
+  --bg-glass:rgba(145,174,193,.07); --bg-glass-hover:rgba(145,174,193,.12);
   --text-primary:#eaf2f7; --text-secondary:#9ab5c7; --text-muted:#5a7a8f;
   --border-primary:rgba(145,174,193,.12); --border-secondary:rgba(145,174,193,.22);
-  --primary:#508ca4; --pale-sky:#bfd7ea; --sea-green:#0a8754;
-  --emerald:#34d399; --error:#c94a4a; --warning:#d9a441;
+  --primary:#508ca4; --pale-sky:#bfd7ea; --emerald:#34d399; --error:#c94a4a;
+  --warning:#d9a441;
   --gradient-card:linear-gradient(160deg,rgba(12,19,24,.94) 0%,rgba(7,12,16,.98) 100%);
   --shadow-md:0 3px 8px rgba(0,0,0,.3),0 2px 4px rgba(0,0,0,.2);
-  --font-primary:'DM Sans',-apple-system,sans-serif;
-  --font-mono:'Space Mono','Fira Code',monospace;
+  --font-primary:'DM Sans',-apple-system,sans-serif; --font-mono:'Space Mono',monospace;
 }}
 body {{ font-family:var(--font-primary); margin:0; padding:1.5rem 2rem;
   background:var(--bg-primary); color:var(--text-primary);
@@ -137,50 +183,46 @@ h2 {{ font-weight:600; letter-spacing:-.015em; margin:0 0 4px; font-size:1.375re
 .status-badge.done {{ background:rgba(80,140,164,.12); color:var(--pale-sky);
   border:1px solid rgba(80,140,164,.3); }}
 @keyframes pulse {{ 50% {{ opacity:.3; }} }}
-.meta {{ color:var(--text-secondary); font-size:.8125rem; margin:0 0 16px;
-  line-height:1.55; }}
+.meta {{ color:var(--text-secondary); font-size:.8125rem; margin:0 0 16px; line-height:1.55; }}
 .meta b {{ color:var(--text-primary); font-weight:500; }}
+.vidwrap {{ position:relative; width:560px; }}
 video {{ border-radius:10px; border:1px solid var(--border-primary);
-  display:block; background:#000; }}
+  display:block; background:#000; width:560px; }}
+canvas.vidov {{ position:absolute; left:0; top:0; pointer-events:none; border-radius:10px; }}
+.legend {{ display:flex; gap:14px; margin:8px 0 2px; flex-wrap:wrap;
+  font-family:var(--font-mono); font-size:.6875rem; color:var(--text-secondary); }}
+.legend .lg i {{ display:inline-block; width:11px; height:11px; border-radius:3px;
+  margin-right:5px; vertical-align:-1px; }}
 .speed {{ margin-top:8px; }}
-.speed span {{ font-family:var(--font-mono); font-size:.6875rem;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
-  margin-right:6px; }}
-.speed button {{ font-family:var(--font-mono); font-size:.6875rem;
-  background:var(--bg-glass); color:var(--text-secondary);
-  border:1px solid var(--border-primary); border-radius:7px;
+.speed span {{ font-family:var(--font-mono); font-size:.6875rem; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text-muted); margin-right:6px; }}
+.speed button {{ font-family:var(--font-mono); font-size:.6875rem; background:var(--bg-glass);
+  color:var(--text-secondary); border:1px solid var(--border-primary); border-radius:7px;
   padding:4px 10px; margin-right:4px; cursor:pointer; }}
-.speed button:hover {{ background:var(--bg-glass-hover); color:var(--text-primary);
-  border-color:var(--border-secondary); }}
+.speed button:hover {{ background:var(--bg-glass-hover); color:var(--text-primary); }}
 .badges {{ display:flex; gap:8px; margin:12px 0 2px; flex-wrap:wrap; }}
 .badge {{ display:inline-flex; flex-direction:column; align-items:center;
   background:var(--bg-glass); border:1px solid var(--border-primary);
   border-radius:10px; padding:6px 14px; min-width:96px; }}
-.badge small {{ font-family:var(--font-mono); font-size:.625rem;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }}
+.badge small {{ font-family:var(--font-mono); font-size:.625rem; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text-muted); }}
 .badge b {{ font-size:1.125rem; font-family:var(--font-mono); }}
 #timeline {{ margin-top:4px; width:560px; position:relative; }}
 .tlrow {{ display:flex; align-items:center; height:22px; margin:3px 0; }}
-.tlabel {{ width:132px; font-family:var(--font-mono); font-size:.625rem;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
-  text-align:right; padding-right:8px; }}
-.tband {{ position:relative; flex:1; height:14px; background:var(--bg-tertiary);
-  cursor:pointer; border-radius:4px; overflow:hidden;
-  border:1px solid var(--border-primary); }}
+.tlabel {{ width:132px; font-family:var(--font-mono); font-size:.625rem; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--text-muted); text-align:right; padding-right:8px; }}
+.tband {{ position:relative; flex:1; height:14px; background:var(--bg-tertiary); cursor:pointer;
+  border-radius:4px; overflow:hidden; border:1px solid var(--border-primary); }}
 .seg {{ position:absolute; top:0; bottom:0; opacity:.85; }}
-#playhead {{ position:absolute; top:0; bottom:0; width:2px;
-  background:var(--pale-sky); box-shadow:0 0 8px rgba(191,215,234,.6);
-  pointer-events:none; left:132px; }}
+#playhead {{ position:absolute; top:0; bottom:0; width:2px; background:var(--pale-sky);
+  box-shadow:0 0 8px rgba(191,215,234,.6); pointer-events:none; left:132px; }}
 table {{ border-collapse:collapse; font-size:.8125rem; width:100%; }}
 th {{ font-family:var(--font-mono); font-size:.625rem; letter-spacing:.08em;
   text-transform:uppercase; color:var(--text-muted); text-align:left; }}
-td, th {{ border-bottom:1px solid var(--border-primary); padding:6px 10px;
-  vertical-align:middle; }}
+td, th {{ border-bottom:1px solid var(--border-primary); padding:6px 10px; vertical-align:middle; }}
 tr:hover td {{ background:var(--bg-glass-hover); cursor:pointer; }}
-tr.now td {{ background:rgba(217,164,65,.12);
-  box-shadow:inset 2px 0 0 var(--warning); }}
-canvas.overlay {{ border-radius:6px; border:1px solid var(--border-primary);
-  display:block; }}
+tr.now td {{ background:rgba(217,164,65,.12); box-shadow:inset 2px 0 0 var(--warning); }}
+canvas.overlay {{ border-radius:6px; border:1px solid var(--border-primary); display:block; }}
 .score {{ font-family:var(--font-mono); font-weight:700; }}
 </style></head><body><div class="layout">
 <h2>SAM object-verification — {html.escape(video_path.name)}
@@ -188,10 +230,14 @@ canvas.overlay {{ border-radius:6px; border:1px solid var(--border-primary);
 <div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
 “{html.escape(meta["instruction"])}” · view <b>{meta["view"]}</b>
 x{meta["upscale"]} · stride {meta["stride"]} · PRESENT when best score ≥
-<b>{meta["score_threshold"]}</b> · boxes drawn on each judged frame; click a
-band or a row to seek; new detections stream in without reloading</div>
+<b>{meta["score_threshold"]}</b> · boxes drawn on the playing video (remapped to
+the full frame); click a band or a row to seek</div>
 <div class="card">
-<video id="v" controls width="560" src="data:video/mp4;base64,{video_b64}"></video>
+<div class="vidwrap">
+<video id="v" controls src="data:video/mp4;base64,{video_b64}"></video>
+<canvas id="ov" class="vidov"></canvas>
+</div>
+<div class="legend">{legend}</div>
 <div class="speed"><span>speed</span>
 <button onclick="rate(0.1)">0.1x</button><button onclick="rate(0.25)">0.25x</button>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
@@ -199,19 +245,65 @@ band or a row to seek; new detections stream in without reloading</div>
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
 </div>
 <div class="card">
-<table id="tbl"><tr><th>frame</th><th>t</th><th>concept</th><th>overlay</th>
+<table id="tbl"><tr><th>frame</th><th>t</th><th>concept</th><th>crop + boxes</th>
 <th>present</th><th>best score</th><th>#det</th><th>latency</th></tr></table>
 </div>
 </div><script>
 const CFG = {config};
 const v = document.getElementById("v");
-v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; }});
+const ov = document.getElementById("ov"), octx = ov.getContext("2d");
+v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; sizeOverlay(); }});
+window.addEventListener("resize", sizeOverlay);
 function rate(x) {{ v.playbackRate = x; }}
 function seek(t) {{ v.currentTime = t + 0.001; }}
 function idFor(s) {{ return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }}
 let records = [], done = false, rendered = 0, thumbs = {{}};
 
-function drawOverlay(td, r) {{
+function sizeOverlay() {{
+  ov.width = v.clientWidth; ov.height = v.clientHeight;
+  ov.style.width = v.clientWidth + "px"; ov.style.height = v.clientHeight + "px";
+}}
+
+// records grouped by frame, sorted by time, for the live video overlay
+function frameGroups() {{
+  const by = {{}};
+  for (const r of records) {{ (by[r.frame] = by[r.frame] || {{time_s:r.time_s, items:[]}}).items.push(r); }}
+  return Object.keys(by).map(k => ({{frame:+k, ...by[k]}})).sort((a,b)=>a.time_s-b.time_s);
+}}
+
+function drawVideoOverlay() {{
+  if (!ov.width) sizeOverlay();
+  octx.clearRect(0,0,ov.width,ov.height);
+  const t = v.currentTime, groups = frameGroups();
+  let g = null; for (const x of groups) if (x.time_s <= t + 1e-6) g = x;
+  if (!g) return;
+  const W = ov.width, H = ov.height;
+  for (const r of g.items) {{
+    if (r.question === "control") continue;
+    const col = CFG.conceptColors[r.question] || "#fff";
+    const present = r.answer === "PRESENT";
+    octx.lineWidth = present ? 2.5 : 1;
+    octx.globalAlpha = present ? 1 : 0.35;
+    octx.strokeStyle = col; octx.fillStyle = col;
+    octx.font = "600 12px 'Space Mono', monospace";
+    for (const b of (r.boxes_full || [])) {{
+      const x0=b[0]*W, y0=b[1]*H, x1=b[2]*W, y1=b[3]*H;
+      octx.strokeRect(x0, y0, x1-x0, y1-y0);
+      if (present) {{
+        const label = r.question + "  " + r.best_score.toFixed(2);
+        const tw = octx.measureText(label).width + 8;
+        octx.globalAlpha = 0.85;
+        octx.fillRect(x0, Math.max(0,y0-15), tw, 15);
+        octx.globalAlpha = 1; octx.fillStyle = "#07120f";
+        octx.fillText(label, x0+4, Math.max(11,y0-4));
+        octx.fillStyle = col;
+      }}
+    }}
+  }}
+  octx.globalAlpha = 1;
+}}
+
+function drawOverlay(td, r) {{  // per-row crop thumbnail with its boxes
   const img = new Image();
   img.onload = () => {{
     const cv = document.createElement("canvas");
@@ -220,11 +312,7 @@ function drawOverlay(td, r) {{
     const ctx = cv.getContext("2d");
     ctx.drawImage(img, 0, 0, W, H);
     ctx.lineWidth = 2; ctx.strokeStyle = CFG.colors[r.answer] || "#fff";
-    ctx.font = "10px monospace"; ctx.fillStyle = CFG.colors[r.answer] || "#fff";
-    for (const b of (r.boxes || [])) {{
-      // b = [x0,y0,x1,y1] normalized 0..1
-      ctx.strokeRect(b[0]*W, b[1]*H, (b[2]-b[0])*W, (b[3]-b[1])*H);
-    }}
+    for (const b of (r.boxes || [])) ctx.strokeRect(b[0]*W, b[1]*H, (b[2]-b[0])*W, (b[3]-b[1])*H);
     td.innerHTML = ""; td.appendChild(cv);
   }};
   img.src = thumbs[r.frame] || "";
@@ -305,9 +393,10 @@ function refreshUI() {{
     }}
     lastFrame = current;
   }}
+  drawVideoOverlay();
 }}
 v.addEventListener("timeupdate", refreshUI);
-setInterval(refreshUI, 150);
+setInterval(refreshUI, 120);
 
 function poll() {{
   if (done) return;
@@ -326,35 +415,13 @@ def _split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
-def _normalize_boxes(result: dict[str, Any], frame: Any) -> list[list[float]]:
-    """SAM returns pixel boxes + image_size; normalize to 0..1 for the canvas."""
-    import numpy as np
-
-    detections = result.get("detections") or []
-    size = result.get("image_size")
-    if size and size[0] and size[1]:
-        width, height = float(size[0]), float(size[1])
-    else:
-        arr = np.asarray(frame)
-        height, width = float(arr.shape[0]), float(arr.shape[1])
-    boxes: list[list[float]] = []
-    for det in detections:
-        box = det.get("box")
-        if not box:
-            continue
-        boxes.append(
-            [box[0] / width, box[1] / height, box[2] / width, box[3] / height]
-        )
-    return boxes
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--video", required=True)
     parser.add_argument("--instruction", required=True)
     parser.add_argument("--objects", required=True, help="comma-separated present objects")
     parser.add_argument("--distractors", default="", help="comma-separated absent objects")
-    parser.add_argument("--base_url", default="http://127.0.0.1:8003")
+    parser.add_argument("--base_url", default="http://127.0.0.1:8006")
     parser.add_argument("--model", default="facebook/sam3.1")
     parser.add_argument("--score_threshold", type=float, default=0.5)
     parser.add_argument("--view", choices=["full", "wrist", "side"], default="full")
@@ -370,7 +437,6 @@ def main() -> None:
     objects = _split_csv(args.objects)
     distractors = _split_csv(args.distractors)
     concepts = build_concepts(objects, distractors)
-    names = [name for name, _concept in concepts]
 
     video_path = Path(args.video).expanduser()
     stack = iio.imread(video_path)
@@ -393,14 +459,14 @@ def main() -> None:
     }
     out = Path(args.out).expanduser()
     records: list[dict[str, Any]] = []
-    render_shell(out, video_path=video_path, meta=meta, names=names)
+    render_shell(out, video_path=video_path, meta=meta, concepts=concepts)
     write_data(out, records, done=False)
 
     indexes = list(range(0, len(stack), args.stride))
     print(f"{len(stack)} frames, segmenting {len(indexes)} of them x {len(concepts)} concepts")
     print(f"report: {out}  (open it now — rows stream in without reloading)\n")
     print(f"{'frame':>6} {'concept':>22}  present  score  latency")
-    from sam_probe import _png_data_uri as _full_uri  # full-size for POSTing
+    from sam_probe import _png_data_uri as _full_uri  # full-size crop for POSTing
 
     for index in indexes:
         frame = prepare_frame(stack[index], args.view, args.upscale)
@@ -416,6 +482,7 @@ def main() -> None:
                 answer = "FAIL"
             else:
                 answer = "PRESENT" if best >= args.score_threshold else "ABSENT"
+            boxes_crop = _normalize_boxes(result, frame)
             records.append(
                 {
                     "frame": index,
@@ -424,7 +491,8 @@ def main() -> None:
                     "answer": answer,
                     "best_score": round(float(best), 3),
                     "num_detections": len(detections),
-                    "boxes": _normalize_boxes(result, frame),
+                    "boxes": boxes_crop,
+                    "boxes_full": _to_full_frame(boxes_crop, args.view),
                     "latency_s": elapsed,
                     "thumb": thumb if position == 0 else None,
                 }
