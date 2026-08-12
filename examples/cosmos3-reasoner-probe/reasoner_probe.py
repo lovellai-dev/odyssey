@@ -144,10 +144,7 @@ def make_judge(args: argparse.Namespace, template: str) -> OpenAICompatCompletio
         prompt_template=template,
         max_tokens=args.max_tokens,
         timeout_seconds=args.timeout_seconds,
-        # vLLM-Omni routes image+text chat to IMAGE GENERATION (50 diffusion
-        # steps, image reply, no YES/NO text) unless the request selects the
-        # text output modality explicitly.
-        extra_body={"modalities": ["text"]},
+        extra_body=json.loads(args.extra_body),
     )
 
 
@@ -169,6 +166,16 @@ def main() -> None:
         help="crop half of a 2:1 concat_view frame (issue #78 zoom lesson)",
     )
     parser.add_argument("--upscale", type=int, default=1, help="integer LANCZOS upscale factor")
+    parser.add_argument(
+        # vLLM-Omni routes image+text chat to IMAGE GENERATION (50 diffusion
+        # steps, image reply, no YES/NO text) unless the request selects the
+        # text output modality explicitly — hence the Omni-safe default, which
+        # keeps the Cosmos mission byte-identical. Pass '{}' for a vanilla
+        # vLLM server (e.g. the Molmo2 arm).
+        "--extra_body",
+        default='{"modalities": ["text"]}',
+        help="JSON dict merged into every chat request ('{}' for vanilla vLLM)",
+    )
     args = parser.parse_args()
 
     frames = load_probe_frames(

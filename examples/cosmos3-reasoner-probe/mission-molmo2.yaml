@@ -1,0 +1,102 @@
+# Molmo 2 SPECIALIST probe — grasp verification, direction A (eval-only,
+# custom runner, no simulator).
+#
+# The Molmo 2 arm of the grasp-verification bake-off (Specialist Model Map
+# v0.5 names Molmo 2 the PRIMARY for this role). Direction A measures it as a
+# single-frame VQA judge with the SAME script and VERBATIM prompts as the
+# Cosmos3-Nano arm (mission.yaml) — apples-to-apples: same videos, same
+# frames, same questions; the only variable is the model. NOTE this is NOT
+# Molmo 2's native grasp modality (video tracking is) — that is direction B,
+# mission-molmo2-tracking.yaml, measured separately on purpose.
+#
+# WHO IS WHO (nothing simulated here):
+#   * SPECIALIST — allenai/Molmo2-8B, served by VANILLA vLLM (no Omni
+#     modalities knob — extra_body '{}'), the ONLY agent exercised.
+#   * PILOT — the GR00T + FlowDAgger drug-sort policy that PRODUCED the
+#     judged rollouts (provenance only; never loaded here).
+#
+# EXTERNALLY-SERVED — plain vllm serve from the same vllm-omni image used for
+# the Cosmos arm (vLLM >= 0.15 supports Molmo2; Apache 2.0, not gated):
+#
+#     sudo docker run --rm --gpus all --network host \
+#         -v ~/.cache/huggingface:/root/.cache/huggingface \
+#         vllm/vllm-omni:v0.26.0 \
+#         vllm serve allenai/Molmo2-8B --host 0.0.0.0 --port 8003 \
+#             --trust-remote-code --gpu-memory-utilization 0.25 \
+#             --max-model-len 16384 --limit-mm-per-prompt '{"image": 16}'
+#
+# (~18 GB; co-resides with the Cosmos server on :8002 for the side-by-side
+# comparative viewer. limit-mm-per-prompt 16 is for direction B's
+# multi-frame requests — harmless here.)
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: molmo2-specialist-grasp-probe
+  description: >-
+    Eval-only probe of Molmo2-8B as a grasp-verification SPECIALIST —
+    control / grasp / completion / retry judgements over successful drug-sort
+    rollout frames via the OpenAI-compatible judge surface, the Molmo 2 arm
+    (direction A: single-frame VQA) of the grasp bake-off against
+    Cosmos3-Nano.
+  tags: [molmo2, ai2, specialist, grasp, bakeoff, judge, custom, eval-only]
+
+objective: |
+  Verify that a served Molmo2-8B loads and answers the judge protocol, and
+  measure whether its YES/NO verdicts track grasp state across rollout
+  frames — on the same frames and verbatim questions as the Cosmos3-Nano arm,
+  so the bake-off delta is the model.
+
+acceptance_criteria: |
+  All judge calls succeed against the endpoint; the control question answers
+  YES (no always-NO degenerate mode); grasp verdicts discriminate held-object
+  frames from pre-grasp and post-place frames; per-call latency is workable
+  for chunk-boundary gating.
+
+robot:
+  embodiment: ur10e   # the drug-sort DAgger rig the judged rollouts ran on
+  agents:
+    # PROVENANCE ONLY — the policy that drove the judged rollouts.
+    - id: gr00t-flowdagger-pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7
+    # The agent under test: Molmo2-8B, served by vanilla vLLM.
+    - id: specialist
+      role: SPECIALIST
+      model:
+        source: huggingface
+        base: allenai/Molmo2-8B
+
+tasks:
+  # SAME successful drug-sort rollouts and knobs as Cosmos Run 2 (view wrist,
+  # upscale 3) — apples-to-apples with the Cosmos arm and with RoboBrain's
+  # out-of-role diagnostic numbers from the retry branch.
+  - name: probe-grasp-success-rollouts-molmo2
+    kind: evaluation
+    evaluation_type: custom
+    description: >-
+      Judge frames of successful UR-arm drug-sort DAgger rollouts through the
+      endpoint serving Molmo2-8B — the YES polarity of grasp verification.
+    benchmark_name: molmo2_grasp_probe
+    num_episodes: 12
+    config:
+      eval_script: examples/cosmos3-reasoner-probe/reasoner_probe.py
+      # eval_python: /path/to/env_probe/bin/python   # needs imageio+pillow
+      checkpoint: allenai/Molmo2-8B            # recorded in the summary only
+      # --- forwarded verbatim to the script (snake_case -> --flags) ---
+      base_url: http://127.0.0.1:8003/v1       # the vanilla vLLM endpoint
+      model: allenai/Molmo2-8B                 # served model id
+      extra_body: "{}"                         # no Omni modalities knob
+      videos_dir: ~/cosmos3_probe_videos_success
+      instruction: pick up the red capsule and place it in the blue tray
+      max_videos: 3
+      max_tokens: 1024
+      timeout_seconds: 180
+      view: wrist
+      upscale: 3
+
+leaderboard:
+  publish: false
