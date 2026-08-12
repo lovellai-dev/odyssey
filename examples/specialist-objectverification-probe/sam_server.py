@@ -14,12 +14,12 @@ stdlib-only HTTP (``http.server``) so the server adds NO dependency beyond the
 SAM backend itself — matching the judge's urllib-only transport. The SAM
 backend is lazy-loaded on first request.
 
-The exact SAM 3.1 promptable-concept-segmentation call is isolated in
-``SamBackend.segment`` — adapt that ONE method to the released API (it targets
-the HF ``transformers`` concept-segmentation head; if the package differs, only
-this method changes). Run with ``SAM_SERVER_FAKE=1`` to serve deterministic
-detections with no weights at all — for exercising the probe, the tunnel and the
-viewer end-to-end offline.
+Real inference lives in ``SamBackend.segment`` via HF ``transformers``
+(``Sam3Model`` / ``Sam3Processor``, needs transformers >= 5.14; ``facebook/sam3.1``
+is a drop-in for ``facebook/sam3``): text noun phrase -> instance masks + xyxy
+boxes + scores through ``post_process_instance_segmentation``. Run with
+``SAM_SERVER_FAKE=1`` to serve deterministic detections with no weights at all —
+for exercising the probe, the tunnel and the viewer end-to-end offline.
 
     python sam_server.py --host 0.0.0.0 --port 8003 --model facebook/sam3.1
     SAM_SERVER_FAKE=1 python sam_server.py          # no GPU, no weights
@@ -36,6 +36,11 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+# Prune near-zero DETR queries (SAM3 emits up to 200) before returning; the
+# probe's own --score_threshold decides PRESENT on the best surviving score.
+_DETECT_FLOOR = 0.1
+_MAX_DETECTIONS = 10
+
 
 class SamBackend:
     """Lazy wrapper around SAM 3.1 promptable concept segmentation."""
@@ -51,30 +56,33 @@ class SamBackend:
     def _ensure_loaded(self) -> None:
         if self.fake or self._model is not None:
             return
-        # --- ADAPT HERE to the released SAM 3.1 API -------------------------
-        # Targets the HF transformers concept-segmentation head. If SAM 3.1
-        # ships its own package, swap these two lines and `segment` below;
-        # nothing else in the server needs to change.
+        # SAM 3 / 3.1 promptable concept segmentation via HF transformers
+        # (needs transformers >= 5.14 for the Sam3 classes; facebook/sam3.1 is
+        # a drop-in for facebook/sam3). Meant to run at 1008px.
         import torch  # noqa: F401
-        from transformers import AutoModelForMaskGeneration, AutoProcessor
+        from transformers import Sam3Model, Sam3Processor
 
-        self._processor = AutoProcessor.from_pretrained(self.model_id)
-        self._model = AutoModelForMaskGeneration.from_pretrained(self.model_id)
+        self._processor = Sam3Processor.from_pretrained(self.model_id)
+        self._model = Sam3Model.from_pretrained(self.model_id)
         self.device = "cuda" if _cuda_available() else "cpu"
         self._model.to(self.device)
-        # -------------------------------------------------------------------
+        self._model.eval()
 
     def segment(self, image: Any, concept: str) -> dict[str, Any]:
-        """Return detections ({score, box:[x0,y0,x1,y1]}) for one text concept."""
+        """Return detections ({score, box:[x0,y0,x1,y1]}) for one text concept.
+
+        Promptable Concept Segmentation: the text noun phrase is the prompt, and
+        every matching instance comes back with a mask, an xyxy box (absolute
+        pixels) and a confidence score. We return the boxes+scores (the probe
+        decides PRESENT via its own ``--score_threshold`` on the best score);
+        ``_DETECT_FLOOR`` only prunes near-zero DETR queries so the payload stays
+        small. The scene box is what the dashboard overlays.
+        """
         width, height = image.size
         if self.fake:
             return _fake_detections(concept, width, height)
 
         self._ensure_loaded()
-        # --- ADAPT HERE to the released SAM 3.1 API -------------------------
-        # Promptable concept segmentation: text concept -> instance masks +
-        # scores. Convert each returned mask to its bounding box + score.
-        import numpy as np
         import torch
 
         inputs = self._processor(images=image, text=concept, return_tensors="pt").to(
@@ -82,24 +90,20 @@ class SamBackend:
         )
         with torch.inference_mode():
             outputs = self._model(**inputs)
-        masks = self._processor.post_process_masks(
-            outputs.pred_masks, [(height, width)]
+        results = self._processor.post_process_instance_segmentation(
+            outputs,
+            threshold=_DETECT_FLOOR,
+            mask_threshold=0.5,
+            target_sizes=inputs.get("original_sizes").tolist(),
         )[0]
-        scores = outputs.iou_scores.squeeze().tolist()
-        scores = scores if isinstance(scores, list) else [scores]
         detections: list[dict[str, Any]] = []
-        for mask, score in zip(np.asarray(masks), scores, strict=False):
-            ys, xs = np.where(mask.squeeze() > 0.5)
-            if xs.size == 0:
-                continue
-            detections.append(
-                {
-                    "score": round(float(score), 3),
-                    "box": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
-                }
-            )
-        # -------------------------------------------------------------------
-        return {"detections": detections, "image_size": [width, height]}
+        for box, score in zip(
+            results["boxes"].tolist(), results["scores"].tolist(), strict=False
+        ):
+            x0, y0, x1, y1 = (round(v) for v in box)
+            detections.append({"score": round(float(score), 3), "box": [x0, y0, x1, y1]})
+        detections.sort(key=lambda d: d["score"], reverse=True)
+        return {"detections": detections[:_MAX_DETECTIONS], "image_size": [width, height]}
 
 
 def _cuda_available() -> bool:

@@ -138,11 +138,13 @@ def render(
     def summary(metrics: dict[str, Any]) -> str:
         pr = metrics.get("present_recall")
         fpr = metrics.get("distractor_fpr")
+        lat = metrics.get("latency_s_mean")
         pr_s = f"{round(pr * 100)}%" if pr is not None else "—"
         fpr_s = f"{round(fpr * 100)}%" if fpr is not None else "—"
+        lat_s = f"{lat:.2f}s/call" if lat is not None else "—"
         return (
             f'<div class="msum">recall <b>{pr_s}</b> · FP <b>{fpr_s}</b> · '
-            f'model {html.escape(str(metrics.get("model", "?")))}</div>'
+            f'lat <b>{lat_s}</b><br>model {html.escape(str(metrics.get("model", "?")))}</div>'
         )
 
     sum_cols = "".join(f'<th class="mhead">{summary(m)}</th>' for _, m in results)
