@@ -152,3 +152,48 @@ served remotely; `--fake` exercises the viewer without any server.
 3. `odyssey run examples/cosmos3-reasoner-probe/mission.yaml`. Metrics land
    in the task's `custom_eval_metrics.json`; per-frame verdicts under
    `metrics.verdicts`.
+
+## Molmo 2 arms — the map's PRIMARY enters the bake-off
+
+The Specialist Model Map v0.5 names Molmo 2 the primary for grasp
+verification. It enters as TWO pre-registered directions, measured apart:
+
+* **Direction A — `mission-molmo2.yaml`**: Molmo2-8B as a single-frame VQA
+  judge, same script (`reasoner_probe.py`) and VERBATIM prompts as the
+  Cosmos arm — apples-to-apples; the only variable is the model. Uses the
+  new `--extra_body` knob (`'{}'` — no vLLM-Omni modalities routing; the
+  default keeps the Cosmos mission byte-identical).
+* **Direction B — `mission-molmo2-tracking.yaml`** (`molmo2_tracking_probe.py`):
+  Molmo 2's NATIVE modality — K chronological frames in one multi-image
+  request, per rollout: `carry` ("does the object travel WITH the gripper
+  during the lift?") and `grasp_frame` localization (scored against the known
+  early pick window). Deliberately NOT comparable with direction A: it
+  measures whether sequence-native questioning recovers the signal that
+  single-frame judges miss (the same lesson the retry bake-off learned with
+  its value probe).
+
+Serving recipe (vanilla vLLM from the same image, port 8003; the
+`--limit-mm-per-prompt` allowance is required by direction B) lives in the
+`mission-molmo2.yaml` header. Both Cosmos (:8002) and Molmo2 (:8003) fit the
+H100 together next to the GR00T pilot.
+
+### Comparative viewer
+
+`utils/visualize_probe.py` now takes a repeatable `--arm` JSON flag to judge
+the SAME frames with several models side by side — one timeline band per
+question x arm, an arm column in the table, badges grouped per arm (with no
+`--arm`, the old single-model flags still work unchanged):
+
+```bash
+python examples/cosmos3-reasoner-probe/utils/visualize_probe.py \
+    --video ~/videos/rollout_ep001_success.mp4 \
+    --instruction "pick up the red capsule and place it in the blue tray" \
+    --view wrist --upscale 3 --stride 10 --out /tmp/compare_report.html \
+    --arm '{"label": "cosmos3", "model": "nvidia/Cosmos3-Nano", "base_url": "http://127.0.0.1:8002/v1", "extra_body": {"modalities": ["text"]}}' \
+    --arm '{"label": "molmo2", "model": "allenai/Molmo2-8B", "base_url": "http://127.0.0.1:8003/v1"}'
+```
+
+RoboBrain 2.5 (`BAAI/RoboBrain2.5-8B-NV`, serve recipe on the
+`experiment-specialist-retry` branch) can join as a third arm labelled
+out-of-role — the map does not list it for grasp, but it feeds the
+specialist-vs-multiplexed-generalist question.

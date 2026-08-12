@@ -1,28 +1,37 @@
-"""Watch the probe interrogate the SPECIALIST, frame by frame.
+"""Watch the probe interrogate one or several SPECIALISTs, frame by frame.
 
 Makes the experiment transparent: the model never sees the *video* — it sees
 isolated frames, and per frame each question is one independent image+text
 HTTP call. This tool replays that loop over a single rollout MP4 and shows it:
 
-* terminal — one table row per (frame, question) as each answer arrives;
+* terminal — one table row per (frame, arm, question) as each answer arrives;
 * HTML report — the playable video (slow-motion by default), live answer
   badges, per-question timeline bands with a synced playhead, and the Q/A
   table. The page loads ONCE and polls a sidecar ``*_data.js`` file, so new
   rows stream in with no page reload — playback is never interrupted.
   Clicking a timeline band or a table row seeks the video.
 
-Usage (server recipe in ../README.md; tunnel with `ssh -L 8002:127.0.0.1:8002`
-if the model is served on the H100):
+COMPARATIVE MODE: pass ``--arm`` (repeatable, JSON) to judge the same frames
+with several models side by side — one timeline band per question x arm, an
+arm column in the table, badges grouped per arm. Same frames, same verbatim
+prompts; the only variable is the model:
 
     python examples/cosmos3-reasoner-probe/utils/visualize_probe.py \\
         --video ~/videos/rollout_ep001_success.mp4 \\
         --instruction "pick up the red capsule and place it in the blue tray" \\
-        --view wrist --upscale 3 --stride 5 --out /tmp/probe_report.html
+        --view wrist --upscale 3 --stride 5 --out /tmp/probe_report.html \\
+        --arm '{"label": "cosmos3", "model": "nvidia/Cosmos3-Nano",
+                "base_url": "http://127.0.0.1:8002/v1",
+                "extra_body": {"modalities": ["text"]}}' \\
+        --arm '{"label": "molmo2", "model": "allenai/Molmo2-8B",
+                "base_url": "http://127.0.0.1:8003/v1"}'
 
-    open /tmp/probe_report.html      # while the run is live, or after
+With no ``--arm``, the single-model flags (``--model``/``--base_url``) form
+the only arm — the original behaviour. ``--fake`` answers deterministically
+without any server, for checking the viewer itself.
 
-``--fake`` answers deterministically without any server — for checking the
-viewer itself.
+(Server recipes in ../README.md and the mission headers; tunnel with
+`ssh -L 8002:127.0.0.1:8002 -L 8003:127.0.0.1:8003` if serving on the H100.)
 """
 
 from __future__ import annotations
@@ -80,8 +89,10 @@ ANSWER_COLOR = {"YES": "#34d399", "NO": "#c94a4a", "FAIL": "#5a7a8f"}
 
 
 def _fake_transport(payload: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic offline answers (viewer testing only, no server)."""
-    text = payload["messages"][0]["content"][1]["text"]
+    """Deterministic offline answers (viewer testing only, no server).
+    Salted with the model id so fake arms disagree — exercises the
+    comparative rendering."""
+    text = payload["messages"][0]["content"][1]["text"] + payload.get("model", "")
     verdict = "YES" if zlib.crc32(text.encode()) % 3 == 0 else "NO"
     return {"choices": [{"message": {"content": verdict}}]}
 
@@ -106,23 +117,63 @@ def write_data(out: Path, records: list[dict[str, Any]], done: bool) -> None:
     data_path_for(out).write_text(f"window.PROBE_DATA = {payload};")
 
 
-def render_shell(out: Path, *, video_path: Path, meta: dict[str, Any]) -> None:
+def resolve_arms(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """--arm JSON entries, or the single-model flags as the only arm."""
+    if not args.arm:
+        return [
+            {
+                "label": args.model.split("/")[-1],
+                "model": args.model,
+                "base_url": args.base_url,
+                # vLLM-Omni routes image+text chat to IMAGE GENERATION unless
+                # the request selects the text modality — historic default.
+                "extra_body": {"modalities": ["text"]},
+            }
+        ]
+    arms = []
+    for raw in args.arm:
+        arm = json.loads(raw)
+        if "label" not in arm or "model" not in arm or "base_url" not in arm:
+            raise SystemExit(f"--arm needs label/model/base_url: {raw}")
+        arm.setdefault("extra_body", {})
+        arms.append(arm)
+    return arms
+
+
+def render_shell(
+    out: Path, *, video_path: Path, meta: dict[str, Any], arms: list[dict[str, Any]]
+) -> None:
     """Static page, written ONCE: video + empty containers. All rows/segments
     are rendered client-side from the polled sidecar, so nothing here ever
     reloads and playback is never interrupted."""
     video_b64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
     names = [name for name, _ in QUESTIONS]
-    badges = "".join(
-        f'<span class="badge" id="badge-{n}"><small>{n}</small><b id="bv-{n}">?</b></span>'
-        for n in names
+    labels = [arm["label"] for arm in arms]
+    badge_rows = "".join(
+        f'<div class="badges"><span class="armtag">{html.escape(label)}</span>'
+        + "".join(
+            f'<span class="badge"><small>{n}</small>'
+            f'<b id="bv-{n}-{html.escape(label)}">?</b></span>'
+            for n in names
+        )
+        + "</div>"
+        for label in labels
     )
     tl_rows = "".join(
-        f'<div class="tlrow"><span class="tlabel">{n}</span>'
-        f'<div class="tband" id="band-{n}"></div></div>'
+        f'<div class="tlrow"><span class="tlabel">{n}'
+        + (f" · {html.escape(label)}" if len(labels) > 1 else "")
+        + f'</span><div class="tband" id="band-{n}-{html.escape(label)}"></div></div>'
         for n in names
+        for label in labels
     )
+    arms_meta = " vs ".join(f"{a['label']} ({a['model']})" for a in arms)
     config = json.dumps(
-        {"questions": names, "colors": ANSWER_COLOR, "data_src": data_path_for(out).name}
+        {
+            "questions": names,
+            "arms": labels,
+            "colors": ANSWER_COLOR,
+            "data_src": data_path_for(out).name,
+        }
     )
     out.write_text(f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Reasoner probe — {html.escape(video_path.name)}</title>
@@ -178,25 +229,29 @@ video {{ border-radius:10px; border:1px solid var(--border-primary);
   padding:4px 10px; margin-right:4px; cursor:pointer; }}
 .speed button:hover {{ background:var(--bg-glass-hover); color:var(--text-primary);
   border-color:var(--border-secondary); }}
-.badges {{ display:flex; gap:8px; margin:12px 0 2px; flex-wrap:wrap; }}
+.badges {{ display:flex; gap:8px; margin:12px 0 2px; flex-wrap:wrap;
+  align-items:center; }}
+.armtag {{ font-family:var(--font-mono); font-size:.6875rem;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--pale-sky);
+  min-width:84px; text-align:right; padding-right:4px; }}
 .badge {{ display:inline-flex; flex-direction:column; align-items:center;
   background:var(--bg-glass); border:1px solid var(--border-primary);
   border-radius:10px; padding:6px 14px; min-width:82px; }}
 .badge small {{ font-family:var(--font-mono); font-size:.625rem;
   letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted); }}
 .badge b {{ font-size:1.125rem; font-family:var(--font-mono); }}
-#timeline {{ margin-top:4px; width:560px; position:relative; }}
-.tlrow {{ display:flex; align-items:center; height:22px; margin:3px 0; }}
-.tlabel {{ width:92px; font-family:var(--font-mono); font-size:.625rem;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--text-muted);
-  text-align:right; padding-right:8px; }}
-.tband {{ position:relative; flex:1; height:14px; background:var(--bg-tertiary);
+#timeline {{ margin-top:4px; width:640px; position:relative; }}
+.tlrow {{ display:flex; align-items:center; height:20px; margin:3px 0; }}
+.tlabel {{ width:170px; font-family:var(--font-mono); font-size:.625rem;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--text-muted);
+  text-align:right; padding-right:8px; white-space:nowrap; overflow:hidden; }}
+.tband {{ position:relative; flex:1; height:13px; background:var(--bg-tertiary);
   cursor:pointer; border-radius:4px; overflow:hidden;
   border:1px solid var(--border-primary); }}
 .seg {{ position:absolute; top:0; bottom:0; opacity:.85; }}
 #playhead {{ position:absolute; top:0; bottom:0; width:2px;
   background:var(--pale-sky); box-shadow:0 0 8px rgba(191,215,234,.6);
-  pointer-events:none; left:92px; }}
+  pointer-events:none; left:170px; }}
 table {{ border-collapse:collapse; font-size:.8125rem; width:100%; }}
 th {{ font-family:var(--font-mono); font-size:.625rem; letter-spacing:.08em;
   text-transform:uppercase; color:var(--text-muted); text-align:left; }}
@@ -205,29 +260,32 @@ td, th {{ border-bottom:1px solid var(--border-primary); padding:6px 10px;
 tr:hover td {{ background:var(--bg-glass-hover); cursor:pointer; }}
 tr.now td {{ background:rgba(217,164,65,.12);
   box-shadow:inset 2px 0 0 var(--warning); }}
-td.q {{ max-width:440px; color:var(--text-muted); font-size:.6875rem;
+td.q {{ max-width:380px; color:var(--text-muted); font-size:.6875rem;
   line-height:1.4; }}
+td.arm {{ font-family:var(--font-mono); font-size:.6875rem;
+  color:var(--pale-sky); }}
 td img {{ border-radius:6px; border:1px solid var(--border-primary); }}
 .ans {{ font-family:var(--font-mono); font-weight:700; }}
 </style></head><body><div class="layout">
 <h2>Grasp-verification probe — {html.escape(video_path.name)}
 <span class="status-badge running" id="status">waiting</span></h2>
-<div class="meta">model <b>{html.escape(meta["model"])}</b> · instruction
+<div class="meta">arms <b>{html.escape(arms_meta)}</b> · instruction
 “{html.escape(meta["instruction"])}” · view <b>{meta["view"]}</b>
 x{meta["upscale"]} · stride {meta["stride"]} · slow-motion 0.25x by default —
-badges and timeline follow the playhead; click a band or a row to seek; new
-judgements stream in without reloading</div>
+same frames, same verbatim prompts for every arm; badges and timeline follow
+the playhead; click a band or a row to seek; new judgements stream in without
+reloading</div>
 <div class="card">
-<video id="v" controls width="560" src="data:video/mp4;base64,{video_b64}"></video>
+<video id="v" controls width="640" src="data:video/mp4;base64,{video_b64}"></video>
 <div class="speed"><span>speed</span>
 <button onclick="rate(0.1)">0.1x</button><button onclick="rate(0.25)">0.25x</button>
 <button onclick="rate(0.5)">0.5x</button><button onclick="rate(1)">1x</button></div>
-<div class="badges">{badges}</div>
+{badge_rows}
 <div id="timeline">{tl_rows}<div id="playhead"></div></div>
 </div>
 <div class="card">
-<table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>question</th>
-<th>answer</th><th>latency</th><th>full prompt sent</th></tr></table>
+<table id="tbl"><tr><th>frame</th><th>t</th><th>judged image</th><th>arm</th>
+<th>question</th><th>answer</th><th>latency</th><th>full prompt sent</th></tr></table>
 </div>
 </div><script>
 const CFG = {config};
@@ -235,7 +293,7 @@ const v = document.getElementById("v");
 v.addEventListener("loadedmetadata", () => {{ v.playbackRate = 0.25; }});
 function rate(x) {{ v.playbackRate = x; }}
 function seek(t) {{ v.currentTime = t + 0.001; }}
-let records = [], done = false, rendered = 0, thumbs = {{}};
+let records = [], done = false, rendered = 0;
 
 function onData(d) {{
   if (!d || d.records.length === records.length && done === d.done) return;
@@ -246,13 +304,13 @@ function onData(d) {{
   const tbl = document.getElementById("tbl");
   for (; rendered < records.length; rendered++) {{
     const r = records[rendered];
-    if (r.thumb) thumbs[r.frame] = r.thumb;
     const tr = document.createElement("tr");
-    tr.id = "r" + r.frame + "-" + r.question;
+    tr.id = "r" + r.frame + "-" + r.question + "-" + r.arm;
     tr.onclick = () => seek(r.time_s);
     const thumb = r.thumb ? '<img src="' + r.thumb + '" height="72">' : "";
     tr.innerHTML = "<td>" + r.frame + "</td><td>" + r.time_s.toFixed(1) +
-        "s</td><td>" + thumb + "</td><td>" + r.question +
+        "s</td><td>" + thumb + '</td><td class="arm">' + r.arm +
+        "</td><td>" + r.question +
         '</td><td class="ans" style="color:' + CFG.colors[r.answer] + '">' +
         r.answer + "</td><td>" + r.latency_s.toFixed(2) + "s</td>" +
         '<td class="q"></td>';
@@ -262,17 +320,19 @@ function onData(d) {{
   buildTimeline();
 }}
 
-function byQuestion(q) {{
-  return records.filter(r => r.question === q).sort((a, b) => a.time_s - b.time_s);
+function byQA(q, arm) {{
+  return records.filter(r => r.question === q && r.arm === arm)
+      .sort((a, b) => a.time_s - b.time_s);
 }}
 
 function buildTimeline() {{
   const D = v.duration;
   if (!D) {{ v.addEventListener("loadedmetadata", buildTimeline, {{once: true}}); return; }}
-  for (const q of CFG.questions) {{
-    const band = document.getElementById("band-" + q);
+  for (const q of CFG.questions) for (const arm of CFG.arms) {{
+    const band = document.getElementById("band-" + q + "-" + arm);
+    if (!band) continue;
     band.innerHTML = "";
-    const pts = byQuestion(q);
+    const pts = byQA(q, arm);
     for (let i = 0; i < pts.length; i++) {{
       const start = pts[i].time_s;
       const end = (i + 1 < pts.length) ? pts[i + 1].time_s : (done ? D : start + 0.2);
@@ -294,22 +354,24 @@ let lastFrame = null;
 function refreshUI() {{
   const t = v.currentTime, D = v.duration || 1;
   const band = document.querySelector(".tband");
-  document.getElementById("playhead").style.left =
+  if (band) document.getElementById("playhead").style.left =
       (band.offsetLeft + t / D * band.offsetWidth) + "px";
   let current = null;
-  for (const r of byQuestion(CFG.questions[0])) if (r.time_s <= t + 1e-6) current = r.frame;
-  for (const q of CFG.questions) {{
+  for (const r of byQA(CFG.questions[0], CFG.arms[0]))
+    if (r.time_s <= t + 1e-6) current = r.frame;
+  for (const q of CFG.questions) for (const arm of CFG.arms) {{
     let pt = null;
-    for (const r of byQuestion(q)) if (r.time_s <= t + 1e-6) pt = r;
+    for (const r of byQA(q, arm)) if (r.time_s <= t + 1e-6) pt = r;
     const ans = pt ? pt.answer : "?";
-    const el = document.getElementById("bv-" + q);
+    const el = document.getElementById("bv-" + q + "-" + arm);
+    if (!el) continue;
     el.textContent = ans;
     el.style.color = CFG.colors[ans] || "#333";
   }}
   if (current !== lastFrame) {{
     document.querySelectorAll("tr.now").forEach(el => el.classList.remove("now"));
-    for (const q of CFG.questions) {{
-      const row = document.getElementById("r" + current + "-" + q);
+    for (const q of CFG.questions) for (const arm of CFG.arms) {{
+      const row = document.getElementById("r" + current + "-" + q + "-" + arm);
       if (row) row.classList.add("now");
     }}
     lastFrame = current;
@@ -337,6 +399,12 @@ def main() -> None:
     parser.add_argument("--instruction", required=True)
     parser.add_argument("--base_url", default="http://127.0.0.1:8002/v1")
     parser.add_argument("--model", default="nvidia/Cosmos3-Nano")
+    parser.add_argument(
+        "--arm",
+        action="append",
+        help='repeatable JSON arm: {"label", "model", "base_url", "extra_body"?}; '
+        "overrides --model/--base_url",
+    )
     parser.add_argument("--view", choices=["full", "wrist", "side"], default="full")
     parser.add_argument("--upscale", type=int, default=1)
     parser.add_argument("--stride", type=int, default=5, help="judge every Nth frame")
@@ -355,6 +423,7 @@ def main() -> None:
     except Exception:
         fps = 20.0
 
+    arms = resolve_arms(args)
     replies: list[str | None] = []
 
     def _capturing(judge: OpenAICompatCompletionJudge) -> OpenAICompatCompletionJudge:
@@ -374,61 +443,74 @@ def main() -> None:
         return judge
 
     judges = {
-        name: _capturing(
+        (arm["label"], name): _capturing(
             OpenAICompatCompletionJudge(
-                base_url=args.base_url,
-                model=args.model,
+                base_url=arm["base_url"],
+                model=arm["model"],
                 prompt_template=template,
                 max_tokens=args.max_tokens,
                 timeout_seconds=args.timeout_seconds,
-                extra_body={"modalities": ["text"]},
+                extra_body=arm["extra_body"],
                 transport=_fake_transport if args.fake else None,
             )
         )
+        for arm in arms
         for name, template in QUESTIONS
     }
     templates = dict(QUESTIONS)
     meta = {
-        "model": args.model, "instruction": args.instruction,
+        "instruction": args.instruction,
         "view": args.view, "upscale": args.upscale, "stride": args.stride,
     }
     out = Path(args.out).expanduser()
     records: list[dict[str, Any]] = []
-    render_shell(out, video_path=video_path, meta=meta)
+    render_shell(out, video_path=video_path, meta=meta, arms=arms)
     write_data(out, records, done=False)
 
     indexes = list(range(0, len(stack), args.stride))
-    print(f"{len(stack)} frames, judging {len(indexes)} of them x {len(QUESTIONS)} questions")
+    total = len(indexes) * len(QUESTIONS) * len(arms)
+    print(f"{len(stack)} frames; judging {len(indexes)} x {len(QUESTIONS)} questions"
+          f" x {len(arms)} arms = {total} calls")
     print(f"report: {out}  (open it now — rows stream in without reloading)\n")
-    print(f"{'frame':>6} {'question':>10}  answer  latency")
+    print(f"{'frame':>6} {'arm':>10} {'question':>10}  answer  latency")
     for index in indexes:
         frame = prepare_frame(stack[index], args.view, args.upscale)
         thumb = _png_data_uri(frame)
-        for position, (name, _template) in enumerate(QUESTIONS):
-            replies_before = len(replies)
-            start = time.monotonic()
-            answer = "YES" if judges[name].is_complete(frame, args.instruction) else "NO"
-            elapsed = time.monotonic() - start
-            if len(replies) == replies_before:  # transport failed -> judge's silent NO
-                answer = "FAIL"
-            records.append(
-                {
-                    "frame": index,
-                    "time_s": index / fps,
-                    "question": name,
-                    "answer": answer,
-                    "latency_s": elapsed,
-                    "prompt": templates[name].format(instruction=args.instruction),
-                    "thumb": thumb if position == 0 else None,
-                }
-            )
-            print(f"{index:6d} {name:>10}  {answer:<6} {elapsed:.2f}s")
+        first_record_of_frame = True
+        for arm in arms:
+            for name, _template in QUESTIONS:
+                replies_before = len(replies)
+                start = time.monotonic()
+                answer = (
+                    "YES"
+                    if judges[(arm["label"], name)].is_complete(frame, args.instruction)
+                    else "NO"
+                )
+                elapsed = time.monotonic() - start
+                if len(replies) == replies_before:  # transport failed -> silent NO
+                    answer = "FAIL"
+                records.append(
+                    {
+                        "frame": index,
+                        "time_s": index / fps,
+                        "question": name,
+                        "arm": arm["label"],
+                        "answer": answer,
+                        "latency_s": elapsed,
+                        "prompt": templates[name].format(instruction=args.instruction),
+                        "thumb": thumb if first_record_of_frame else None,
+                    }
+                )
+                first_record_of_frame = False
+                print(f"{index:6d} {arm['label']:>10} {name:>10}  {answer:<6} {elapsed:.2f}s")
         write_data(out, records, done=False)
     write_data(out, records, done=True)
 
     summary_path = out.with_suffix(".json")
     lean = [{k: v for k, v in r.items() if k != "thumb"} for r in records]
-    summary_path.write_text(json.dumps({"meta": meta, "records": lean}, indent=2))
+    summary_path.write_text(
+        json.dumps({"meta": meta, "arms": arms, "records": lean}, indent=2)
+    )
     print(f"\ndone -> {out}  (+ raw records in {summary_path})")
 
 

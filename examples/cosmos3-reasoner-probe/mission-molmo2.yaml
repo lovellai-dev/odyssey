@@ -23,7 +23,12 @@
 #         vllm/vllm-omni:v0.26.0 \
 #         vllm serve allenai/Molmo2-8B --host 0.0.0.0 --port 8003 \
 #             --trust-remote-code --gpu-memory-utilization 0.25 \
-#             --max-model-len 16384 --limit-mm-per-prompt '{"image": 16}'
+#             --max-model-len 32768 --max-num-batched-tokens 32768 \
+#             --limit-mm-per-prompt '{"image": 16}'
+#
+# (max-num-batched-tokens must exceed the per-item MM budget — with 16 images
+# allowed vLLM computes ~16.4k tokens/item and refuses to boot at the 8192
+# default.)
 #
 # (~18 GB; co-resides with the Cosmos server on :8002 for the side-by-side
 # comparative viewer. limit-mm-per-prompt 16 is for direction B's
