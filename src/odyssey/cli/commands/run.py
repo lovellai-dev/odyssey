@@ -30,6 +30,7 @@ from odyssey.providers import ProviderRegistry
 from odyssey.providers.huggingface import HFDatasetProvider, HFModelProvider
 from odyssey.providers.local import LocalDatasetProvider, LocalRobotProvider
 from odyssey.runners import (
+    Cosmos3Runner,
     CPUMockRunner,
     GR00TRunner,
     OpenVLARunner,
@@ -51,14 +52,15 @@ def _build_runners() -> RunnerRegistry:
     registry = RunnerRegistry()
     # Real runners first; CPU mock as a last-resort fallback so unfamiliar
     # task types still produce *something* instead of "no runner registered."
-    # OpenVLA, GR00T and π0.5 are all wildcard training runners — registration
-    # order makes OpenVLA the default; GR00T / π0.5 are selected per-task via
-    # ``config: {runner: gr00t}`` / ``config: {runner: pi05}``. --use-mock-runner
+    # OpenVLA, GR00T, π0.5 and Cosmos 3 are all wildcard training runners —
+    # registration order makes OpenVLA the default; the others are selected
+    # per-task via ``config: {runner: gr00t|pi05|cosmos3}``. --use-mock-runner
     # forces the mock through the engine's force_runner, not by thinning this
     # registry.
     registry.register(OpenVLARunner())
     registry.register(GR00TRunner())
     registry.register(Pi05Runner())
+    registry.register(Cosmos3Runner())
     registry.register(RobosuiteRunner())
     registry.register(IsaacLabRunner())
     registry.register(LiberoRunner())

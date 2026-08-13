@@ -1,0 +1,130 @@
+# Cosmos 3 (WAM) action-policy fine-tune quickstart (train -> serve -> eval).
+#
+# Fine-tunes an NVIDIA Cosmos 3 action policy on a LeRobot-v3 demonstration set
+# via the odyssey `cosmos3` training runner -> cosmos-framework's three entry
+# points (convert_model_to_dcp -> train -> export_model), then scores the export
+# on LIBERO with `pilot: cosmos3`.
+#
+# HOW cosmos-framework TRAINING WORKS (different from GR00T/OpenVLA, like pi0.5):
+#   cosmos-framework is CONFIG-NAME-DRIVEN. Training selects a registered SFT
+#   recipe TOML (here `action_policy_libero_nano`) under
+#   $COSMOS_FRAMEWORK_REPO_PATH/examples/toml/sft_config/. Paths inside that TOML
+#   use OmegaConf env interpolation (${oc.env:BASE_CHECKPOINT_PATH} ...), so the
+#   runner steers data / checkpoint / output through ENVIRONMENT VARIABLES, not
+#   flags. Everything under `config:` (except control keys) is forwarded as a
+#   dotted CLI override (trainer.max_iter -> --trainer.max-iter).
+#   See examples/quickstart-cosmos3-train/README.md for the full recipe.
+#
+# THE THREE STEPS the runner shells out to:
+#   1. convert_model_to_dcp  (base Cosmos3-Nano -> DCP; skipped if it exists)
+#   2. torchrun ... train --sft-toml=<recipe>   (the SFT run itself)
+#   3. export_model          (DCP -> HF safetensors the policy server loads)
+#
+# Validate without a GPU:
+#   odyssey validate mission.yaml
+#   odyssey run mission.yaml --use-mock-runner
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: cosmos3-libero-nano-finetune
+  description: >-
+    Fine-tune a Cosmos 3 Nano action policy on the LIBERO LeRobot-v3 demos, then
+    score the exported checkpoint on LIBERO with pilot: cosmos3.
+  tags: [cosmos3, wam, nvidia, cosmos-framework, libero, lerobot, training]
+
+objective: |
+  Post-train Cosmos3-Nano into a LIBERO action policy on the LIBERO_LeRobot_v3
+  demonstrations so the exported checkpoint, served through cosmos-framework's
+  action_policy_server_libero, can solve the suite under closed-loop rollout.
+
+acceptance_criteria: |
+  The fine-tune produces an exported HF-safetensors checkpoint under the task
+  output_dir (<run>/model) that loads in cosmos-framework's
+  action_policy_server_libero. The honest metric is the LIBERO success rate of
+  the second task once that server is started on the export (see README for the
+  train -> serve -> eval hand-off).
+
+robot:
+  # LIBERO is a Franka-Panda suite.
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        # The base Cosmos 3 checkpoint the DCP conversion (step 1) starts from.
+        # A bare `Cosmos3-Nano` also works — cosmos-framework resolves it against
+        # its own checkpoint cache; this HF id documents the pilot identity.
+        base: nvidia/Cosmos3-Nano
+
+tasks:
+  - name: finetune-cosmos3-libero
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # ABSOLUTE path to the unpacked LeRobot-v3 dataset ON THE TRAINING BOX.
+      # For LIBERO this is the SUITE dir holding meta/info.json, e.g.
+      # <dir>/libero_10. Pre-sync once:
+      #   hf download nvidia/LIBERO_LeRobot_v3 --repo-type dataset \
+      #     --include 'libero_10/**' --local-dir <dir>
+      ref: /data/LIBERO_LeRobot_v3/libero_10
+      format: lerobot
+    config:
+      # Routes this wildcard training task to the Cosmos 3 runner (OpenVLA is the
+      # default; GR00T / pi0.5 / cosmos3 opt in by name).
+      runner: cosmos3
+      # REQUIRED: the registered SFT recipe TOML under
+      # $COSMOS_FRAMEWORK_REPO_PATH/examples/toml/sft_config/ (bare name, no .toml).
+      # LIBERO recipes: action_policy_libero_10_nano (single suite) /
+      # action_policy_libero_all_nano (4 suites). DROID: action_policy_droid_nano.
+      config_name: action_policy_libero_10_nano
+      # The env var the recipe interpolates for the dataset path is recipe-specific:
+      # LIBERO reads LIBERO_ROOT; DROID reads DATASET_PATH (the default).
+      dataset_env: LIBERO_ROOT
+      # Base model handed to convert_model_to_dcp (step 1). Defaults to the agent's
+      # HF base, else Cosmos3-Nano. Set convert_dcp: false to reuse an existing DCP.
+      base_model: Cosmos3-Nano
+      # torchrun workers for the train step. Reference recipe is 8/node; drop for a
+      # single-GPU smoke.
+      nproc_per_node: 8
+      # Env-bridged paths the recipe TOML interpolates (${oc.env:...}). WAN_VAE_PATH
+      # and HF_TOKEN can instead come from the shell — only pin here if convenient.
+      wan_vae_path: /data/cosmos3/wan22_vae/Wan2.2_VAE.pth
+      # filter_dir: /data/cosmos3/droid_filters   # DROID recipes only
+
+      # --- dotted overrides forwarded to cosmos_framework.scripts.train ---------
+      # Smoke: 10 iterations on one node. Remove for a real multi-node run.
+      trainer:
+        max_iter: 10
+      # export: true is the default (step 3) — set false to stop at the trained DCP.
+
+  # Round-trip eval: score the EXPORTED checkpoint on LIBERO via pilot: cosmos3.
+  # This connects to a cosmos-framework HTTP action_policy_server_libero that YOU
+  # start on the export between the two tasks (Cosmos 3 does NOT auto-serve
+  # in-process — contrast GR00T). See README "train -> serve -> eval". Until the
+  # server is up, run this task on its own after starting it.
+  - name: eval-cosmos3-libero
+    kind: evaluation
+    evaluation_type: libero
+    benchmark_name: libero_object
+    num_episodes: 10
+    config:
+      # Swaps the default single-model rollout for the chunk-aware Cosmos 3 pilot.
+      pilot: cosmos3
+      # Address of the PRE-STARTED action_policy_server_libero holding the export.
+      host: 127.0.0.1
+      port: 8000
+      # 0 -> adopt the server's own action_chunk_size (GET /info). Family knobs.
+      n_action_steps: 0
+      domain_name: libero
+      task_id: 0
+
+leaderboard:
+  publish: false   # Backend not live yet.
+
+graph:
+  contribute: false   # Backend not live yet.

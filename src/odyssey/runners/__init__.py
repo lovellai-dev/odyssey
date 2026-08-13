@@ -26,6 +26,11 @@ from odyssey.runners.cpu_mock import CPUMockRunner
 from odyssey.runners.evals.isaac_lab import IsaacLabRunner
 from odyssey.runners.evals.robolab import RobolabRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
+from odyssey.runners.models.cosmos3_train import (
+    Cosmos3Runner,
+    build_cosmos3_train_argv,
+    parse_cosmos3_train_line,
+)
 from odyssey.runners.models.gr00t import GR00TRunner, build_gr00t_argv, parse_gr00t_line
 from odyssey.runners.models.openvla import OpenVLARunner, build_openvla_argv, parse_openvla_line
 from odyssey.runners.models.pi05_train import (
@@ -43,6 +48,7 @@ from odyssey.runners.subprocess import (
 __all__ = [
     "WILDCARD_TYPE",
     "CPUMockRunner",
+    "Cosmos3Runner",
     "GR00TRunner",
     "IsaacLabRunner",
     "LineParser",
@@ -54,9 +60,11 @@ __all__ = [
     "RunnerRegistry",
     "TaskContext",
     "TrainingProcessSpec",
+    "build_cosmos3_train_argv",
     "build_gr00t_argv",
     "build_openvla_argv",
     "build_pi05_train_argv",
+    "parse_cosmos3_train_line",
     "parse_gr00t_line",
     "parse_openvla_line",
     "parse_pi05_train_line",
