@@ -285,6 +285,13 @@ def main() -> int:
     total = int(info["total_episodes"])
     eps = args.episodes if args.episodes is not None else list(range(max(0, total - args.held_out), total))
 
+    # Make `odyssey` importable when launched under an arbitrary interpreter: the
+    # `custom` eval runner runs this via `eval_python` (e.g. the cosmos-framework
+    # venv), which need not have odyssey installed nor PYTHONPATH forwarded to the
+    # child. Fall back to the repo's own src/ (this file is examples/<m>/<f>.py).
+    _src = Path(__file__).resolve().parents[2] / "src"
+    if _src.is_dir() and str(_src) not in sys.path:
+        sys.path.insert(0, str(_src))
     from odyssey.runners.evals.cosmos3_transforms import (
         build_cosmos3_predict_request,
         cosmos3_chunk_from_response,
