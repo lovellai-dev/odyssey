@@ -115,7 +115,7 @@ def test_train_argv_sft_toml_first(
     assert argv[0].endswith("action_policy_libero_nano.toml")
 
 
-def test_train_argv_passthrough_is_kebab_case(
+def test_train_argv_passthrough_is_hydra_dotlist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo_with_recipe(tmp_path)
@@ -127,29 +127,31 @@ def test_train_argv_passthrough_is_kebab_case(
         }
     )
     argv = build_cosmos3_train_argv(task=task)
-    idx = argv.index("--trainer.max-iter")
-    assert argv[idx + 1] == "10"
+    # cosmos train.py takes trailing `key.path=value` positionals, not --flags.
+    assert "trainer.max_iter=10" in argv
+    assert "--trainer.max-iter" not in argv
 
 
-def test_train_argv_bool_true_is_bare_flag(
+def test_train_argv_bool_true_is_key_true(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo_with_recipe(tmp_path)
     monkeypatch.setenv("COSMOS_FRAMEWORK_REPO_PATH", str(repo))
     task = _task(config={"config_name": "action_policy_libero_nano", "wandb": True})
     argv = build_cosmos3_train_argv(task=task)
-    assert "--wandb" in argv
-    assert "True" not in argv
+    assert "wandb=true" in argv
+    assert "--wandb" not in argv
 
 
-def test_train_argv_bool_false_is_no_flag(
+def test_train_argv_bool_false_is_key_false(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = _repo_with_recipe(tmp_path)
     monkeypatch.setenv("COSMOS_FRAMEWORK_REPO_PATH", str(repo))
     task = _task(config={"config_name": "action_policy_libero_nano", "wandb": False})
     argv = build_cosmos3_train_argv(task=task)
-    assert "--no-wandb" in argv
+    assert "wandb=false" in argv
+    assert "--no-wandb" not in argv
 
 
 def test_train_argv_excludes_control_keys(
@@ -171,20 +173,23 @@ def test_train_argv_excludes_control_keys(
         }
     )
     argv = build_cosmos3_train_argv(task=task)
+    # Control keys are consumed by the runner — never forwarded as dotlist
+    # positionals (nor as the old --flag form).
+    joined = " ".join(argv)
     for control in (
-        "--runner",
-        "--base-model",
-        "--convert-dcp",
-        "--no-convert-dcp",
-        "--export",
-        "--no-export",
-        "--nproc-per-node",
-        "--wan-vae-path",
-        "--filter-dir",
-        "--dataset-path",
-        "--config-name",
+        "runner=",
+        "base_model=",
+        "convert_dcp=",
+        "export=",
+        "nproc_per_node=",
+        "wan_vae_path=",
+        "filter_dir=",
+        "dataset_path=",
+        "config_name=",
     ):
-        assert control not in argv
+        assert control not in joined
+    for old_flag in ("--runner", "--base-model", "--config-name", "--no-convert-dcp"):
+        assert old_flag not in argv
 
 
 # ---------------------------------------------------------------------------

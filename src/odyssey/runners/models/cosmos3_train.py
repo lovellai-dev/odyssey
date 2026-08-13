@@ -12,8 +12,10 @@ Why this looks different from the GR00T / OpenVLA runners
 Like π0.5, Cosmos is **config-name-driven**: training is selected by a
 registered SFT recipe TOML (e.g. ``action_policy_libero_nano``,
 ``action_policy_droid_nano``) that bundles the data pipeline, weight loader and
-optimizer. Individual fields are tweaked by dotted CLI overrides parsed by
-OmegaConf/tyro (``trainer.max_iter`` → ``--trainer.max-iter``). Paths inside the
+optimizer. Individual fields are tweaked by trailing Hydra-style dotlist
+positionals applied after the TOML (``trainer.max_iter=10`` — NOT
+``--trainer.max-iter``; cosmos ``train.py`` reads them via argparse REMAINDER).
+Paths inside the
 TOML use OmegaConf env interpolation (``${oc.env:BASE_CHECKPOINT_PATH}`` …), so
 the runner steers data / checkpoint / output locations through **environment
 variables**, not flags — matching Odyssey's "no hardcoded env in runners; the
@@ -194,12 +196,15 @@ def _resolve_cosmos_recipe(config_name: str) -> str:
     return recipe
 
 
-def _tyro_overrides(config: dict[str, Any]) -> list[str]:
-    """Flatten ``config`` into dotted CLI overrides, skipping control keys.
+def _dotlist_overrides(config: dict[str, Any]) -> list[str]:
+    """Flatten ``config`` into Hydra-style ``key.path=value`` positionals.
 
-    Nested dicts become dotted flags (``trainer.max_iter`` →
-    ``--trainer.max-iter``); booleans become toggle flags (``--flag`` /
-    ``--no-flag``) rather than ``--flag True``, matching tyro/OmegaConf.
+    cosmos-framework's ``train.py`` consumes overrides as trailing
+    ``key.path=value`` positionals (argparse ``REMAINDER``, applied AFTER the
+    TOML via OmegaConf) — NOT ``--flag value``. So a nested ``trainer.max_iter``
+    becomes the positional ``trainer.max_iter=10`` and a bool becomes
+    ``key=true`` / ``key=false`` (OmegaConf parses those to real bools). Control
+    keys (consumed by the runner) are skipped.
     """
     argv: list[str] = []
     for key, value in _flatten_config(config):
@@ -207,11 +212,10 @@ def _tyro_overrides(config: dict[str, Any]) -> list[str]:
         # key (nested overrides like trainer.max_iter are always forwarded).
         if "." not in key and key in _CONTROL_KEYS:
             continue
-        flag = f"--{key.replace('_', '-')}"
         if isinstance(value, bool):
-            argv.append(flag if value else f"--no-{key.replace('_', '-')}")
+            argv.append(f"{key}={'true' if value else 'false'}")
         else:
-            argv += [flag, str(value)]
+            argv.append(f"{key}={value}")
     return argv
 
 
@@ -237,8 +241,10 @@ def build_cosmos3_dcp_argv(
 def build_cosmos3_train_argv(*, task: TrainingTask) -> list[str]:
     """Build the ``cosmos_framework.scripts.train`` argv (step 2).
 
-    Shape: ``--sft-toml=<recipe> [dotted overrides]``. ``config_name`` is
-    REQUIRED — it names the registered SFT recipe TOML.
+    Shape: ``--sft-toml=<recipe> [key.path=value ...]``. ``config_name`` is
+    REQUIRED — it names the registered SFT recipe TOML. Non-control ``config``
+    keys become trailing Hydra-style dotlist positionals (applied AFTER the
+    TOML), matching cosmos-framework's ``train.py`` REMAINDER override contract.
     """
     config = task.config or {}
     config_name = config.get("config_name")
@@ -250,7 +256,7 @@ def build_cosmos3_train_argv(*, task: TrainingTask) -> list[str]:
             "dataset/embodiment."
         )
     recipe = _resolve_cosmos_recipe(str(config_name))
-    return [f"--sft-toml={recipe}", *_tyro_overrides(config)]
+    return [f"--sft-toml={recipe}", *_dotlist_overrides(config)]
 
 
 def build_cosmos3_export_argv(
