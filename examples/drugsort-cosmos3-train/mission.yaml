@@ -1,0 +1,133 @@
+# Cosmos 3 (WAM) UR5e drug-sort action-policy fine-tune (single-GPU smoke).
+#
+# Fine-tunes an NVIDIA Cosmos 3 Nano action policy on the UR5e drug-sort
+# LeRobot-v3 demonstrations via the odyssey `cosmos3` training runner ->
+# cosmos-framework's three entry points (convert_model_to_dcp -> train ->
+# export_model).
+#
+# This mission drives a CUSTOM cosmos-framework experiment authored for the
+# UR5e drug-sort embodiment (NOT one of the shipped LIBERO/DROID recipes):
+#   * experiment  : action_policy_drugsort_nano
+#   * dataset     : DrugsortURDataset (RoboMIND-UR FK -> 10D rot6d cartesian
+#                   action, single `exterior` third-person cam, domain robomind-ur)
+#   * env var     : DRUGSORT_ROOT (the recipe interpolates ${oc.env:DRUGSORT_ROOT})
+# See cosmos-framework:
+#   cosmos_framework/data/generator/action/datasets/drugsort_ur_dataset.py
+#   cosmos_framework/configs/.../posttrain_config/action_policy_drugsort_nano.py
+#   examples/toml/sft_config/action_policy_drugsort_nano.toml
+#
+# The drug-sort dataset was converted from LeRobot v2.1 -> v3.0 first (cosmos
+# reads v3.0): lerobot/datasets/v30/convert_dataset_v21_to_v30.py.
+#
+# Validate without a GPU:
+#   odyssey validate mission.yaml
+#   odyssey run mission.yaml --use-mock-runner
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: cosmos3-drugsort-nano-finetune
+  description: >-
+    Fine-tune a Cosmos 3 Nano action policy on the UR5e drug-sort LeRobot-v3
+    demos via a custom cosmos-framework experiment (action_policy_drugsort_nano).
+  tags: [cosmos3, wam, nvidia, cosmos-framework, drugsort, ur5e, lerobot, training]
+
+objective: |
+  Post-train Cosmos3-Nano into a UR5e drug-sort action policy on the 60-episode
+  LeRobot-v3 demonstrations (pick up the vial and place it in the rack), so the
+  exported checkpoint can be served through cosmos-framework's action policy
+  server for closed-loop rollout.
+
+acceptance_criteria: |
+  The fine-tune produces an exported HF-safetensors checkpoint under the task
+  output_dir (<run>/model). For the single-GPU smoke the bar is simply: the three
+  subprocesses (convert_model_to_dcp -> train -> export_model) complete and the
+  train loss is logged for 10 iterations.
+
+robot:
+  # UR5e + Robotiq 2F-85 (robot_type ur5e_robotiq_2f85 in the dataset).
+  embodiment: ur5e
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        # DCP conversion (step 1) starts from this base Cosmos 3 checkpoint.
+        base: nvidia/Cosmos3-Nano
+
+tasks:
+  - name: finetune-cosmos3-drugsort
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # ABSOLUTE path to the CONVERTED LeRobot-v3 drug-sort dir ON THE H100 box.
+      # (Original v2.1 lives at .../ur10e_partial_cond_aug; this is the v3.0 copy.)
+      ref: /home/ubuntu/data/ur10e_drugsort_v0/ur10e_drugsort_v30
+      format: lerobot
+    config:
+      # Route this wildcard training task to the Cosmos 3 runner.
+      runner: cosmos3
+      # The custom SFT recipe TOML under $COSMOS_FRAMEWORK_REPO_PATH/examples/toml/sft_config/.
+      config_name: action_policy_drugsort_nano
+      # The recipe interpolates ${oc.env:DRUGSORT_ROOT} for the dataset path.
+      dataset_env: DRUGSORT_ROOT
+      # Base handed to convert_model_to_dcp (step 1).
+      base_model: Cosmos3-Nano
+      # Single-GPU smoke.
+      nproc_per_node: 1
+      # Wan2.2 VAE weights the tokenizer needs (hf download Wan-AI/Wan2.2-TI2V-5B Wan2.2_VAE.pth).
+      wan_vae_path: /home/ubuntu/cosmos-framework/examples/checkpoints/wan22_vae/Wan2.2_VAE.pth
+
+      # --- Hydra dotlist overrides forwarded to cosmos_framework.scripts.train --
+      # (the runner emits these as trailing `key.path=value` positionals).
+      # Smoke: 10 iterations. Remove / raise for a real run.
+      trainer:
+        max_iter: 10
+      # SINGLE-GPU FIT KNOBS. Cosmos3-Nano bundles an 8B Qwen3-VL backbone; with
+      # shard_degree=1 the unsharded model is ~63 GB, so a full-finetune optimizer
+      # does NOT fit one 80 GB H100 (NVIDIA trains this with HSDP 2x8). LoRA shrinks
+      # the optimizer to a sliver and the packed-token cut slashes activation memory.
+      # Drop this whole block for a real multi-GPU run.
+      model:
+        config:
+          lora_enabled: true
+          max_num_tokens_after_packing: 8192
+          # EMA keeps a FULL fp32 copy of the net (~2x model memory) — the single
+          # biggest OOM driver on one GPU. Off for the smoke (no eval-quality need).
+          ema:
+            enabled: false
+      dataloader_train:
+        max_samples_per_batch: 1
+
+  # Open-loop ground-truth eval of the EXPORTED checkpoint (spec requires exactly
+  # one evaluation task). The `custom` runner invokes the eval script as:
+  #   <eval_python> <eval_script> --checkpoint <export> --out-json <path> [--k v ...]
+  # The script BOOTS cosmos-framework's action_policy_server_libero on the export,
+  # replays held-out episodes, and scores the predicted 10-D EE-delta chunk vs the
+  # FK'd expert action (trans MAE / rot geodesic / gripper agreement). It reads the
+  # LeRobot **v2.1** original (per-episode parquet+mp4), NOT the v3.0 train copy.
+  - name: eval-openloop-cosmos3-drugsort
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: drugsort-openloop-gt
+    num_episodes: 4
+    config:
+      eval_script: examples/drugsort-cosmos3-train/eval_openloop_gt_cosmos3.py
+      # Run the eval under the cosmos-framework venv (mujoco FK + server live there).
+      eval_python: /home/ubuntu/cosmos-framework/.venv/bin/python
+      # v2.1 ORIGINAL dataset dir (the eval's per-episode IO layout).
+      dataset: /home/ubuntu/data/ur10e_drugsort_v0/ur10e_partial_cond_aug
+      domain_name: robomind-ur
+      host: 127.0.0.1
+      port: 8000
+      held_out: 4
+      stride: 8
+
+leaderboard:
+  publish: false
+
+graph:
+  contribute: false
