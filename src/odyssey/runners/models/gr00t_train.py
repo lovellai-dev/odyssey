@@ -38,7 +38,10 @@ from odyssey.runners.base import (
 
 # Shared with the OpenVLA runner; extract to a common module when a
 # third runner needs them.
-from odyssey.runners.models.openvla import _flatten_config, _resolve_and_fetch_hf_model
+from odyssey.runners.models.openvla_train import (
+    _flatten_config,
+    _resolve_and_fetch_hf_model,
+)
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,
@@ -129,7 +132,7 @@ def _resolve_dataset_path(task: TrainingTask) -> str | None:
     ref = task.dataset.ref
     if task.dataset.source == DatasetSource.LOCAL and not os.path.isabs(ref):
         repo_path = os.getenv("ISAAC_GR00T_REPO_PATH", _DEFAULT_REPO_PATH)
-        return os.path.join(repo_path, ref)
+        return (Path(repo_path) / ref).as_posix()
     return ref
 
 
@@ -180,7 +183,7 @@ def build_gr00t_argv(
         # *requires* a modality config file, so this lets a mission point at a
         # repo-relative config (e.g. examples/SO100/so100_config.py) portably.
         if key == "modality_config_path" and isinstance(value, str) and not os.path.isabs(value):
-            value = os.path.join(repo_path, value)
+            value = (Path(repo_path) / value).as_posix()
         argv += [f"--{key.replace('_', '-')}", str(value)]
     return argv
 
