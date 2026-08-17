@@ -20,9 +20,9 @@ import pytest
 
 ENTRY_MODULES = [
     "odyssey.runners.base",
-    "odyssey.runners.models.gr00t",
+    "odyssey.runners.models.gr00t_train",
     "odyssey.runners.evals.isaac_lab",
-    "odyssey.runners.models.openvla",
+    "odyssey.runners.models.openvla_train",
     "odyssey.runners.evals.robosuite",
     "odyssey.engine",
     "odyssey.spec",
