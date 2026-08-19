@@ -283,9 +283,25 @@ class LiberoRunner(Runner):
         instruction = _resolve_libero_instruction(task, cfg)
         logger.info("LIBERO task %d instruction: %r", task_id, instruction)
 
-        # Single-agent (OpenVLA policy) vs multi-agent (PlannedEvalRuntime + Gemma).
-        use_planned = _has_specialist(context)
-        if use_planned:
+        # Single-agent (OpenVLA policy) vs multi-agent. The deterministic brain
+        # (dispatch -> compose -> converge, no ADK) is opt-in via
+        # ``config.brain: deterministic`` / ``ODYSSEY_DETERMINISTIC_BRAIN=1``;
+        # otherwise the legacy PlannedEvalRuntime stays the default.
+        _multi = _has_specialist(context)
+        use_deterministic = _multi and (
+            cfg.get("brain") == "deterministic"
+            or os.getenv("ODYSSEY_DETERMINISTIC_BRAIN") == "1"
+        )
+        use_planned = _multi and not use_deterministic
+        if use_deterministic:
+            runtime = _build_deterministic_runtime(context, checkpoint, cfg)
+            await context.emit_progress(
+                "model_loading",
+                step="load_specialist",
+                step_label="DeterministicBrain (PILOT + SPECIALIST)",
+            )
+            policy = None
+        elif use_planned:
             runtime = _build_planned_runtime(context, checkpoint, cfg, instruction)
             await context.emit_progress(
                 "model_loading",
@@ -717,4 +733,63 @@ def _build_planned_runtime(
         planner=planner,
         phase_config=phase_config,
         fallback_instruction=instruction,
+    )
+
+
+def _build_deterministic_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    cfg: dict[str, Any],
+) -> Any:
+    """Compose PILOT (OpenVLA) + out-of-process SPECIALIST(s) as a DeterministicBrain.
+
+    dispatch -> compose -> converge, no agent framework. Same out-of-process
+    ``ODYSSEY_SPECIALIST_PYTHON`` requirement as the planned path.
+    """
+    from odyssey.runners.agents.brain import (
+        DeterministicBrain,
+        SafetyBoundary,
+        SpecialistTurn,
+    )
+    from odyssey.runners.models.openvla import VLARuntime
+    from odyssey.runners.models.remote_generator import RemoteGenerator
+    from odyssey.spec.agents import AgentRole
+    from odyssey.spec.refs import HFModelRef
+
+    unnorm_key = cfg.get("unnorm_key", "bridge_orig")
+    pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
+
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    if not specialist_python:
+        raise RuntimeError(
+            "The deterministic brain requires the out-of-process SPECIALIST: set "
+            "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (the multimodal "
+            "Gemma 4 specialist cannot load in the OpenVLA-pinned env)."
+        )
+
+    specialists: list[SpecialistTurn] = []
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role != AgentRole.SPECIALIST:
+            continue
+        model = agent.model
+        if not isinstance(model, HFModelRef):
+            raise ValueError(
+                f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
+                "Only HuggingFace models are supported for SPECIALIST inference."
+            )
+        generator = RemoteGenerator(
+            model.base, model.quantization, python_path=specialist_python
+        )
+        is_vision = model.modality == "multimodal"
+        logger.info(
+            "SPECIALIST out-of-process: id=%s model=%s vision=%s via %s",
+            agent.id,
+            model.base,
+            is_vision,
+            specialist_python,
+        )
+        specialists.append(SpecialistTurn(agent.id, generator, is_vision=is_vision))
+
+    return DeterministicBrain(
+        pilot, specialists, safety=SafetyBoundary(), cadence="episode"
     )
