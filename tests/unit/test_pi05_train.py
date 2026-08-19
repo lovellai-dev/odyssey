@@ -283,6 +283,17 @@ def test_dataset_repo_id_empty_when_unknown() -> None:
     assert _dataset_repo_id(_task(config={"config_name": _CFG})) == ""
 
 
+def test_lerobot_env_exports_only_hf_lerobot_home(tmp_path: Path) -> None:
+    abs_ref = str(tmp_path / "ur10e_v0")
+    task = _task(
+        dataset=DatasetRef(source=DatasetSource.LOCAL, ref=abs_ref)
+    )
+    env = _lerobot_env_for_dataset(task)
+    assert "HF_LEROBOT_HOME" in env
+    assert "LEROBOT_HOME" not in env
+    assert env["HF_LEROBOT_HOME"] == str(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # stdout parser
 # ---------------------------------------------------------------------------

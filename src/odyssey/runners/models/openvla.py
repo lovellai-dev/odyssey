@@ -75,7 +75,14 @@ def _is_lora_checkpoint(checkpoint_path: Path) -> bool:
 
 
 def _center_crop_image(image: Any, crop_scale: float = 0.9) -> Any:
-    """Center-crop to ``crop_scale`` of the frame, then resize back to the original size."""
+    """Center-crop to ``crop_scale`` of the frame, then resize back to the original size.
+
+    OpenVLA checkpoints fine-tuned with image augmentation (``image_aug=True`` — e.g. the
+    published ``openvla-7b-finetuned-libero-*``) were trained on a RandomResizedCrop, so
+    inference must apply the matching deterministic center crop (mirrors ``crop_and_resize``
+    in OpenVLA's ``run_libero_eval.py``). Skipping it widens the input FOV vs. training and
+    degrades spatial precision — the arm approaches the target but misses the grasp.
+    """
     import math
 
     from PIL import Image
@@ -119,6 +126,8 @@ def make_openvla_policy(
     )
     image_key = cfg.get("image_key", "agentview_image")
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    # OpenVLA checkpoints trained with image_aug expect a matching center crop at eval
+    # (e.g. the finetuned-libero-* checkpoints). Default on; disable via config.
     center_crop = bool(cfg.get("center_crop", True))
     crop_scale = float(cfg.get("crop_scale", 0.9))
 
@@ -196,7 +205,24 @@ def make_openvla_policy(
 
 
 class VLARuntime:
-    """OpenVLA pilot runtime with per-call instruction."""
+    """OpenVLA pilot runtime with per-call instruction.
+
+    Unlike ``make_openvla_policy()`` which bakes ``task_instruction`` at
+    creation time, ``VLARuntime.act()`` accepts the instruction on every
+    call. This lets ``PlannedEvalRuntime`` feed different sub-instructions
+    per phase without reloading the model.
+
+    Satisfies ``PilotRuntime`` protocol.
+
+    Parameters
+    ----------
+    checkpoint_path:
+        Path to a LoRA adapter dir or full merged model dir.
+    unnorm_key:
+        Unnormalization key passed to ``predict_action``.
+    device:
+        Torch device string. Defaults to CUDA if available.
+    """
 
     def __init__(
         self,
