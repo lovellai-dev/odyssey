@@ -63,7 +63,7 @@ from odyssey.runners.base import (
 )
 
 # Shared flatten helper (dotted keys for nested dicts).
-from odyssey.runners.models.openvla import _flatten_config
+from odyssey.runners.models.openvla_train import _flatten_config
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,

@@ -26,8 +26,16 @@ from odyssey.runners.cpu_mock import CPUMockRunner
 from odyssey.runners.evals.isaac_lab import IsaacLabRunner
 from odyssey.runners.evals.robolab import RobolabRunner
 from odyssey.runners.evals.robosuite import RobosuiteRunner
-from odyssey.runners.models.gr00t import GR00TRunner, build_gr00t_argv, parse_gr00t_line
-from odyssey.runners.models.openvla import OpenVLARunner, build_openvla_argv, parse_openvla_line
+from odyssey.runners.models.gr00t_train import (
+    GR00TRunner,
+    build_gr00t_argv,
+    parse_gr00t_line,
+)
+from odyssey.runners.models.openvla_train import (
+    OpenVLARunner,
+    build_openvla_argv,
+    parse_openvla_line,
+)
 from odyssey.runners.models.pi05_train import (
     Pi05Runner,
     build_pi05_train_argv,
