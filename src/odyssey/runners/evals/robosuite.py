@@ -260,12 +260,26 @@ class RobosuiteRunner(Runner):
             capture_video = False
         elif capture_video:
             video_dir = context.output_dir / "videos"  # type: ignore[operator]
-        use_planned = (
-            self._policy_factory is _default_policy_factory
-            and _has_specialist(context)
+        # Multi-agent brain selection. The deterministic brain (dispatch ->
+        # compose -> converge, no ADK) is opt-in via ``config.brain:
+        # deterministic`` or ``ODYSSEY_DETERMINISTIC_BRAIN=1``; otherwise the
+        # legacy plan-then-execute PlannedEvalRuntime stays the default.
+        _multi = self._policy_factory is _default_policy_factory and _has_specialist(context)
+        use_deterministic = _multi and (
+            (spec.config or {}).get("brain") == "deterministic"
+            or os.getenv("ODYSSEY_DETERMINISTIC_BRAIN") == "1"
         )
+        use_planned = _multi and not use_deterministic
 
-        if use_planned:
+        if use_deterministic:
+            runtime = _build_deterministic_runtime(context, checkpoint, spec)
+            await context.emit_progress(
+                "model_loading",
+                step="load_specialist",
+                step_label="DeterministicBrain (PILOT + SPECIALIST)",
+            )
+            policy = None
+        elif use_planned:
             runtime = _build_planned_runtime(context, checkpoint, spec)
             await context.emit_progress(
                 "model_loading",
@@ -576,4 +590,75 @@ def _build_planned_runtime(
         planner=planner,
         phase_config=phase_config,
         fallback_instruction=task_instruction,
+    )
+
+
+def _build_deterministic_runtime(
+    context: TaskContext,
+    checkpoint: Path,
+    spec: EvaluationTask,
+) -> Any:
+    """Build a ``DeterministicBrain`` from the mission's PILOT + SPECIALIST(s).
+
+    dispatch -> compose -> converge, no agent framework. The PILOT is a
+    ``VLARuntime``; each SPECIALIST is a ``SpecialistTurn`` over an
+    out-of-process ``RemoteGenerator`` (Gemma 4 needs a modern transformers,
+    incompatible with OpenVLA's pin, so it must run in the specialist venv —
+    same ``ODYSSEY_SPECIALIST_PYTHON`` requirement as the planned path). The
+    composed advisory conditions a single convergent pilot inference per step.
+    """
+    from odyssey.runners.agents.brain import (
+        DeterministicBrain,
+        SafetyBoundary,
+        SpecialistTurn,
+    )
+    from odyssey.runners.models.openvla import VLARuntime
+    from odyssey.runners.models.remote_generator import RemoteGenerator
+    from odyssey.spec.agents import AgentRole
+    from odyssey.spec.refs import HFModelRef
+
+    cfg = spec.config or {}
+    unnorm_key = cfg.get("unnorm_key", "bridge_orig")
+    pilot = VLARuntime(checkpoint, unnorm_key=unnorm_key)
+
+    specialist_python = os.getenv("ODYSSEY_SPECIALIST_PYTHON")
+    if not specialist_python:
+        raise RuntimeError(
+            "The deterministic brain requires the out-of-process SPECIALIST: set "
+            "ODYSSEY_SPECIALIST_PYTHON to the specialist venv's python (see the "
+            "README 'Multi-agent evaluation' section). The multimodal Gemma 4 "
+            "specialist cannot load in this venv, which pins transformers==4.40.1 "
+            "for OpenVLA."
+        )
+
+    specialists: list[SpecialistTurn] = []
+    for agent in context.agents or context.mission.spec.robot.agents:
+        if agent.role != AgentRole.SPECIALIST:
+            continue
+        model = agent.model
+        if not isinstance(model, HFModelRef):
+            raise ValueError(
+                f"SPECIALIST agent {agent.id!r} uses a non-HuggingFace model. "
+                "Only HuggingFace models are supported for SPECIALIST inference."
+            )
+        generator = RemoteGenerator(
+            model.base,
+            model.quantization,
+            python_path=specialist_python,
+        )
+        is_vision = model.modality == "multimodal"
+        logger.info(
+            "SPECIALIST out-of-process: id=%s model=%s vision=%s via %s",
+            agent.id,
+            model.base,
+            is_vision,
+            specialist_python,
+        )
+        specialists.append(SpecialistTurn(agent.id, generator, is_vision=is_vision))
+
+    return DeterministicBrain(
+        pilot,
+        specialists,
+        safety=SafetyBoundary(),
+        cadence="episode",
     )

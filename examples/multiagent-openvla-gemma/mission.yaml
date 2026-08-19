@@ -98,6 +98,11 @@ tasks:
     benchmark_name: Lift
     num_episodes: 10
     config:
+      # Deterministic multi-agent brain (dispatch -> compose -> converge, no
+      # ADK): the SPECIALIST is engaged by deterministic dispatch and its
+      # advisory composes into a single convergent pilot inference per step.
+      # Omit or set to "planned" for the legacy plan-then-execute runtime.
+      brain: deterministic
       unnorm_key: bridge_orig
       capture_video: true   # one MP4 per episode (README: "Recording rollout videos")
       # video_camera: frontview   # record from a dedicated camera instead of the
