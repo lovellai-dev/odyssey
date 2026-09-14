@@ -1,4 +1,5 @@
-# GR00T NEW_EMBODIMENT modality config for the Hiwonder JetRover 6DoF arm.
+# GR00T NEW_EMBODIMENT modality config for the Hiwonder JetRover arm
+# (marketed "6DOF": 5 positional joints + gripper).
 #
 # HOW TO USE: copy this file into your Isaac-GR00T checkout as
 #   <Isaac-GR00T>/examples/JETROVER/jetrover_config.py
@@ -13,13 +14,19 @@
 # so100 config in YOUR checkout and align the imports/class shape if they differ.
 #
 # The matching LeRobot dataset must carry, per frame (see this example's README):
-#   state.single_arm  (6,)  arm joint positions, rad
+#   state.single_arm  (5,)  arm joint positions, rad
 #   state.gripper     (1,)  gripper position
-#   action.single_arm (6,)  target joint positions, rad
+#   action.single_arm (5,)  target joint positions, rad
 #   action.gripper    (1,)  target gripper position
 #   video.front       front RGB camera (the depth cam's RGB stream)
 #   annotation.human.task_description
 # declared in the dataset's meta/modality.json.
+#
+# DoF note: Hiwonder markets the JetRover arm as "6DOF" *counting the gripper* —
+# the vendor docs enumerate servo IDs 1-5 for the arm (pan-tilt base + 3 body
+# joints + wrist) and ID 10 for the gripper. Hence 5-D single_arm here. If your
+# unit differs, adjust the dims consistently here, in the dataset, and via the
+# eval script's --arm_dof flag.
 
 from typing import ClassVar
 
@@ -36,7 +43,7 @@ from gr00t.model.transforms import GR00TTransform
 
 
 class JetroverDataConfig(BaseDataConfig):
-    """JetRover 6DoF arm + gripper, front camera — GR00T NEW_EMBODIMENT."""
+    """JetRover arm (5 joints) + gripper, front camera — GR00T NEW_EMBODIMENT."""
 
     video_keys: ClassVar[list[str]] = ["video.front"]
     state_keys: ClassVar[list[str]] = ["state.single_arm", "state.gripper"]

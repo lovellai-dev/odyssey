@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-hardware eval for the Hiwonder JetRover 6DoF arm (``evaluation_type: custom``).
+"""Real-hardware eval for the Hiwonder JetRover arm (``evaluation_type: custom``).
 
 Implements the launch contract of ``src/odyssey/runners/evals/custom.py``::
 
@@ -11,7 +11,7 @@ the operator scorer ran, metric-only otherwise).
 
 Split of responsibilities:
 
-* ``ArmBackend`` — talks to the arm: 6 joint positions + 1 gripper in, camera
+* ``ArmBackend`` — talks to the arm: joint positions + gripper in, camera
   frame + joint state out. ``mock`` is deterministic and dependency-free (CI);
   ``ros2`` / ``hiwonder`` are thin adapters over the JetRover's ROS 2 graph or
   Hiwonder's on-board bus-servo SDK.
@@ -36,10 +36,14 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
-ARM_DOF = 6
-ACTION_DIM = ARM_DOF + 1  # 6 arm joints + 1 gripper — the JetRover arm's action space
+# Hiwonder markets the JetRover arm as "6DOF" *counting the gripper*: per the
+# vendor docs (Robot Arm Control Course), servo IDs 1-5 position the arm
+# (pan-tilt base + 3 body joints + wrist) and ID 10 is the gripper — a 5-joint
+# kinematic chain + 1 gripper, i.e. 6-dim actions. If your unit (or dataset)
+# differs, override with --arm_dof; every backend adapts.
+DEFAULT_ARM_DOF = 5
 
 # GR00T-server observation keys; must match the modality config the checkpoint
 # was finetuned with (jetrover_modality_config.py in this directory).
@@ -49,7 +53,11 @@ LANGUAGE_KEY = "annotation.human.task_description"
 
 # --------------------------------------------------------------------------- arms
 class ArmBackend:
-    """Minimal arm interface: observations out, 7-float actions in."""
+    """Minimal arm interface: observations out, (arm_dof + 1)-float actions in."""
+
+    def __init__(self, arm_dof: int) -> None:
+        self.arm_dof = arm_dof
+        self.action_dim = arm_dof + 1  # joints + gripper
 
     def connect(self) -> None:
         raise NotImplementedError
@@ -59,11 +67,11 @@ class ArmBackend:
         raise NotImplementedError
 
     def get_observation(self) -> dict[str, Any]:
-        """Return ``{"joints": [6 floats], "gripper": float, "image": ndarray|None}``."""
+        """Return ``{"joints": [arm_dof floats], "gripper": float, "image": ndarray|None}``."""
         raise NotImplementedError
 
     def send_action(self, action: list[float]) -> None:
-        """Execute one action step: 6 joint positions (rad) + gripper command."""
+        """Execute one action step: ``arm_dof`` joint positions (rad) + gripper command."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -73,8 +81,9 @@ class ArmBackend:
 class MockArm(ArmBackend):
     """Deterministic, dependency-free arm for CI and dry runs."""
 
-    def __init__(self) -> None:
-        self.joints = [0.0] * ARM_DOF
+    def __init__(self, arm_dof: int) -> None:
+        super().__init__(arm_dof)
+        self.joints = [0.0] * arm_dof
         self.gripper = 0.0
         self.actions_received: list[list[float]] = []
 
@@ -82,7 +91,7 @@ class MockArm(ArmBackend):
         pass
 
     def reset(self) -> None:
-        self.joints = [0.0] * ARM_DOF
+        self.joints = [0.0] * self.arm_dof
         self.gripper = 0.0
 
     def get_observation(self) -> dict[str, Any]:
@@ -90,8 +99,8 @@ class MockArm(ArmBackend):
 
     def send_action(self, action: list[float]) -> None:
         self.actions_received.append(list(action))
-        self.joints = list(action[:ARM_DOF])
-        self.gripper = float(action[ARM_DOF])
+        self.joints = list(action[: self.arm_dof])
+        self.gripper = float(action[self.arm_dof])
 
     def close(self) -> None:
         pass
@@ -107,10 +116,11 @@ class Ros2Arm(ArmBackend):
     JOINT_STATE_TOPIC = "/joint_states"
     ARM_COMMAND_TOPIC = "/servo_controller"
     CAMERA_TOPIC = "/depth_cam/rgb/image_raw"
-    ARM_JOINT_NAMES: ClassVar[list[str]] = [f"joint{i}" for i in range(1, ARM_DOF + 1)]
     GRIPPER_JOINT_NAME = "r_joint"
 
-    def __init__(self) -> None:
+    def __init__(self, arm_dof: int) -> None:
+        super().__init__(arm_dof)
+        self.arm_joint_names = [f"joint{i}" for i in range(1, arm_dof + 1)]
         self._node: Any = None
         self._last_joint_state: Any = None
         self._last_image: Any = None
@@ -142,7 +152,7 @@ class Ros2Arm(ArmBackend):
         self._rclpy.spin_once(self._node, timeout_sec=seconds)
 
     def reset(self) -> None:
-        self.send_action([0.0] * ARM_DOF + [0.0])
+        self.send_action([0.0] * self.action_dim)
         time.sleep(2.0)  # give the servos time to reach home before the episode
 
     def get_observation(self) -> dict[str, Any]:
@@ -159,7 +169,7 @@ class Ros2Arm(ArmBackend):
         name_to_pos = dict(
             zip(self._last_joint_state.name, self._last_joint_state.position, strict=False)
         )
-        joints = [float(name_to_pos.get(n, 0.0)) for n in self.ARM_JOINT_NAMES]
+        joints = [float(name_to_pos.get(n, 0.0)) for n in self.arm_joint_names]
         gripper = float(name_to_pos.get(self.GRIPPER_JOINT_NAME, 0.0))
 
         image = None
@@ -172,9 +182,9 @@ class Ros2Arm(ArmBackend):
 
     def send_action(self, action: list[float]) -> None:
         traj = self._JointTrajectory()
-        traj.joint_names = [*self.ARM_JOINT_NAMES, self.GRIPPER_JOINT_NAME]
+        traj.joint_names = [*self.arm_joint_names, self.GRIPPER_JOINT_NAME]
         point = self._JointTrajectoryPoint()
-        point.positions = [float(v) for v in action[:ACTION_DIM]]
+        point.positions = [float(v) for v in action[: self.action_dim]]
         traj.points = [point]
         self._pub.publish(traj)
         self._spin(0.0)
@@ -189,20 +199,22 @@ class HiwonderArm(ArmBackend):
     """Direct bus-servo adapter via Hiwonder's on-board controller SDK.
 
     Uses the ``ros_robot_controller_sdk`` module that ships on JetRover images
-    (the same board API the vendor demos use). Servo IDs, direction signs and
-    the rad→pulse mapping below are the vendor defaults — verify against your
-    unit before running with the workspace occupied.
+    (the same board API the vendor demos use). Servo IDs follow the vendor docs
+    (arm = IDs 1..arm_dof, gripper = ID 10); direction signs and the rad→pulse
+    mapping are the vendor defaults — verify against your unit before running
+    with the workspace occupied.
     """
 
-    ARM_SERVO_IDS: ClassVar[list[int]] = [1, 2, 3, 4, 5, 6]
     GRIPPER_SERVO_ID = 10
     PULSE_CENTER = 500
     PULSE_PER_RAD = 500 / 2.094  # Hiwonder bus servos: 0..1000 pulses over ±120°
     MOVE_SECONDS = 0.2
 
-    def __init__(self) -> None:
+    def __init__(self, arm_dof: int) -> None:
+        super().__init__(arm_dof)
+        self.arm_servo_ids = list(range(1, arm_dof + 1))
         self._board: Any = None
-        self._last_command = [0.0] * ACTION_DIM
+        self._last_command = [0.0] * self.action_dim
 
     def connect(self) -> None:
         from ros_robot_controller_sdk import Board  # type: ignore[import-not-found]
@@ -214,27 +226,31 @@ class HiwonderArm(ArmBackend):
         return int(min(1000, max(0, round(pulse))))
 
     def reset(self) -> None:
-        self.send_action([0.0] * ARM_DOF + [0.0])
+        self.send_action([0.0] * self.action_dim)
         time.sleep(2.0)
 
     def get_observation(self) -> dict[str, Any]:
         # The bus-servo protocol reports positions on request; camera access goes
         # through ROS/OpenCV and is out of scope for this backend (state-only).
         positions = []
-        for servo_id in self.ARM_SERVO_IDS:
+        for servo_id in self.arm_servo_ids:
             reading = self._board.bus_servo_read_position(servo_id)
             pulse = reading[0] if isinstance(reading, (list, tuple)) else reading
             positions.append((float(pulse) - self.PULSE_CENTER) / self.PULSE_PER_RAD)
-        return {"joints": positions, "gripper": self._last_command[ARM_DOF], "image": None}
+        return {
+            "joints": positions,
+            "gripper": self._last_command[self.arm_dof],
+            "image": None,
+        }
 
     def send_action(self, action: list[float]) -> None:
         targets = [
             [servo_id, self._to_pulse(action[i])]
-            for i, servo_id in enumerate(self.ARM_SERVO_IDS)
+            for i, servo_id in enumerate(self.arm_servo_ids)
         ]
-        targets.append([self.GRIPPER_SERVO_ID, self._to_pulse(action[ARM_DOF])])
+        targets.append([self.GRIPPER_SERVO_ID, self._to_pulse(action[self.arm_dof])])
         self._board.bus_servo_set_position(self.MOVE_SECONDS, targets)
-        self._last_command = list(action[:ACTION_DIM])
+        self._last_command = list(action[: self.action_dim])
 
     def close(self) -> None:
         self._board = None
@@ -243,7 +259,7 @@ class HiwonderArm(ArmBackend):
 # ------------------------------------------------------------------------ policies
 class PolicyClient:
     def get_action(self, obs: dict[str, Any], task_description: str) -> list[list[float]]:
-        """Return a chunk of action steps, each ``[j1..j6, gripper]``."""
+        """Return a chunk of action steps, each ``[j1..j<arm_dof>, gripper]``."""
         raise NotImplementedError
 
     def close(self) -> None:
@@ -269,18 +285,19 @@ class ZmqGrootPolicy(PolicyClient):
 
     Wire format mirrors ``gr00t.eval.run_gr00t_server``'s client (see
     ``scripts/test_init_noise_determinism.py`` for the same pattern): a nested
-    B=1,T=1 observation with ``state.single_arm`` (6) + ``state.gripper`` (1),
-    matching jetrover_modality_config.py.
+    B=1,T=1 observation with ``state.single_arm`` (arm_dof) + ``state.gripper``
+    (1), matching jetrover_modality_config.py.
     """
 
     IMAGE_SIZE = 256
 
-    def __init__(self, host: str, port: int, timeout_ms: int = 180_000) -> None:
+    def __init__(self, host: str, port: int, arm_dof: int, timeout_ms: int = 180_000) -> None:
         import msgpack
         import msgpack_numpy as mnp
         import numpy as np
         import zmq
 
+        self._arm_dof = arm_dof
         self._msgpack, self._mnp, self._np = msgpack, mnp, np
         self._ctx = zmq.Context.instance()
         self._sock = self._ctx.socket(zmq.REQ)
@@ -306,7 +323,7 @@ class ZmqGrootPolicy(PolicyClient):
         if image is None:
             image = np.zeros((self.IMAGE_SIZE, self.IMAGE_SIZE, 3), dtype=np.uint8)
         image = np.asarray(image, dtype=np.uint8)[None, None]  # (1, 1, H, W, 3)
-        joints = np.asarray(obs["joints"], dtype=np.float32).reshape(1, 1, ARM_DOF)
+        joints = np.asarray(obs["joints"], dtype=np.float32).reshape(1, 1, self._arm_dof)
         gripper = np.asarray([obs["gripper"]], dtype=np.float32).reshape(1, 1, 1)
         return {
             "video": {VIDEO_KEY: image},
@@ -321,7 +338,7 @@ class ZmqGrootPolicy(PolicyClient):
             {"observation": self._build_obs(obs, task_description), "options": None},
         )
         action = resp[0] if isinstance(resp, (list, tuple)) else resp
-        arm = np.asarray(action["single_arm"], dtype=np.float32).reshape(-1, ARM_DOF)
+        arm = np.asarray(action["single_arm"], dtype=np.float32).reshape(-1, self._arm_dof)
         grip = np.asarray(action["gripper"], dtype=np.float32).reshape(-1, 1)
         steps = min(len(arm), len(grip))
         return [
@@ -329,7 +346,7 @@ class ZmqGrootPolicy(PolicyClient):
         ]
 
 
-ARM_BACKENDS: dict[str, Callable[[], ArmBackend]] = {
+ARM_BACKENDS: dict[str, Callable[[int], ArmBackend]] = {
     "mock": MockArm,
     "ros2": Ros2Arm,
     "hiwonder": HiwonderArm,
@@ -369,11 +386,12 @@ def prompt_operator(
 # ----------------------------------------------------------------------------- loop
 def clamp_action(action: list[float], current: list[float], max_delta: float) -> list[float]:
     """Rate-limit joint targets to ``max_delta`` rad/step; gripper passes through."""
+    arm_dof = len(action) - 1
     clamped = []
-    for i in range(ARM_DOF):
+    for i in range(arm_dof):
         delta = max(-max_delta, min(max_delta, action[i] - current[i]))
         clamped.append(current[i] + delta)
-    clamped.append(action[ARM_DOF])
+    clamped.append(action[arm_dof])
     return clamped
 
 
@@ -397,10 +415,12 @@ def run_episode(
             raise RuntimeError("Policy returned an empty action chunk")
         current = [*obs["joints"], obs["gripper"]]
         for action in chunk[:action_horizon]:
-            if len(action) != ACTION_DIM:
+            if len(action) != arm.action_dim:
                 raise RuntimeError(
-                    f"Expected {ACTION_DIM}-dim action (6 joints + gripper), "
-                    f"got {len(action)} — check the served checkpoint's modality config"
+                    f"Expected {arm.action_dim}-dim action ({arm.arm_dof} joints "
+                    "+ gripper), got "
+                    f"{len(action)} — check the served checkpoint's modality "
+                    "config and --arm_dof"
                 )
             safe = clamp_action(action, current, max_joint_delta)
             arm.send_action(safe)
@@ -416,7 +436,7 @@ def run_episode(
 def make_policy(args: argparse.Namespace) -> PolicyClient:
     if args.policy_backend == "mock":
         return MockPolicy()
-    return ZmqGrootPolicy(args.policy_host, args.policy_port)
+    return ZmqGrootPolicy(args.policy_host, args.policy_port, args.arm_dof)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -431,6 +451,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--policy_backend", choices=["mock", "zmq"], default="zmq")
     ap.add_argument("--policy_host", default="127.0.0.1")
     ap.add_argument("--policy_port", type=int, default=5555)
+    ap.add_argument("--arm_dof", type=int, default=DEFAULT_ARM_DOF,
+                    help="Positional arm joints, gripper excluded. JetRover: 5 "
+                         "(Hiwonder's '6DOF' marketing counts the gripper)")
     ap.add_argument("--num_episodes", type=int, default=10)
     ap.add_argument("--max_steps", type=int, default=300)
     ap.add_argument("--action_horizon", type=int, default=8,
@@ -452,7 +475,7 @@ def main(
     input_fn: Callable[[str], str] = input,
 ) -> int:
     args = parse_args(argv)
-    arm = ARM_BACKENDS[args.arm_backend]()
+    arm = ARM_BACKENDS[args.arm_backend](args.arm_dof)
     policy = make_policy(args)
     step_delay = 0.0 if args.arm_backend == "mock" else 1.0 / args.control_hz
 
@@ -495,6 +518,7 @@ def main(
             ),
             "arm_backend": args.arm_backend,
             "policy_backend": args.policy_backend,
+            "arm_dof": args.arm_dof,
             "checkpoint": args.checkpoint,
         },
     }

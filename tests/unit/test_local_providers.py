@@ -54,7 +54,7 @@ async def test_robot_resolves_ur10e_embodiment() -> None:
 
 
 async def test_robot_resolves_jetrover_embodiment() -> None:
-    # jetrover (Hiwonder JetRover 6DoF arm) is a GR00T NEW_EMBODIMENT arm
+    # jetrover (the Hiwonder JetRover arm, 5 joints + gripper) is a GR00T NEW_EMBODIMENT arm
     # evaluated on real hardware via `evaluation_type: custom`; it must resolve
     # through the local provider so a `robot.embodiment: jetrover` spec validates.
     provider = LocalRobotProvider()

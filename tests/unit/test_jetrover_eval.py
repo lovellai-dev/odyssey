@@ -63,7 +63,10 @@ def test_module_imports_with_stdlib_only(jetrover: Any) -> None:
     # Loading the module must not pull in the heavy backend deps — they are
     # imported lazily inside connect()/__init__ of the real backends.
     assert callable(jetrover.main)
-    assert jetrover.ACTION_DIM == 7  # 6 joints + gripper
+    # Vendor docs: servos 1-5 position the arm, ID 10 is the gripper — the
+    # marketed "6DOF" counts the gripper, so the default arm chain is 5.
+    assert jetrover.DEFAULT_ARM_DOF == 5
+    assert jetrover.MockArm(5).action_dim == 6  # 5 joints + gripper
 
 
 def test_parse_args_accepts_runner_contract_flags(jetrover: Any) -> None:
@@ -77,6 +80,7 @@ def test_parse_args_accepts_runner_contract_flags(jetrover: Any) -> None:
             "--policy_backend", "mock",
             "--policy_host", "10.0.0.2",
             "--policy_port", "5561",
+            "--arm_dof", "5",
             "--num_episodes", "3",
             "--max_steps", "50",
             "--task_description", "pick up the vial",
@@ -87,6 +91,7 @@ def test_parse_args_accepts_runner_contract_flags(jetrover: Any) -> None:
     assert args.checkpoint == "/ckpt"
     assert args.out_json == "/tmp/m.json"
     assert args.policy_port == 5561
+    assert args.arm_dof == 5
     assert args.task_description == "pick up the vial"
 
 
@@ -174,13 +179,14 @@ def test_auto_timeout_scores_failure(jetrover: Any, tmp_path: Path) -> None:
 
 
 def test_clamp_action_rate_limits_joints(jetrover: Any) -> None:
-    current = [0.0] * 7
-    action = [1.0, -1.0, 0.05, 0.0, 0.0, 0.0, 0.8]
+    # 5 joints + gripper (the JetRover default)
+    current = [0.0] * 6
+    action = [1.0, -1.0, 0.05, 0.0, 0.0, 0.8]
     clamped = jetrover.clamp_action(action, current, max_delta=0.1)
     assert clamped[0] == pytest.approx(0.1)    # capped upward
     assert clamped[1] == pytest.approx(-0.1)   # capped downward
     assert clamped[2] == pytest.approx(0.05)   # within limit: untouched
-    assert clamped[6] == pytest.approx(0.8)    # gripper passes through
+    assert clamped[5] == pytest.approx(0.8)    # gripper passes through
 
 
 # ---------------------------------------------------------------------------

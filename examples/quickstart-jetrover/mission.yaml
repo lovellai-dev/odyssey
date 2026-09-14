@@ -1,7 +1,7 @@
-# JetRover quickstart mission — real-hardware 6DoF arm.
+# JetRover quickstart mission — real-hardware arm (marketed "6DOF": 5 joints + gripper).
 #
 # Fine-tunes GR00T N1.7 (3B) as a NEW_EMBODIMENT on a LeRobot-format
-# teleoperation dataset captured on the Hiwonder JetRover's 6DoF arm, then
+# teleoperation dataset captured on the Hiwonder JetRover's arm, then
 # evaluates the resulting policy ON THE REAL ARM via `evaluation_type: custom`
 # (the built-in Robosuite/LIBERO/Isaac evals are sim-only and ship no JetRover
 # model). See README.md in this directory for the end-to-end recipe.
@@ -16,13 +16,14 @@ kind: Mission
 metadata:
   name: jetrover-arm-pick
   description: >-
-    GR00T N1.7 NEW_EMBODIMENT fine-tune on JetRover 6DoF-arm LeRobot demos,
-    evaluated closed-loop on the real arm with operator scoring.
+    GR00T N1.7 NEW_EMBODIMENT fine-tune on JetRover arm LeRobot demos
+    (5 joints + gripper), evaluated closed-loop on the real arm with
+    operator scoring.
   tags: [quickstart, jetrover, hiwonder, gr00t, lerobot, real-hardware]
 
 objective: |
   Fine-tune the GR00T N1.7 3B foundation model on ~50 teleoperated
-  pick-and-place demonstrations recorded on the JetRover's 6DoF arm, so the
+  pick-and-place demonstrations recorded on the JetRover's arm, so the
   policy can pick up the target object on the physical robot.
 
 acceptance_criteria: |
@@ -49,7 +50,9 @@ tasks:
       source: local
       # ABSOLUTE path to the captured dataset ON THE TRAINING BOX (GPU VM).
       # LeRobot v2 layout + meta/modality.json with the jetrover keys
-      # (state/action.single_arm 6-D + .gripper 1-D, video.front) — see README.
+      # (state/action.single_arm 5-D + .gripper 1-D, video.front) — see README.
+      # NOTE: Hiwonder's "6DOF" marketing counts the gripper; the arm chain is
+      # 5 positional joints (servo IDs 1-5) + gripper (ID 10).
       ref: /data/jetrover_pick_v0/jetrover_pick
       format: lerobot
     config:
@@ -85,6 +88,7 @@ tasks:
       policy_host: 192.168.1.100 # the GPU box serving the checkpoint
       policy_port: 5555
       task_description: "pick up the object"
+      arm_dof: 5                 # positional joints, gripper excluded (see README)
       scorer: operator           # y/n prompt per episode; `none` = metric-only
       max_steps: 300
       control_hz: 5

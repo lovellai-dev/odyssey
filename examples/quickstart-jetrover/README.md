@@ -1,8 +1,17 @@
-# JetRover quickstart — GR00T on the Hiwonder 6DoF arm (real hardware)
+# JetRover quickstart — GR00T on the Hiwonder arm (real hardware)
 
 Fine-tune GR00T N1.7 as a `NEW_EMBODIMENT` on teleop demos captured on the
-[Hiwonder JetRover](https://www.hiwonder.com/products/jetrover)'s 6DoF arm, then
-evaluate closed-loop **on the physical arm**. The built-in eval runners
+[Hiwonder JetRover](https://www.hiwonder.com/products/jetrover)'s arm, then
+evaluate closed-loop **on the physical arm**.
+
+> **DoF note:** Hiwonder markets the arm as "6DOF" *counting the gripper*. Per
+> the [vendor docs](https://docs.hiwonder.com/projects/JetRover/en/jetson-orin-nano/docs/7.Robot_Arm_Control_Course.html),
+> servo IDs 1–5 position the arm (pan-tilt base + 3 body joints + wrist) and
+> ID 10 is the gripper — a **5-joint kinematic chain + 1 gripper**, i.e. 6-dim
+> actions. Everything in this example uses 5 + 1; if your unit differs, adjust
+> the modality config, the dataset, and the eval script's `--arm_dof` together.
+
+The built-in eval runners
 (Robosuite / LIBERO / Isaac Lab) are sim-only and ship no JetRover model, so the
 eval task uses `evaluation_type: custom` with the `eval_jetrover.py` script in
 this directory.
@@ -16,7 +25,7 @@ possible later phase).
 | File | Purpose |
 | --- | --- |
 | `mission.yaml` | Training (GR00T NEW_EMBODIMENT, LeRobot dataset) + real-arm custom eval |
-| `jetrover_modality_config.py` | GR00T modality config (6-D arm + 1-D gripper, front camera) — copy into your Isaac-GR00T checkout |
+| `jetrover_modality_config.py` | GR00T modality config (5-D arm + 1-D gripper, front camera) — copy into your Isaac-GR00T checkout |
 | `eval_jetrover.py` | The custom eval script: GR00T policy server client + arm backends (`mock`/`ros2`/`hiwonder`) + operator scoring |
 
 Validate everything without a GPU or the robot:
@@ -34,9 +43,9 @@ object") into a LeRobot v2 dataset with, per frame:
 
 | Key | Shape | Meaning |
 | --- | --- | --- |
-| `state.single_arm` | (6,) | arm joint positions, rad |
-| `state.gripper` | (1,) | gripper position |
-| `action.single_arm` | (6,) | target joint positions, rad |
+| `state.single_arm` | (5,) | arm joint positions, rad (servos 1–5) |
+| `state.gripper` | (1,) | gripper position (servo 10) |
+| `action.single_arm` | (5,) | target joint positions, rad |
 | `action.gripper` | (1,) | target gripper position |
 | `video.front` | HxWx3 | the depth cam's RGB stream |
 | `annotation.human.task_description` | str | the language instruction |
