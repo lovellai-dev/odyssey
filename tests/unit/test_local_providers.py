@@ -53,6 +53,19 @@ async def test_robot_resolves_ur10e_embodiment() -> None:
     assert resolved.name == "ur10e"
 
 
+async def test_robot_resolves_jetrover_embodiment() -> None:
+    # jetrover (Hiwonder JetRover 6DoF arm) is a GR00T NEW_EMBODIMENT arm
+    # evaluated on real hardware via `evaluation_type: custom`; it must resolve
+    # through the local provider so a `robot.embodiment: jetrover` spec validates.
+    provider = LocalRobotProvider()
+    resolved = await provider.resolve(
+        RobotSpec(embodiment="jetrover", agents=_agents())
+    )
+    assert resolved.provider == "local"
+    assert resolved.embodiment == "jetrover"
+    assert resolved.name == "jetrover"
+
+
 async def test_ur10e_resolves_then_robosuite_refuses_it() -> None:
     # Pins the behaviour change this PR introduces: on develop, `ur10e` was
     # rejected at spec/catalog validation; now it resolves cleanly and only a
@@ -64,6 +77,20 @@ async def test_ur10e_resolves_then_robosuite_refuses_it() -> None:
     spec = RobotSpec(embodiment="ur10e", agents=_agents())
     resolved = await LocalRobotProvider().resolve(spec)
     assert resolved.embodiment == "ur10e"
+    with pytest.raises(ValueError, match="Robosuite has no built-in robot"):
+        _resolve_robosuite_robot(spec)
+
+
+async def test_jetrover_resolves_then_robosuite_refuses_it() -> None:
+    # Same contract as ur10e: jetrover resolves through the catalog, but a
+    # Robosuite eval task refuses it loudly (ValueError) instead of silently
+    # substituting the default Panda. Its eval path is `evaluation_type: custom`
+    # against the real arm.
+    from odyssey.runners.evals.robosuite import _resolve_robosuite_robot
+
+    spec = RobotSpec(embodiment="jetrover", agents=_agents())
+    resolved = await LocalRobotProvider().resolve(spec)
+    assert resolved.embodiment == "jetrover"
     with pytest.raises(ValueError, match="Robosuite has no built-in robot"):
         _resolve_robosuite_robot(spec)
 
@@ -107,8 +134,9 @@ def test_known_embodiments_covers_robosuite_robots() -> None:
 
     assert set(ROBOSUITE_ROBOT_NAMES.keys()) <= KNOWN_EMBODIMENTS
     # ...and the only names beyond Robosuite are GR00T NEW_EMBODIMENT arms
-    # (driven by the `gr00t` runner, never Robosuite) — today just ur10e.
-    assert KNOWN_EMBODIMENTS - set(ROBOSUITE_ROBOT_NAMES.keys()) == {"ur10e"}
+    # (driven by the `gr00t` runner, never Robosuite) — today ur10e and
+    # jetrover (the latter evals on real hardware via `evaluation_type: custom`).
+    assert KNOWN_EMBODIMENTS - set(ROBOSUITE_ROBOT_NAMES.keys()) == {"ur10e", "jetrover"}
     # franka_panda is the alias most OpenVLA / LeRobot specs use.
     assert "franka_panda" in KNOWN_EMBODIMENTS
     # Quadrupeds and mobile bases were intentionally trimmed — no
