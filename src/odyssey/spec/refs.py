@@ -7,7 +7,7 @@ ref — chaining is implicit through the per-agent checkpoint walk
 performed by ``MissionRun.latest_checkpoint_for``.
 
 ``DatasetRef`` carries a source enum + opaque ref string the provider
-interprets. Optional split / format / partial-episodes fields.
+interprets. Optional revision / split / format / partial-episodes fields.
 """
 
 from __future__ import annotations
@@ -71,6 +71,13 @@ class DatasetFormat(str, Enum):
 class DatasetRef(SpecModel):
     source: DatasetSource
     ref: str
+    # The exact dataset version to train or evaluate on: a commit sha for a
+    # hub dataset (a branch or tag is accepted, but only a sha is a pin).
+    # A repo moves when someone pushes a fix; without a revision, "trained
+    # on org/name" names whatever HEAD was that day and cannot be audited.
+    # For a local copy it records which version was downloaded and is
+    # verified when the copy carries Hub download metadata.
+    revision: str | None = None
     split: str | None = None
     format: DatasetFormat | None = None
     partial: int | None = Field(default=None, ge=1)
