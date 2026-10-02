@@ -75,8 +75,9 @@ class DatasetRef(SpecModel):
     # hub dataset (a branch or tag is accepted, but only a sha is a pin).
     # A repo moves when someone pushes a fix; without a revision, "trained
     # on org/name" names whatever HEAD was that day and cannot be audited.
-    # For a local copy it records which version was downloaded and is
-    # verified when the copy carries Hub download metadata.
+    # For a local copy, a commit sha is verified file by file against the
+    # Hub download metadata of the directory training loads; a sha that
+    # can't be verified fails the task. A branch or tag is only recorded.
     revision: str | None = None
     split: str | None = None
     format: DatasetFormat | None = None

@@ -62,17 +62,19 @@ from odyssey.runners.base import (
     Runner,
     TaskContext,
 )
+from odyssey.runners.dataset_revision import (
+    DatasetRevisionError,
+    check_local_dataset_revision,
+    pins_commit,
+)
 from odyssey.runners.models.openpi_dataset import (
     OpenpiProbeError,
+    OpenpiTrainingConfig,
     check_declared_dataset,
     probe_openpi_training_config,
 )
 
 # Shared flatten helper (dotted keys for nested dicts).
-from odyssey.runners.dataset_revision import (
-    DatasetRevisionError,
-    check_local_dataset_revision,
-)
 from odyssey.runners.models.openvla_train import _flatten_config
 from odyssey.runners.policy_timing import (
     PolicyTimingError,
@@ -192,12 +194,21 @@ def _tyro_overrides(config: dict[str, Any]) -> list[str]:
     return argv
 
 
+def _pins_local_commit(task: TrainingTask) -> bool:
+    """True when the task's local dataset pins a commit sha to verify."""
+    return (
+        task.dataset is not None
+        and task.dataset.source == DatasetSource.LOCAL
+        and pins_commit(task.dataset)
+    )
+
+
 async def check_pi05_policy_timing(
     task: TrainingTask,
     env: dict[str, str],
     exp_name: str,
     cancel_event: asyncio.Event | None = None,
-) -> None:
+) -> OpenpiTrainingConfig | None:
     """Pre-flight: declared control_hz / action_horizon must match reality.
 
     Runs before norm stats and training, so a mismatch costs seconds, not a
@@ -207,28 +218,43 @@ async def check_pi05_policy_timing(
     loads (``HF_LEROBOT_HOME / data.repo_id``), and that dataset must be the
     declared one. Returns early, unchecked, when ``cancel_event`` trips during
     the probe; the caller checks ``context.cancelled()`` right after.
+
+    The same probe serves a pinned dataset revision: when the local dataset
+    pins a commit sha, the config is probed (even with no timing declared),
+    the declared dataset must be the loaded one, and the probed config is
+    returned so the caller verifies the revision against the directory
+    training loads. None when nothing needed the probe, or on cancellation.
     """
-    if task.control_hz is None and task.action_horizon is None:
-        return
+    pinned = _pins_local_commit(task)
+    if task.control_hz is None and task.action_horizon is None and not pinned:
+        return None
     config = task.config or {}
     config_name = str(config.get("config_name") or "")
     if not config_name:
-        return  # the argv builders raise the actionable "config_name required"
+        if pinned:  # the revision check runs before the argv builders would raise
+            raise RuntimeError(
+                "π0.5 runner: config['config_name'] is required to resolve the "
+                "dataset training loads, and so to verify its pinned revision."
+            )
+        return None  # the argv builders raise the actionable "config_name required"
     try:
         effective = await probe_openpi_training_config(
             config_name, exp_name, _tyro_overrides(config), env, cancel_event
         )
     except OpenpiProbeError as e:
-        # Timing was declared, so running unverified would defeat the check.
+        # A declared value can't be verified, so running would defeat the check.
+        if task.control_hz is None and task.action_horizon is None:
+            raise DatasetRevisionError(f"task {task.name!r}: {e}") from e
         raise PolicyTimingError(f"task {task.name!r}: {e}") from e
     if effective is None:
-        return  # cancelled mid-probe
-    if task.control_hz is not None:
+        return None  # cancelled mid-probe
+    if task.control_hz is not None or pinned:
         check_declared_dataset(task, effective)
     check_control_hz(task, effective.dataset_dir)
     check_action_horizon(
         task, effective.action_horizon, f"openpi config {config_name!r} with overrides"
     )
+    return effective
 
 
 def build_pi05_train_argv(*, task: TrainingTask, exp_name: str) -> list[str]:
@@ -373,7 +399,7 @@ def _norm_stats_cache_root(config_name: str, revision: str | None) -> Path:
     """Stable cache dir for one config, partitioned by dataset revision.
 
     openpi's own layout below it (``<config_name>/<repo_id>/norm_stats.json``)
-    is unchanged. With a pinned revision the root is per revision, so a new
+    is unchanged. With a verified revision the root is per revision, so a new
     version of a dataset under the SAME repo_id misses the cache and its
     statistics are recomputed instead of reusing the previous version's.
     """
@@ -404,8 +430,8 @@ def _link_norm_stats_cache(
     ``repo_id`` (config default, unknown here) recomputes rather than risk a wrong
     hit.
 
-    The cache is also keyed by ``revision`` when the dataset pins one (see
-    ``_norm_stats_cache_root``). Without a revision two versions of a dataset
+    The cache is also keyed by ``revision`` when the dataset's pinned commit
+    was verified on disk (see ``_norm_stats_cache_root``). Without a revision two versions of a dataset
     published under one repo_id are indistinguishable and share a cache entry.
 
     Returns ``(cache_dir, already_has_norm_stats)``; ``(None, False)`` when there
@@ -465,12 +491,15 @@ class Pi05Runner(Runner):
 
         # Step 0: the declared timing contract must match the data and the
         # openpi config before anything heavy starts.
-        await check_pi05_policy_timing(spec, child_env, exp_name, context.cancel_event)
+        effective = await check_pi05_policy_timing(
+            spec, child_env, exp_name, context.cancel_event
+        )
         if context.cancelled():
             logger.info("π0.5 task %s cancelled during the timing pre-flight", context.task.id)
             return {"cancelled": True}
 
-        # The pinned dataset revision must be the data training will read.
+        # The pinned dataset revision must be the data training will read: it is
+        # verified, file by file, in the directory the pre-flight probe resolved.
         revision = spec.dataset.revision if spec.dataset is not None else None
         if (
             revision is not None
@@ -483,19 +512,22 @@ class Pi05Runner(Runner):
                 "revision. Download that revision (hf download <repo> --repo-type "
                 "dataset --revision <sha> --local-dir <dir>) and use source: local."
             )
-        check_local_dataset_revision(spec.name, spec.dataset)
+        revision_verified = check_local_dataset_revision(
+            spec.name, spec.dataset, effective.dataset_dir if effective else None
+        )
 
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The
         # hit is keyed on the exact dataset (config_name + repo_id) and, when the
-        # dataset pins one, its revision. Without a revision a dataset recaptured
+        # dataset's pinned commit was VERIFIED on disk, that revision (a branch or
+        # tag moves, so it never keys the cache). Otherwise a dataset recaptured
         # under the SAME repo_id would silently reuse stale stats: pin the
         # revision, or set ``config: {norm_stats_cache: false}`` to force a fresh
         # recompute into the per-run dir (no shared cache).
         if config.get("norm_stats_cache", True):
             repo_id = _dataset_repo_id(spec)
             assets_cache, norm_cached = _link_norm_stats_cache(
-                output_dir, config_name, repo_id, revision
+                output_dir, config_name, repo_id, revision if revision_verified else None
             )
         else:
             logger.warning(
@@ -572,6 +604,7 @@ class Pi05Runner(Runner):
             "training_config": spec.config,
             **declared_timing(spec),
             "dataset_revision": revision,
+            "dataset_revision_verified": revision_verified,
             "training_type": (
                 spec.training_type.value
                 if isinstance(spec.training_type, TrainingType)

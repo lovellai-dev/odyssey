@@ -87,11 +87,13 @@ The runner executes, in order:
 
 > Norm stats are cached across runs at `~/.odyssey/pi05_assets/<config_name>/<config_name>/<repo_id>/`
 > and step 1 is skipped on a hit. The hit is keyed on `config_name` + `repo_id`
-> and, when the task's `dataset` pins a `revision`, on that revision too (the cache
-> root becomes `<config_name>@<revision>`). A new version of a dataset under the same
-> `repo_id` then misses the cache and its statistics are recomputed.
+> and, when the task's `dataset` pins a commit-sha `revision` that was verified on
+> disk (below), on that revision too (the cache root becomes
+> `<config_name>@<revision>`). A new version of a dataset under the same `repo_id`
+> then misses the cache and its statistics are recomputed. A branch or tag
+> (`revision: main`) moves, so it is recorded but never used as a cache key.
 >
-> **Without a pinned revision there is no content fingerprint**, so a dataset
+> **Without a verified revision there is no content fingerprint**, so a dataset
 > recaptured under an unchanged `repo_id` silently reuses stale statistics. Pin the
 > revision, or set `config: {norm_stats_cache: false}` to force a fresh recompute
 > into the per-run dir.
@@ -99,10 +101,18 @@ The runner executes, in order:
 > **Pinning the dataset revision.** `dataset: {source: local, ref: /data/my_dataset,
 > revision: <commit sha>}` records the exact version trained on. A copy made with
 > `hf download <repo> --repo-type dataset --revision <sha> --local-dir /data/my_dataset`
-> carries Hub download metadata, and the runner checks it: a different commit
-> fails the task before any GPU work. openpi loads a `source: huggingface` dataset
-> by `repo_id` and cannot be pinned, so a pinned hub dataset is refused; download
-> the revision and use `source: local`.
+> carries Hub download metadata for **every file**, and the runner checks all of
+> them in the directory training actually loads (the pre-flight resolves
+> `HF_LEROBOT_HOME / data.repo_id` with openpi and refuses a `dataset.ref` that
+> isn't it). Each file must come from the pinned commit and be unmodified since
+> download, the rule `huggingface_hub` itself uses. A file from another revision,
+> edited locally or added by hand, or a copy with no download metadata, fails the
+> task before any GPU work. The copy must also be complete: every file the LeRobot
+> manifest (`meta/info.json`, `meta/episodes.jsonl`) says training reads must be
+> there, so a partial `--include` download can't pass; move copies with `cp -p` / `rsync -a` so mtimes
+> survive. The result records `dataset_revision_verified`. openpi loads a
+> `source: huggingface` dataset by `repo_id` and cannot be pinned, so a pinned hub
+> dataset is refused; download the revision and use `source: local`.
 
 Both run with `cwd` = the task's `output_dir`, so openpi's cwd-relative `./assets`
 and `./checkpoints` land under the odyssey run dir. The trained checkpoint is
@@ -118,7 +128,7 @@ captured from `checkpoints/<config_name>/<exp_name>/<step>/` (highest step).
 | `overwrite`          | emit `--overwrite` (default `true`); clobbers the prior exp dir    |
 | `resume`             | emit `--resume` instead of `--overwrite`; continue latest ckpt    |
 | `compute_norm_stats` | run the norm-stats pre-step (default `true`)                       |
-| `norm_stats_cache`   | reuse cached norm stats across runs, keyed by `config_name`+`repo_id` (+ the dataset `revision` when pinned) (default `true`); set `false` to force a recompute when the dataset content changed under the same unpinned `repo_id` |
+| `norm_stats_cache`   | reuse cached norm stats across runs, keyed by `config_name`+`repo_id` (+ the dataset `revision` when pinned to a verified commit sha) (default `true`); set `false` to force a recompute when the dataset content changed under the same unpinned `repo_id` |
 | *anything else*      | forwarded as a tyro override (`a_b` → `--a-b`; nested `x: {y: 1}` → `--x.y 1`; bools → `--flag` / `--no-flag`) |
 
 ## Can I then evaluate on LIBERO?
