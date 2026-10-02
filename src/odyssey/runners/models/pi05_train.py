@@ -50,6 +50,7 @@ This runner contains no openpi code — it shells out to the user's own checkout
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -61,9 +62,20 @@ from odyssey.runners.base import (
     Runner,
     TaskContext,
 )
+from odyssey.runners.models.openpi_dataset import (
+    OpenpiProbeError,
+    check_declared_dataset,
+    probe_openpi_training_config,
+)
 
 # Shared flatten helper (dotted keys for nested dicts).
 from odyssey.runners.models.openvla_train import _flatten_config
+from odyssey.runners.policy_timing import (
+    PolicyTimingError,
+    check_action_horizon,
+    check_control_hz,
+    declared_timing,
+)
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,
@@ -174,6 +186,45 @@ def _tyro_overrides(config: dict[str, Any]) -> list[str]:
         else:
             argv += [flag, str(value)]
     return argv
+
+
+async def check_pi05_policy_timing(
+    task: TrainingTask,
+    env: dict[str, str],
+    exp_name: str,
+    cancel_event: asyncio.Event | None = None,
+) -> None:
+    """Pre-flight: declared control_hz / action_horizon must match reality.
+
+    Runs before norm stats and training, so a mismatch costs seconds, not a
+    GPU run. Both values are checked against the config ``train.py`` will
+    build — the registered openpi config WITH the mission's overrides — so
+    ``control_hz`` is compared with the fps of the dataset training actually
+    loads (``HF_LEROBOT_HOME / data.repo_id``), and that dataset must be the
+    declared one. Returns early, unchecked, when ``cancel_event`` trips during
+    the probe; the caller checks ``context.cancelled()`` right after.
+    """
+    if task.control_hz is None and task.action_horizon is None:
+        return
+    config = task.config or {}
+    config_name = str(config.get("config_name") or "")
+    if not config_name:
+        return  # the argv builders raise the actionable "config_name required"
+    try:
+        effective = await probe_openpi_training_config(
+            config_name, exp_name, _tyro_overrides(config), env, cancel_event
+        )
+    except OpenpiProbeError as e:
+        # Timing was declared, so running unverified would defeat the check.
+        raise PolicyTimingError(f"task {task.name!r}: {e}") from e
+    if effective is None:
+        return  # cancelled mid-probe
+    if task.control_hz is not None:
+        check_declared_dataset(task, effective)
+    check_control_hz(task, effective.dataset_dir)
+    check_action_horizon(
+        task, effective.action_horizon, f"openpi config {config_name!r} with overrides"
+    )
 
 
 def build_pi05_train_argv(*, task: TrainingTask, exp_name: str) -> list[str]:
@@ -390,6 +441,13 @@ class Pi05Runner(Runner):
         timeout = getattr(spec, "timeout_seconds", None)
         child_env = _lerobot_env_for_dataset(spec)
 
+        # Step 0: the declared timing contract must match the data and the
+        # openpi config before anything heavy starts.
+        await check_pi05_policy_timing(spec, child_env, exp_name, context.cancel_event)
+        if context.cancelled():
+            logger.info("π0.5 task %s cancelled during the timing pre-flight", context.task.id)
+            return {"cancelled": True}
+
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The
         # hit is keyed on the exact dataset (config_name + repo_id). Escape hatch:
@@ -475,6 +533,7 @@ class Pi05Runner(Runner):
             "exp_name": exp_name,
             "config_name": config.get("config_name"),
             "training_config": spec.config,
+            **declared_timing(spec),
             "training_type": (
                 spec.training_type.value
                 if isinstance(spec.training_type, TrainingType)

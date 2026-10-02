@@ -7,10 +7,10 @@ until the graph SDK lands.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from odyssey.spec._base import SpecModel
 
 
-class GraphSpec(BaseModel):
+class GraphSpec(SpecModel):
     contribute: bool = True
     contribute_instruction_prefix: bool = False
     notes: str | None = None
