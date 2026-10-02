@@ -55,6 +55,7 @@ import logging
 import os
 import re
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -206,11 +207,19 @@ _ACTION_HORIZON_PROBE = (
 _PROBE_TIMEOUT_S = 300.0
 
 
-async def probe_openpi_action_horizon(config_name: str, env: dict[str, str]) -> int:
+async def probe_openpi_action_horizon(
+    config_name: str,
+    env: dict[str, str],
+    cancel_event: asyncio.Event | None = None,
+) -> int | None:
     """The ``action_horizon`` of openpi's registered ``config_name``.
 
     Raises ``PolicyTimingError`` when it cannot be read: the task declared an
     action_horizon, so running without verifying it would defeat the check.
+    Returns None when ``cancel_event`` (the mission's cancellation) trips
+    first. The child is killed and reaped on EVERY interrupted path —
+    mission cancellation, timeout, or this coroutine being cancelled — so
+    no probe outlives the task.
     """
     child_env = {**os.environ, **env}
     child_env.pop("PYTHONPATH", None)
@@ -220,14 +229,33 @@ async def probe_openpi_action_horizon(config_name: str, env: dict[str, str]) -> 
         stderr=asyncio.subprocess.PIPE,
         env=child_env,
     )
+    communicate = asyncio.ensure_future(proc.communicate())
+    waiters: set[asyncio.Future[Any]] = {communicate}
+    if cancel_event is not None:
+        waiters.add(asyncio.ensure_future(cancel_event.wait()))
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT_S)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise PolicyTimingError(
-            f"could not read action_horizon of openpi config {config_name!r}: "
-            f"probe timed out after {_PROBE_TIMEOUT_S:.0f}s"
-        ) from None
+        done, _ = await asyncio.wait(
+            waiters, timeout=_PROBE_TIMEOUT_S, return_when=asyncio.FIRST_COMPLETED
+        )
+        if communicate not in done:
+            if done:  # the cancel_event waiter
+                return None
+            raise PolicyTimingError(
+                f"could not read action_horizon of openpi config {config_name!r}: "
+                f"probe timed out after {_PROBE_TIMEOUT_S:.0f}s"
+            )
+        out, err = communicate.result()
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+        if proc.returncode is None:
+            with suppress(ProcessLookupError):
+                proc.kill()
+            # Shield the reap so a cancellation arriving now can't abort it
+            # (the killed child still gets reaped), but let that
+            # CancelledError propagate: it is BaseException, not Exception.
+            with suppress(Exception):
+                await asyncio.shield(proc.wait())
     lines = out.decode().strip().splitlines()
     if proc.returncode != 0 or not lines or not lines[-1].strip().isdigit():
         tail = err.decode().strip().splitlines()[-3:]
@@ -238,12 +266,18 @@ async def probe_openpi_action_horizon(config_name: str, env: dict[str, str]) -> 
     return int(lines[-1].strip())
 
 
-async def check_pi05_policy_timing(task: TrainingTask, env: dict[str, str]) -> None:
+async def check_pi05_policy_timing(
+    task: TrainingTask,
+    env: dict[str, str],
+    cancel_event: asyncio.Event | None = None,
+) -> None:
     """Pre-flight: declared control_hz / action_horizon must match reality.
 
     Runs before norm stats and training, so a mismatch costs seconds, not a
     GPU run. The chunk length is the mission's ``model.action_horizon``
     override when present, otherwise the registered openpi config's value.
+    Returns early, unchecked, when ``cancel_event`` trips during the probe;
+    the caller checks ``context.cancelled()`` right after.
     """
     check_control_hz(task)
     if task.action_horizon is None:
@@ -256,7 +290,9 @@ async def check_pi05_policy_timing(task: TrainingTask, env: dict[str, str]) -> N
     config_name = str(config.get("config_name") or "")
     if not config_name:
         return  # the argv builders raise the actionable "config_name required"
-    effective = await probe_openpi_action_horizon(config_name, env)
+    effective = await probe_openpi_action_horizon(config_name, env, cancel_event)
+    if effective is None:
+        return  # cancelled mid-probe
     check_action_horizon(task, effective, f"openpi config {config_name!r}")
 
 
@@ -439,7 +475,10 @@ class Pi05Runner(Runner):
 
         # Step 0: the declared timing contract must match the data and the
         # openpi config before anything heavy starts.
-        await check_pi05_policy_timing(spec, child_env)
+        await check_pi05_policy_timing(spec, child_env, context.cancel_event)
+        if context.cancelled():
+            logger.info("π0.5 task %s cancelled during the timing pre-flight", context.task.id)
+            return {"cancelled": True}
 
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The

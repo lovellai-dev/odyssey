@@ -10,8 +10,9 @@ checkpoint. These helpers are framework-agnostic:
     GPU work when they disagree.
   * ``check_action_horizon`` compares the declared chunk length with the one
     the training framework will actually use (each runner resolves that).
-  * ``eval_timing_defaults`` hands the declared values to an evaluation, so
-    the eval runs the policy at the rate and chunk length it was trained for.
+  * ``eval_timing_defaults`` hands the values declared by the training task
+    that produced the evaluated checkpoint to the evaluation, so the eval
+    runs the policy at the rate and chunk length it was trained for.
 
 A runner that cannot read a value (a hub dataset not on disk, a framework it
 cannot introspect) skips that check with a log line; it never guesses.
@@ -25,7 +26,8 @@ import math
 import os
 from pathlib import Path
 
-from odyssey.spec.mission import Mission
+from odyssey.engine.lifecycle import TaskStatus
+from odyssey.engine.records import MissionRun
 from odyssey.spec.refs import DatasetRef, DatasetSource
 from odyssey.spec.tasks import TrainingTask
 
@@ -108,16 +110,28 @@ def declared_timing(task: TrainingTask) -> dict[str, float | int]:
     return out
 
 
-def eval_timing_defaults(mission: Mission, agent_id: str | None) -> dict[str, float | int]:
-    """Timing values an evaluation inherits from training.
+def eval_timing_defaults(mission: MissionRun, checkpoint: str) -> dict[str, float | int]:
+    """Timing values an evaluation inherits from the checkpoint it evaluates.
 
-    Training tasks run in spec order and each one updates its agent, so the
-    LAST training task that targets ``agent_id`` produced the checkpoint under
-    evaluation. Values come from that task only; nothing is merged across
-    tasks. Empty for an eval-only mission or when nothing was declared.
+    Values come from the COMPLETED training task whose recorded
+    ``checkpoint_path`` is ``checkpoint`` — the task that actually produced
+    it — never from the last training task declared in the spec, which may
+    have failed or targeted another checkpoint. Nothing is merged across
+    tasks. Empty for a checkpoint no task in this mission produced (an
+    explicit ``config.checkpoint``, e.g. a published one: its timing is
+    unknown, so the eval must set it itself) or when nothing was declared.
     """
-    last: TrainingTask | None = None
-    for task in mission.tasks:
-        if isinstance(task, TrainingTask) and task.agent_id == agent_id:
-            last = task
-    return declared_timing(last) if last is not None else {}
+    # Compare in Path form: eval runners hand the checkpoint over as a Path,
+    # which collapses "//" (``mock://t/final`` → ``mock:/t/final``), while the
+    # record keeps the runner's raw string.
+    wanted = str(Path(checkpoint))
+    for task in reversed(mission.tasks):
+        recorded = task.result_summary.get("checkpoint_path")
+        if (
+            isinstance(task.spec, TrainingTask)
+            and task.status == TaskStatus.COMPLETED
+            and recorded
+            and str(Path(str(recorded))) == wanted
+        ):
+            return declared_timing(task.spec)
+    return {}

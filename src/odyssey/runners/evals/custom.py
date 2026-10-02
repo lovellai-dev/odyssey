@@ -71,7 +71,6 @@ from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     run_training_subprocess,
 )
-from odyssey.spec.agents import AgentRole
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
 logger = logging.getLogger(__name__)
@@ -129,16 +128,26 @@ def build_custom_argv(
     return argv
 
 
-def eval_config_with_timing(context: TaskContext, config: dict[str, Any]) -> dict[str, Any]:
-    """``config`` plus the PILOT's trained ``control_hz`` / ``action_horizon``.
+def eval_config_with_timing(
+    context: TaskContext, checkpoint: Path, config: dict[str, Any]
+) -> dict[str, Any]:
+    """``config`` plus the trained ``control_hz`` / ``action_horizon`` of ``checkpoint``.
 
-    The values come from the training task that produced the checkpoint
-    under evaluation, so the script runs the policy at the rate and chunk
-    length it was trained for. A key already set in the eval ``config``
-    wins: an eval may deliberately probe a different rate.
+    The values come from the completed training task that produced
+    ``checkpoint`` (resolved together with it, so the two can't diverge),
+    so the script runs the policy at the rate and chunk length it was
+    trained for. A key already set in the eval ``config`` wins: an eval may
+    deliberately probe a different rate. A checkpoint this mission did not
+    produce inherits nothing.
     """
-    pilot = next((a.id for a in context.agents if a.role == AgentRole.PILOT), None)
-    defaults = eval_timing_defaults(context.mission.spec, pilot)
+    defaults = eval_timing_defaults(context.mission, str(checkpoint))
+    if not defaults:
+        logger.info(
+            "eval %s: no training task in this mission declared timing for "
+            "checkpoint %s; control_hz/action_horizon come from the eval config only",
+            context.task.id,
+            checkpoint,
+        )
     return {**defaults, **config}
 
 
@@ -236,8 +245,8 @@ class CustomEvalRunner(Runner):
                 f"CustomEvalRunner expects EvaluationTask, got {type(spec).__name__}"
             )
 
-        config = eval_config_with_timing(context, spec.config or {})
         checkpoint = resolve_eval_checkpoint(context)
+        config = eval_config_with_timing(context, checkpoint, spec.config or {})
         eval_script = resolve_eval_script(config)
         interpreter = resolve_interpreter(config)
         out_json = self._metrics_path(context)

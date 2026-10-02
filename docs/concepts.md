@@ -97,8 +97,10 @@ Both are optional. When declared:
   read, such as a hub dataset that isn't on disk, is skipped with a log line,
   never guessed.
 - The `custom` eval receives them as `--control_hz` / `--action_horizon`,
-  taken from the last training task for the PILOT. A key set in the eval's
-  own `config` wins.
+  taken from the completed training task that produced the checkpoint under
+  evaluation (a failed later training doesn't count). A key set in the eval's
+  own `config` wins. An explicit `config.checkpoint` that no task in the
+  mission produced inherits nothing: set its timing in the eval's `config`.
 
 ### Evaluation types
 
