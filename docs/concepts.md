@@ -64,6 +64,42 @@ deadlines, instruction prefixes injected into VLA prompts). Write them like
 you mean it — future-you will reread them in leaderboard submissions and
 graph queries.
 
+Unknown keys are errors. A misspelled or misplaced field (`control_hzz`,
+`dataset.revison`) fails `odyssey run` before any task starts instead of
+being silently dropped. `config:` maps stay free-form: runners validate
+their own keys.
+
+### Policy timing: `control_hz` and `action_horizon`
+
+Two values are fixed by training and bind every deployment of the
+checkpoint: the rate the policy's actions are executed at, and the number
+of actions it predicts per call. Declare them on the training task:
+
+```yaml
+  - name: finetune
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    control_hz: 10        # = the dataset's recorded fps
+    action_horizon: 16    # actions per predicted chunk
+    dataset: { source: local, ref: /data/my_lerobot_dataset, format: lerobot }
+    config: { runner: pi05, config_name: my_pi05_config }
+```
+
+Both are optional. When declared:
+
+- They are recorded on the mission and in the training result, so the
+  deployment contract travels with the checkpoint.
+- The runner checks them before training. `control_hz` must equal the fps in
+  a local LeRobot dataset's `meta/info.json`. For π0.5, `action_horizon` must
+  equal the openpi config's (or the `config.model.action_horizon` override). A
+  mismatch fails the task before any GPU work. A value the runner cannot
+  read, such as a hub dataset that isn't on disk, is skipped with a log line,
+  never guessed.
+- The `custom` eval receives them as `--control_hz` / `--action_horizon`,
+  taken from the last training task for the PILOT. A key set in the eval's
+  own `config` wins.
+
 ### Evaluation types
 
 `evaluation_type` selects the eval runner:
