@@ -180,6 +180,37 @@ for line in sys.stdin:
 """
 
 
+# Answers the first request, then crashes (exits without replying) on the
+# second. Each launch appends to a counter file so tests can count restarts.
+_FAKE_SERVER_CRASHES = """
+import json, sys
+open({counter!r}, "a").write("x")
+sys.stdout.write(json.dumps({{"ready": True}}) + "\\n"); sys.stdout.flush()
+served = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    if served == 1:
+        sys.exit(1)
+    served += 1
+    sys.stdout.write(json.dumps({{"id": req["id"], "text": "alive"}}) + "\\n")
+    sys.stdout.flush()
+"""
+
+# Never becomes ready; counts its launches.
+_FAKE_SERVER_ALWAYS_FAILS = """
+import json, sys
+open({counter!r}, "a").write("x")
+sys.stdout.write(json.dumps({{"error": "generator load failed: bad model"}}) + "\\n")
+sys.stdout.flush()
+sys.exit(1)
+"""
+
+
 def _generator_for(script_body: str, tmp_path: Path) -> RemoteGenerator:
     script = tmp_path / "fake_server.py"
     script.write_text(script_body)
@@ -256,6 +287,33 @@ def test_remote_generator_restarts_after_startup_failure(tmp_path: Path) -> None
         # The dead process's EOF must not close the healthy replacement.
         assert gen.generate(msgs) == "healthy"
         assert gen.generate(msgs) == "healthy"
+    finally:
+        gen.close()
+
+
+def test_remote_generator_restarts_after_server_dies_mid_run(tmp_path: Path) -> None:
+    counter = tmp_path / "launches"
+    gen = _generator_for(_FAKE_SERVER_CRASHES.format(counter=str(counter)), tmp_path)
+    try:
+        msgs = [{"role": "user", "content": "x"}]
+        assert gen.generate(msgs) == "alive"
+        assert gen.generate(msgs) == ""  # server crashes on this request
+        # The dead server is replaced, not reused for the rest of the run.
+        assert gen.generate(msgs) == "alive"
+        assert counter.read_text() == "xx"
+    finally:
+        gen.close()
+
+
+def test_remote_generator_stops_relaunching_after_budget(tmp_path: Path) -> None:
+    counter = tmp_path / "launches"
+    gen = _generator_for(_FAKE_SERVER_ALWAYS_FAILS.format(counter=str(counter)), tmp_path)
+    try:
+        msgs = [{"role": "user", "content": "x"}]
+        for _ in range(5):
+            assert gen.generate(msgs) == ""
+        # Default budget is 3 launches: episodes 4 and 5 don't reload the model.
+        assert counter.read_text() == "xxx"
     finally:
         gen.close()
 

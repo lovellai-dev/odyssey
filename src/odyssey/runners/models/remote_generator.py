@@ -93,6 +93,11 @@ class RemoteGenerator:
     launch_args:
         Argv (after ``python_path``) that starts the server. Defaults to
         ``("-m", generator_server)``; overridable for tests.
+    max_launches:
+        Total server launches allowed per instance, restarts included. A server
+        that died is relaunched on the next call; once the budget is spent the
+        specialist stays disabled (every call returns ``""``) instead of
+        reloading the model each episode.
     """
 
     def __init__(
@@ -104,6 +109,7 @@ class RemoteGenerator:
         startup_timeout: float = 600.0,
         request_timeout: float = 120.0,
         launch_args: Sequence[str] = ("-m", _SERVER_MODULE),
+        max_launches: int = 3,
     ) -> None:
         self._model_base = model_base
         self._quantization = quantization
@@ -111,15 +117,26 @@ class RemoteGenerator:
         self._startup_timeout = startup_timeout
         self._request_timeout = request_timeout
         self._launch_args = list(launch_args)
+        self._max_launches = max_launches
+        self._launches = 0
         self._proc: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self._eof = False
         self._next_id = 0
         atexit.register(self.close)
 
     def _ensure_started(self) -> None:
         if self._proc is not None:
-            return
+            if not self._eof and self._proc.poll() is None:
+                return
+            logger.warning("RemoteGenerator: specialist server exited — restarting")
+            self.close()
+        if self._launches >= self._max_launches:
+            raise RuntimeError(
+                f"specialist generator disabled after {self._launches} launches"
+            )
+        self._launches += 1
         argv = [self._python_path, *self._launch_args, "--model", self._model_base]
         if self._quantization:
             argv += ["--quantization", self._quantization]
@@ -136,6 +153,7 @@ class RemoteGenerator:
         # A fresh queue per process generation: a previous process's reader can
         # still deposit its EOF sentinel, and it must not reach this process.
         self._lines = queue.Queue()
+        self._eof = False
         self._reader = threading.Thread(
             target=self._drain_stdout, args=(self._proc.stdout, self._lines), daemon=True
         )
@@ -182,6 +200,7 @@ class RemoteGenerator:
                 logger.warning("RemoteGenerator: timed out waiting for server response")
                 return None
             if line is None:
+                self._eof = True
                 logger.warning("RemoteGenerator: server stdout closed (process exited?)")
                 return None
             line = line.strip()
