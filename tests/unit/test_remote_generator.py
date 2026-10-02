@@ -211,6 +211,30 @@ sys.exit(1)
 """
 
 
+# First launch: reads one request, then stops reading stdin (stuck in
+# "inference") so the pipe fills. Later launches are healthy.
+_FAKE_SERVER_STOPS_READING = """
+import json, os, sys, time
+marker = {marker!r}
+first = not os.path.exists(marker)
+open(marker, "a").close()
+sys.stdout.write(json.dumps({{"ready": True}}) + "\\n"); sys.stdout.flush()
+if first:
+    sys.stdin.readline()
+    time.sleep(10)
+    sys.exit(0)
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    sys.stdout.write(json.dumps({{"id": req["id"], "text": "healthy"}}) + "\\n")
+    sys.stdout.flush()
+"""
+
+
 def _generator_for(script_body: str, tmp_path: Path) -> RemoteGenerator:
     script = tmp_path / "fake_server.py"
     script.write_text(script_body)
@@ -316,6 +340,36 @@ def test_remote_generator_stops_relaunching_after_budget(tmp_path: Path) -> None
         assert counter.read_text() == "xxx"
     finally:
         gen.close()
+
+
+def test_remote_generator_bounds_send_to_a_server_that_stopped_reading(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    import numpy as np
+
+    script = _FAKE_SERVER_STOPS_READING.format(marker=str(tmp_path / "stuck_once"))
+    gen = _generator_for(script, tmp_path)
+    try:
+        gen._request_timeout = 0.5
+        msgs = [{"role": "user", "content": "x"}]
+        # The server reads this request, then hangs without answering.
+        assert gen.generate(msgs) == ""
+        # Random noise defeats PNG compression: ~260 KB of base64, far beyond
+        # a pipe buffer, so the write blocks on a server that stopped reading.
+        image = np.random.default_rng(0).integers(0, 256, (256, 256, 3), dtype=np.uint8)
+        start = time.monotonic()
+        assert gen.generate(msgs, image=image) == ""
+        # Bounded: send timeout + bounded cleanup, not the server's 10 s hang.
+        assert time.monotonic() - start < 5.0
+        # The stuck server was retired; the next call gets a healthy one.
+        gen._request_timeout = 30.0
+        assert gen.generate(msgs, image=image) == "healthy"
+    finally:
+        start = time.monotonic()
+        gen.close()
+        assert time.monotonic() - start < 5.0
 
 
 def test_remote_generator_satisfies_textgenerator_protocol(tmp_path: Path) -> None:

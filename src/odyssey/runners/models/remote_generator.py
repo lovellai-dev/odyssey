@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 _SERVER_MODULE = "odyssey.runners.models.generator_server"
 _SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+# Bound on the polite shutdown write in close(); a stuck server gets signalled.
+_SHUTDOWN_WRITE_TIMEOUT = 2.0
 
 
 def _popen_creation_kwargs() -> dict[str, Any]:
@@ -229,9 +231,15 @@ class RemoteGenerator:
             request: dict[str, Any] = {"id": request_id, "messages": messages}
             if image is not None:
                 request["image"] = _encode_image(image)
-            proc.stdin.write(json.dumps(request) + "\n")
-            proc.stdin.flush()
-            msg = self._read_response(request_id, self._request_timeout)
+            # The timeout covers the whole send + receive. A server that
+            # stopped reading stdin (stuck in inference) can't take the
+            # request: retire it rather than reuse it.
+            deadline = time.monotonic() + self._request_timeout
+            if not self._send(proc, request, self._request_timeout):
+                logger.warning("RemoteGenerator: server not accepting requests — retiring it")
+                self.close()
+                return ""
+            msg = self._read_response(request_id, deadline - time.monotonic())
             text = (msg or {}).get("text")
             if isinstance(text, str):
                 return text
@@ -240,18 +248,45 @@ class RemoteGenerator:
             logger.warning("RemoteGenerator.generate failed (%s) — empty text", e)
         return ""
 
+    @staticmethod
+    def _send(proc: subprocess.Popen[str], obj: dict[str, Any], timeout: float) -> bool:
+        """Write one JSON line to the server's stdin within ``timeout``.
+
+        The write runs on a daemon thread: once a server stops reading stdin
+        the pipe fills, and a blocking write would hang the caller past any
+        timeout. Returns False if the write failed or did not finish in time.
+        """
+        stdin = proc.stdin
+        if stdin is None or stdin.closed:
+            return False
+        sent: list[bool] = []
+        done = threading.Event()
+
+        def write() -> None:
+            try:
+                stdin.write(json.dumps(obj) + "\n")
+                stdin.flush()
+                sent.append(True)
+            except (BrokenPipeError, ValueError, OSError):
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=write, daemon=True).start()
+        return done.wait(max(timeout, 0.0)) and bool(sent)
+
     def close(self) -> None:
-        """Shut down the server process. Idempotent; also runs at exit."""
+        """Shut down the server process. Idempotent; also runs at exit.
+
+        Bounded even when the server has stopped reading stdin: the shutdown
+        request is a bounded write, and the process is signalled before stdin
+        is closed (closing first could block on a stuck pending write).
+        """
         proc = self._proc
         if proc is None:
             return
         self._proc = None
-        if proc.stdin is not None and not proc.stdin.closed:
-            with contextlib.suppress(BrokenPipeError, ValueError, OSError):
-                proc.stdin.write(json.dumps({"shutdown": True}) + "\n")
-                proc.stdin.flush()
-            with contextlib.suppress(BrokenPipeError, ValueError, OSError):
-                proc.stdin.close()
+        self._send(proc, {"shutdown": True}, _SHUTDOWN_WRITE_TIMEOUT)
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
             if proc.poll() is None:
                 _terminate_process(proc, signal.SIGTERM)
@@ -259,6 +294,9 @@ class RemoteGenerator:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     _terminate_process(proc, _SIGKILL)
+        if proc.stdin is not None:
+            with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+                proc.stdin.close()
         # Let the old reader hit EOF and finish before any restart.
         reader, self._reader = self._reader, None
         if reader is not None and reader is not threading.current_thread():
