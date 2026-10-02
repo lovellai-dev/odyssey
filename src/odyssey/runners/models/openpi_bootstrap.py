@@ -15,11 +15,13 @@ script against that key through ``runpy`` (as if invoked directly). The
 config keeps its original ``name``, so outputs land where ``train.py`` looks
 for them (``assets/<config_name>/<repo_id>/``). No openpi source is patched.
 
-Usage (under openpi's interpreter):
+Usage (under odyssey's own interpreter, ``sys.executable``, which must have
+openpi installed):
 
     python openpi_bootstrap.py <target_script.py> <config_name> -- <tyro overrides…>
 
-Stdlib-only at import time: it runs under openpi's venv, not odyssey's.
+Stdlib-only at import time: it runs as a standalone script (by path, not as
+part of the odyssey package), so openpi is its only non-stdlib dependency.
 """
 
 from __future__ import annotations
