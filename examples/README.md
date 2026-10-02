@@ -7,6 +7,7 @@
 | `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
 | `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
 | `quickstart-pi05/` | **Eval-only**: score a Physical Intelligence **π0.5** checkpoint on the LIBERO object suite (Franka), driven out-of-process via a pre-started openpi policy server. Chunk-emitting pilot (issue #74). **Wiring done; GPU smoke pending** — [see its README →](quickstart-pi05/README.md). | 24 GB GPU (+ an openpi/JAX server) |
+| `quickstart-jetrover/` | GR00T N1.7 **NEW_EMBODIMENT** fine-tune on a Hiwonder JetRover arm LeRobot dataset (5 joints + gripper) + closed-loop eval **on the real arm** (`evaluation_type: custom`, operator scoring) — [see its README →](quickstart-jetrover/README.md). | 24 GB+ GPU for training/serving; a physical JetRover for the eval (validate/mock without one) |
 
 More quickstarts (Octo) arrive in later releases. See the publication plan for
 the cadence.
@@ -33,6 +34,7 @@ Once `lovell-odyssey` is installed:
 odyssey validate examples/quickstart-openvla/mission.yaml
 odyssey validate examples/quickstart-gr00t/mission.yaml
 odyssey validate examples/quickstart-pi05/mission.yaml
+odyssey validate examples/quickstart-jetrover/mission.yaml
 odyssey validate examples/multiagent-openvla-gemma/mission.yaml
 ```
 

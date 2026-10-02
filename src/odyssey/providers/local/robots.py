@@ -52,6 +52,10 @@ KNOWN_EMBODIMENTS: frozenset[str] = frozenset(
         "ur5e",
         "ur10e",          # driven by the GR00T runner (NEW_EMBODIMENT finetune),
                           # not Robosuite — hence outside ROBOSUITE_ROBOT_NAMES.
+        "jetrover",       # Hiwonder JetRover arm (marketed "6DOF": 5 joints +
+                          # gripper): GR00T NEW_EMBODIMENT finetune + real-hardware
+                          # `evaluation_type: custom` eval (see
+                          # examples/quickstart-jetrover), not Robosuite.
         "baxter",
     }
 )

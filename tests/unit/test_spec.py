@@ -31,6 +31,7 @@ from odyssey.spec.loader import LoadError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
 EXAMPLE_MISSION_GR00T = REPO_ROOT / "examples" / "quickstart-gr00t" / "mission.yaml"
+EXAMPLE_MISSION_JETROVER = REPO_ROOT / "examples" / "quickstart-jetrover" / "mission.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,33 @@ def test_shipped_gr00t_example_loads() -> None:
         evaluation[0].config["eval_script"]
         == "src/odyssey/runners/evals/gr00t_isaac_eval.py"
     )
+
+
+def test_shipped_jetrover_example_loads() -> None:
+    """The JetRover quickstart YAML must always be a valid spec.
+
+    Pins the real-hardware recipe: GR00T NEW_EMBODIMENT training on a
+    LeRobot dataset + `evaluation_type: custom` against the shipped
+    eval_jetrover.py script (mock/ros2/hiwonder arm backends).
+    """
+    mission = load_mission(EXAMPLE_MISSION_JETROVER)
+    assert mission.metadata.name == "jetrover-arm-pick"
+    assert mission.robot.embodiment == "jetrover"
+    training = [t for t in mission.tasks if t.kind == "training"]
+    evaluation = [t for t in mission.tasks if t.kind == "evaluation"]
+    assert len(training) == 1 and len(evaluation) == 1
+    assert training[0].config["runner"] == "gr00t"
+    assert training[0].config["embodiment_tag"] == "new_embodiment"
+    assert training[0].dataset is not None
+    assert training[0].dataset.format is not None
+    assert training[0].dataset.format.value == "lerobot"
+    assert evaluation[0].evaluation_type.value == "custom"
+    assert (
+        evaluation[0].config["eval_script"]
+        == "examples/quickstart-jetrover/eval_jetrover.py"
+    )
+    # the runner only forwards config.* keys, so num_episodes must be repeated
+    assert evaluation[0].config["num_episodes"] == evaluation[0].num_episodes
 
 
 # ---------------------------------------------------------------------------
