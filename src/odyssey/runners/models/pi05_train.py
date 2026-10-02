@@ -50,9 +50,11 @@ This runner contains no openpi code — it shells out to the user's own checkout
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +66,12 @@ from odyssey.runners.base import (
 
 # Shared flatten helper (dotted keys for nested dicts).
 from odyssey.runners.models.openvla_train import _flatten_config
+from odyssey.runners.policy_timing import (
+    PolicyTimingError,
+    check_action_horizon,
+    check_control_hz,
+    declared_timing,
+)
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,
@@ -174,6 +182,82 @@ def _tyro_overrides(config: dict[str, Any]) -> list[str]:
         else:
             argv += [flag, str(value)]
     return argv
+
+
+def configured_action_horizon(config: dict[str, Any]) -> int | None:
+    """``model.action_horizon`` when the mission overrides it in ``config``.
+
+    That override is forwarded to ``train.py`` as ``--model.action-horizon``,
+    so when present it is the value training uses.
+    """
+    for key, value in _flatten_config(config):
+        if key == "model.action_horizon":
+            return int(value)
+    return None
+
+
+# Prints the registered TrainConfig's action_horizon. Runs under the same
+# interpreter as train.py, so it sees the same openpi checkout and configs.
+_ACTION_HORIZON_PROBE = (
+    "import sys\n"
+    "from openpi.training import config as c\n"
+    "print(c.get_config(sys.argv[1]).model.action_horizon)\n"
+)
+_PROBE_TIMEOUT_S = 300.0
+
+
+async def probe_openpi_action_horizon(config_name: str, env: dict[str, str]) -> int:
+    """The ``action_horizon`` of openpi's registered ``config_name``.
+
+    Raises ``PolicyTimingError`` when it cannot be read: the task declared an
+    action_horizon, so running without verifying it would defeat the check.
+    """
+    child_env = {**os.environ, **env}
+    child_env.pop("PYTHONPATH", None)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", _ACTION_HORIZON_PROBE, config_name,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=child_env,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=_PROBE_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise PolicyTimingError(
+            f"could not read action_horizon of openpi config {config_name!r}: "
+            f"probe timed out after {_PROBE_TIMEOUT_S:.0f}s"
+        ) from None
+    lines = out.decode().strip().splitlines()
+    if proc.returncode != 0 or not lines or not lines[-1].strip().isdigit():
+        tail = err.decode().strip().splitlines()[-3:]
+        raise PolicyTimingError(
+            f"could not read action_horizon of openpi config {config_name!r} "
+            f"(exit {proc.returncode}): {' | '.join(tail) or 'no output'}"
+        )
+    return int(lines[-1].strip())
+
+
+async def check_pi05_policy_timing(task: TrainingTask, env: dict[str, str]) -> None:
+    """Pre-flight: declared control_hz / action_horizon must match reality.
+
+    Runs before norm stats and training, so a mismatch costs seconds, not a
+    GPU run. The chunk length is the mission's ``model.action_horizon``
+    override when present, otherwise the registered openpi config's value.
+    """
+    check_control_hz(task)
+    if task.action_horizon is None:
+        return
+    config = task.config or {}
+    override = configured_action_horizon(config)
+    if override is not None:
+        check_action_horizon(task, override, "config model.action_horizon")
+        return
+    config_name = str(config.get("config_name") or "")
+    if not config_name:
+        return  # the argv builders raise the actionable "config_name required"
+    effective = await probe_openpi_action_horizon(config_name, env)
+    check_action_horizon(task, effective, f"openpi config {config_name!r}")
 
 
 def build_pi05_train_argv(*, task: TrainingTask, exp_name: str) -> list[str]:
@@ -353,6 +437,10 @@ class Pi05Runner(Runner):
         timeout = getattr(spec, "timeout_seconds", None)
         child_env = _lerobot_env_for_dataset(spec)
 
+        # Step 0: the declared timing contract must match the data and the
+        # openpi config before anything heavy starts.
+        await check_pi05_policy_timing(spec, child_env)
+
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The
         # hit is keyed on the exact dataset (config_name + repo_id). Escape hatch:
@@ -433,6 +521,7 @@ class Pi05Runner(Runner):
             "exp_name": exp_name,
             "config_name": config.get("config_name"),
             "training_config": spec.config,
+            **declared_timing(spec),
             "training_type": (
                 spec.training_type.value
                 if isinstance(spec.training_type, TrainingType)

@@ -24,8 +24,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
+from odyssey.spec._base import SpecModel
 from odyssey.spec.agents import AgentRole, AgentSpec
 from odyssey.spec.execution import ExecutionSpec
 from odyssey.spec.graph import GraphSpec
@@ -41,7 +42,7 @@ class OdysseyVersion(str, Enum):
     V0_1 = "0.1"
 
 
-class MissionMetadata(BaseModel):
+class MissionMetadata(SpecModel):
     """Mission identity. Prose fields live on Mission, not here."""
 
     name: Annotated[str, Field(pattern=_NAME_PATTERN, max_length=64)]
@@ -49,7 +50,7 @@ class MissionMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class RobotSpec(BaseModel):
+class RobotSpec(SpecModel):
     """A robot: an embodiment plus a loadout of agents.
 
     Exactly one of ``embodiment`` (catalog name), ``urdf`` (local file
@@ -95,7 +96,7 @@ class RobotSpec(BaseModel):
         return self
 
 
-class Mission(BaseModel):
+class Mission(SpecModel):
     odysseyVersion: OdysseyVersion = OdysseyVersion.V0_1
     kind: Literal["Mission"] = "Mission"
     metadata: MissionMetadata

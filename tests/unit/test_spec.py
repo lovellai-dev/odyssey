@@ -360,3 +360,99 @@ def test_loader_wraps_validation_error(tmp_path: Path) -> None:
     )
     with pytest.raises(LoadError, match="spec validation failed"):
         load_mission(invalid)
+
+
+# ---------------------------------------------------------------------------
+# Unknown keys are rejected (extra="forbid")
+# ---------------------------------------------------------------------------
+
+_MINIMAL_YAML = (
+    "metadata:\n  name: msn\nobjective: o\nacceptance_criteria: a\n"
+    "robot:\n  embodiment: franka_panda\n  agents:\n"
+    "    - {id: pilot, role: PILOT, model: {source: huggingface, base: m/m}}\n"
+    "tasks:\n"
+    "  - name: train\n    kind: training\n    training_type: demonstration\n"
+    "    agent_id: pilot\n{train_extra}"
+    "  - name: bench\n    kind: evaluation\n    evaluation_type: custom\n"
+    "    benchmark_name: b\n"
+)
+
+
+def _write_mission(tmp_path: Path, train_extra: str = "") -> Path:
+    path = tmp_path / "mission.yaml"
+    path.write_text(_MINIMAL_YAML.replace("{train_extra}", train_extra), encoding="utf-8")
+    return path
+
+
+def test_unknown_task_key_fails_to_load(tmp_path: Path) -> None:
+    """A misspelled field must stop the mission, not vanish."""
+    path = _write_mission(tmp_path, "    control_hzz: 10\n")
+    with pytest.raises(LoadError, match="control_hzz"):
+        load_mission(path)
+
+
+def test_unknown_dataset_key_fails_to_load(tmp_path: Path) -> None:
+    path = _write_mission(
+        tmp_path, "    dataset: {source: local, ref: /d, revison: abc}\n"
+    )
+    with pytest.raises(LoadError, match="revison"):
+        load_mission(path)
+
+
+def test_unknown_top_level_key_rejected() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        Mission(
+            metadata=MissionMetadata(name="msn"),
+            objective="o",
+            acceptance_criteria="a",
+            robot=_robot(),
+            tasks=[_training_task(), _eval_task()],
+            deployment={"control_hz": 10},  # type: ignore[call-arg]
+        )
+
+
+def test_task_config_stays_free_form() -> None:
+    """``config`` is a plain dict: runner-specific keys are not policed."""
+    task = _training_task(config={"anything": 1, "nested": {"x": True}})
+    assert task.config["nested"] == {"x": True}
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((REPO_ROOT / "examples").rglob("*.yaml")),
+    ids=lambda p: str(p.relative_to(REPO_ROOT)),
+)
+def test_every_example_mission_still_loads(path: Path) -> None:
+    """Forbidding extra keys must not break any shipped mission."""
+    import yaml
+
+    if (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("kind") != "Mission":
+        pytest.skip("not a mission spec")
+    load_mission(path)
+
+
+# ---------------------------------------------------------------------------
+# Policy timing fields on TrainingTask
+# ---------------------------------------------------------------------------
+
+def test_timing_fields_default_to_none() -> None:
+    task = _training_task()
+    assert task.control_hz is None
+    assert task.action_horizon is None
+
+
+def test_timing_fields_parse_from_yaml(tmp_path: Path) -> None:
+    path = _write_mission(tmp_path, "    control_hz: 10\n    action_horizon: 16\n")
+    task = load_mission(path).tasks[0]
+    assert isinstance(task, TrainingTask)
+    assert task.control_hz == 10
+    assert task.action_horizon == 16
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("control_hz", 0), ("control_hz", -5), ("action_horizon", 0)],
+)
+def test_timing_fields_reject_non_positive(field: str, value: int) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _training_task(**{field: value})
