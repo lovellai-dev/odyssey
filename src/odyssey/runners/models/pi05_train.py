@@ -63,6 +63,10 @@ from odyssey.runners.base import (
 )
 
 # Shared flatten helper (dotted keys for nested dicts).
+from odyssey.runners.dataset_revision import (
+    DatasetRevisionError,
+    check_local_dataset_revision,
+)
 from odyssey.runners.models.openvla_train import _flatten_config
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
@@ -277,8 +281,22 @@ def _dataset_repo_id(task: TrainingTask) -> str:
     return ""
 
 
+def _norm_stats_cache_root(config_name: str, revision: str | None) -> Path:
+    """Stable cache dir for one config, partitioned by dataset revision.
+
+    openpi's own layout below it (``<config_name>/<repo_id>/norm_stats.json``)
+    is unchanged. With a pinned revision the root is per revision, so a new
+    version of a dataset under the SAME repo_id misses the cache and its
+    statistics are recomputed instead of reusing the previous version's.
+    """
+    root = Path.home() / ".odyssey" / "pi05_assets"
+    if not revision:
+        return root / config_name
+    return root / f"{config_name}@{revision.replace('/', '_')}"
+
+
 def _link_norm_stats_cache(
-    output_dir: Path, config_name: str, repo_id: str
+    output_dir: Path, config_name: str, repo_id: str, revision: str | None = None
 ) -> tuple[Path | None, bool]:
     """Point openpi's cwd-relative ``./assets`` at a STABLE per-config cache.
 
@@ -298,12 +316,16 @@ def _link_norm_stats_cache(
     ``repo_id`` (config default, unknown here) recomputes rather than risk a wrong
     hit.
 
+    The cache is also keyed by ``revision`` when the dataset pins one (see
+    ``_norm_stats_cache_root``). Without a revision two versions of a dataset
+    published under one repo_id are indistinguishable and share a cache entry.
+
     Returns ``(cache_dir, already_has_norm_stats)``; ``(None, False)`` when there
     is no config_name to key the cache on.
     """
     if not config_name:
         return None, False
-    cache = Path.home() / ".odyssey" / "pi05_assets" / config_name
+    cache = _norm_stats_cache_root(config_name, revision)
     cache.mkdir(parents=True, exist_ok=True)
     link = output_dir / "assets"
     if not link.is_symlink() and not link.exists():
@@ -353,17 +375,32 @@ class Pi05Runner(Runner):
         timeout = getattr(spec, "timeout_seconds", None)
         child_env = _lerobot_env_for_dataset(spec)
 
+        # The pinned dataset revision must be the data training will read.
+        revision = spec.dataset.revision if spec.dataset is not None else None
+        if (
+            revision is not None
+            and spec.dataset is not None
+            and spec.dataset.source != DatasetSource.LOCAL
+        ):
+            raise DatasetRevisionError(
+                f"π0.5 task {spec.name!r}: dataset revision {revision} is pinned, "
+                "but openpi loads a hub dataset by repo_id and cannot be pinned to a "
+                "revision. Download that revision (hf download <repo> --repo-type "
+                "dataset --revision <sha> --local-dir <dir>) and use source: local."
+            )
+        check_local_dataset_revision(spec.name, spec.dataset)
+
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The
-        # hit is keyed on the exact dataset (config_name + repo_id). Escape hatch:
-        # the cache has no content-fingerprint, so a dataset recaptured under the
-        # SAME repo_id would silently reuse stale stats — set
-        # ``config: {norm_stats_cache: false}`` to force a fresh recompute into the
-        # per-run dir (no shared cache) when the dataset content has changed.
+        # hit is keyed on the exact dataset (config_name + repo_id) and, when the
+        # dataset pins one, its revision. Without a revision a dataset recaptured
+        # under the SAME repo_id would silently reuse stale stats: pin the
+        # revision, or set ``config: {norm_stats_cache: false}`` to force a fresh
+        # recompute into the per-run dir (no shared cache).
         if config.get("norm_stats_cache", True):
             repo_id = _dataset_repo_id(spec)
             assets_cache, norm_cached = _link_norm_stats_cache(
-                output_dir, config_name, repo_id
+                output_dir, config_name, repo_id, revision
             )
         else:
             logger.warning(
@@ -433,6 +470,7 @@ class Pi05Runner(Runner):
             "exp_name": exp_name,
             "config_name": config.get("config_name"),
             "training_config": spec.config,
+            "dataset_revision": revision,
             "training_type": (
                 spec.training_type.value
                 if isinstance(spec.training_type, TrainingType)
