@@ -5,8 +5,10 @@ A training task can declare the rate its actions are executed at
 (``action_horizon``). Both are fixed by training and inherited by the
 checkpoint. These helpers are framework-agnostic:
 
-  * ``check_control_hz`` compares the declared rate with the dataset's
-    recorded rate (LeRobot ``meta/info.json`` ``fps``) and fails before any
+  * ``check_control_hz`` compares the declared rate with the recorded rate
+    (LeRobot ``meta/info.json`` ``fps``) of the dataset training actually
+    loads — which the runner resolves, since a config override can select
+    another directory than the declared ``dataset`` — and fails before any
     GPU work when they disagree.
   * ``check_action_horizon`` compares the declared chunk length with the one
     the training framework will actually use (each runner resolves that).
@@ -23,12 +25,10 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from pathlib import Path
 
 from odyssey.engine.lifecycle import TaskStatus
 from odyssey.engine.records import MissionRun
-from odyssey.spec.refs import DatasetRef, DatasetSource
 from odyssey.spec.tasks import TrainingTask
 
 logger = logging.getLogger(__name__)
@@ -38,17 +38,15 @@ class PolicyTimingError(RuntimeError):
     """A declared timing value disagrees with the data or the framework."""
 
 
-def lerobot_dataset_fps(dataset: DatasetRef | None) -> float | None:
-    """Recorded rate of a local LeRobot dataset, or None when it can't be read.
+def lerobot_dataset_fps(dataset_dir: str | None) -> float | None:
+    """Recorded rate of the LeRobot dataset in ``dataset_dir``, or None.
 
-    Only an absolute ``source: local`` path is read; hub datasets are not
-    downloaded just to check a number.
+    None when there is no directory or it holds no readable fps (e.g. a hub
+    dataset not downloaded yet; it is not fetched just to check a number).
     """
-    if dataset is None or dataset.source != DatasetSource.LOCAL:
+    if dataset_dir is None:
         return None
-    if not os.path.isabs(dataset.ref):
-        return None
-    info = Path(dataset.ref) / "meta" / "info.json"
+    info = Path(dataset_dir) / "meta" / "info.json"
     if not info.is_file():
         return None
     try:
@@ -58,14 +56,16 @@ def lerobot_dataset_fps(dataset: DatasetRef | None) -> float | None:
     return float(fps) if isinstance(fps, (int, float)) else None
 
 
-def check_control_hz(task: TrainingTask) -> None:
-    """Fail when ``task.control_hz`` disagrees with the dataset's fps.
+def check_control_hz(task: TrainingTask, dataset_dir: str | None) -> None:
+    """Fail when ``task.control_hz`` disagrees with the loaded dataset's fps.
 
-    No-op when ``control_hz`` is not declared or the fps can't be read.
+    ``dataset_dir`` is the directory training will load, as the runner
+    resolved it. No-op when ``control_hz`` is not declared or the fps can't
+    be read.
     """
     if task.control_hz is None:
         return
-    fps = lerobot_dataset_fps(task.dataset)
+    fps = lerobot_dataset_fps(dataset_dir)
     if fps is None:
         logger.info(
             "task %s: control_hz=%s declared but the dataset fps could not be "
@@ -77,7 +77,7 @@ def check_control_hz(task: TrainingTask) -> None:
     if not math.isclose(fps, task.control_hz, rel_tol=0, abs_tol=1e-6):
         raise PolicyTimingError(
             f"task {task.name!r}: control_hz={task.control_hz} but the dataset "
-            f"was recorded at {fps} fps ({task.dataset.ref if task.dataset else ''}"
+            f"training loads was recorded at {fps} fps ({dataset_dir}"
             "/meta/info.json). A policy trained on this data executes its "
             "actions at the recorded rate; fix control_hz or resample the "
             "dataset."

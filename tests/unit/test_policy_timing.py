@@ -15,11 +15,18 @@ from typing import Any
 
 import pytest
 
+import odyssey.runners.models.openpi_dataset as openpi_dataset
 import odyssey.runners.models.pi05_train as pi05
 from odyssey.engine.lifecycle import TaskStatus
 from odyssey.engine.records import MissionRun
 from odyssey.runners.base import TaskContext
 from odyssey.runners.evals.custom import eval_config_with_timing
+from odyssey.runners.models.openpi_dataset import (
+    DatasetMismatchError,
+    OpenpiProbeError,
+    OpenpiTrainingConfig,
+    check_declared_dataset,
+)
 from odyssey.runners.policy_timing import (
     PolicyTimingError,
     check_action_horizon,
@@ -67,24 +74,16 @@ def _task(name: str = "finetune", **overrides: Any) -> TrainingTask:
 # ---------------------------------------------------------------------------
 
 def test_fps_read_from_local_lerobot_dataset(tmp_path: Path) -> None:
-    assert lerobot_dataset_fps(_dataset(tmp_path, fps=15)) == 15.0
+    assert lerobot_dataset_fps(_dataset(tmp_path, fps=15).ref) == 15.0
 
 
-@pytest.mark.parametrize(
-    "dataset",
-    [
-        None,
-        DatasetRef(source=DatasetSource.HUGGINGFACE, ref="org/name"),
-        DatasetRef(source=DatasetSource.LOCAL, ref="relative/path"),
-        DatasetRef(source=DatasetSource.LOCAL, ref="/does/not/exist"),
-    ],
-)
-def test_fps_unreadable_is_none(dataset: DatasetRef | None) -> None:
-    assert lerobot_dataset_fps(dataset) is None
+@pytest.mark.parametrize("dataset_dir", [None, "/does/not/exist"])
+def test_fps_unreadable_is_none(dataset_dir: str | None) -> None:
+    assert lerobot_dataset_fps(dataset_dir) is None
 
 
 def test_fps_non_numeric_is_none(tmp_path: Path) -> None:
-    assert lerobot_dataset_fps(_dataset(tmp_path, fps="ten")) is None
+    assert lerobot_dataset_fps(_dataset(tmp_path, fps="ten").ref) is None
 
 
 # ---------------------------------------------------------------------------
@@ -92,23 +91,20 @@ def test_fps_non_numeric_is_none(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def test_control_hz_matching_dataset_passes(tmp_path: Path) -> None:
-    check_control_hz(_task(control_hz=10, dataset=_dataset(tmp_path, fps=10)))
+    check_control_hz(_task(control_hz=10), _dataset(tmp_path, fps=10).ref)
 
 
 def test_control_hz_mismatch_raises(tmp_path: Path) -> None:
-    task = _task(control_hz=15, dataset=_dataset(tmp_path, fps=10))
     with pytest.raises(PolicyTimingError, match=r"control_hz=15.*recorded at 10"):
-        check_control_hz(task)
+        check_control_hz(_task(control_hz=15), _dataset(tmp_path, fps=10).ref)
 
 
 def test_control_hz_undeclared_skips(tmp_path: Path) -> None:
-    check_control_hz(_task(dataset=_dataset(tmp_path, fps=10)))
+    check_control_hz(_task(), _dataset(tmp_path, fps=10).ref)
 
 
 def test_control_hz_unreadable_dataset_skips() -> None:
-    check_control_hz(
-        _task(control_hz=10, dataset=DatasetRef(source=DatasetSource.HUGGINGFACE, ref="o/n"))
-    )
+    check_control_hz(_task(control_hz=10), None)
 
 
 # ---------------------------------------------------------------------------
@@ -140,69 +136,221 @@ def test_declared_timing_only_reports_declared_values() -> None:
 # π0.5 runner pre-flight
 # ---------------------------------------------------------------------------
 
-def test_pi05_configured_action_horizon_from_nested_override() -> None:
-    assert pi05.configured_action_horizon({"model": {"action_horizon": 8}}) == 8
-    assert pi05.configured_action_horizon({"config_name": "x"}) is None
+def _effective(
+    action_horizon: int = 16, repo_id: str | None = None, dataset_dir: str | None = None
+) -> OpenpiTrainingConfig:
+    return OpenpiTrainingConfig(action_horizon, repo_id, dataset_dir)
 
 
-def test_pi05_preflight_uses_config_override_without_probing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def _never(*_: Any) -> int:
-        raise AssertionError("probe must not run when config overrides the horizon")
+def _fake_probe(
+    monkeypatch: pytest.MonkeyPatch, effective: OpenpiTrainingConfig
+) -> list[tuple[Any, ...]]:
+    seen: list[tuple[Any, ...]] = []
 
-    monkeypatch.setattr(pi05, "probe_openpi_action_horizon", _never)
-    task = _task(
-        action_horizon=8,
-        config={"config_name": "cfg", "model": {"action_horizon": 8}},
-    )
-    asyncio.run(pi05.check_pi05_policy_timing(task, {}))
+    async def _probe(*args: Any) -> OpenpiTrainingConfig:
+        seen.append(args)
+        return effective
 
-
-def test_pi05_preflight_probes_registered_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[str] = []
-
-    async def _probe(config_name: str, env: dict[str, str], cancel_event: Any) -> int:
-        seen.append(config_name)
-        return 10
-
-    monkeypatch.setattr(pi05, "probe_openpi_action_horizon", _probe)
-    task = _task(action_horizon=16, config={"config_name": "my_config"})
-    with pytest.raises(PolicyTimingError, match="openpi config 'my_config'"):
-        asyncio.run(pi05.check_pi05_policy_timing(task, {}))
-    assert seen == ["my_config"]
-
-
-def test_pi05_preflight_control_hz_mismatch_raises(tmp_path: Path) -> None:
-    task = _task(
-        control_hz=30,
-        dataset=_dataset(tmp_path, fps=10),
-        config={"config_name": "cfg"},
-    )
-    with pytest.raises(PolicyTimingError, match="control_hz=30"):
-        asyncio.run(pi05.check_pi05_policy_timing(task, {}))
+    monkeypatch.setattr(pi05, "probe_openpi_training_config", _probe)
+    return seen
 
 
 def test_pi05_preflight_noop_when_nothing_declared(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _never(*_: Any) -> int:
-        raise AssertionError("probe must not run when action_horizon is undeclared")
+    async def _never(*_: Any) -> None:
+        raise AssertionError("probe must not run when no timing is declared")
 
-    monkeypatch.setattr(pi05, "probe_openpi_action_horizon", _never)
-    asyncio.run(pi05.check_pi05_policy_timing(_task(config={"config_name": "c"}), {}))
-
-
-def test_pi05_probe_reports_unreadable_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Real subprocess: a probe that fails surfaces as PolicyTimingError."""
-    monkeypatch.setattr(pi05, "_ACTION_HORIZON_PROBE", "import sys; sys.exit(3)")
-    with pytest.raises(PolicyTimingError, match="exit 3"):
-        asyncio.run(pi05.probe_openpi_action_horizon("cfg", {}))
+    monkeypatch.setattr(pi05, "probe_openpi_training_config", _never)
+    asyncio.run(pi05.check_pi05_policy_timing(_task(config={"config_name": "c"}), {}, "e"))
 
 
-def test_pi05_probe_parses_last_line(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        pi05, "_ACTION_HORIZON_PROBE", "print('loading...'); print(16)"
+def test_pi05_preflight_probes_config_with_mission_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe builds the config train.py will: name, exp name and overrides."""
+    seen = _fake_probe(monkeypatch, _effective(action_horizon=8))
+    task = _task(
+        action_horizon=8,
+        config={"config_name": "my_config", "model": {"action_horizon": 8}},
     )
-    assert asyncio.run(pi05.probe_openpi_action_horizon("cfg", {})) == 16
+    asyncio.run(pi05.check_pi05_policy_timing(task, {"HF_LEROBOT_HOME": "/h"}, "exp"))
+    config_name, exp_name, overrides, env, _ = seen[0]
+    assert (config_name, exp_name, env) == ("my_config", "exp", {"HF_LEROBOT_HOME": "/h"})
+    assert overrides == ["--model.action-horizon", "8"]
+
+
+def test_pi05_preflight_action_horizon_mismatch_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_probe(monkeypatch, _effective(action_horizon=10))
+    task = _task(action_horizon=16, config={"config_name": "my_config"})
+    with pytest.raises(PolicyTimingError, match="openpi config 'my_config'"):
+        asyncio.run(pi05.check_pi05_policy_timing(task, {}, "e"))
+
+
+def test_pi05_preflight_control_hz_mismatch_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _dataset(tmp_path, fps=10)
+    _fake_probe(monkeypatch, _effective(repo_id="my_dataset", dataset_dir=dataset.ref))
+    task = _task(control_hz=30, dataset=dataset, config={"config_name": "cfg"})
+    with pytest.raises(PolicyTimingError, match="control_hz=30"):
+        asyncio.run(pi05.check_pi05_policy_timing(task, {}, "e"))
+
+
+def test_pi05_preflight_unreadable_config_is_a_timing_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fails(*_: Any) -> None:
+        raise OpenpiProbeError("could not read openpi config 'cfg' (exit 1)")
+
+    monkeypatch.setattr(pi05, "probe_openpi_training_config", _fails)
+    task = _task(action_horizon=16, config={"config_name": "cfg"})
+    with pytest.raises(PolicyTimingError, match="could not read"):
+        asyncio.run(pi05.check_pi05_policy_timing(task, {}, "e"))
+
+
+# ---------------------------------------------------------------------------
+# The dataset training loads vs the declared one
+# ---------------------------------------------------------------------------
+
+def _lerobot_dataset(root: Path, fps: int) -> DatasetRef:
+    (root / "meta").mkdir(parents=True)
+    (root / "meta" / "info.json").write_text(json.dumps({"fps": fps}), encoding="utf-8")
+    return DatasetRef(source=DatasetSource.LOCAL, ref=str(root))
+
+
+def test_declared_dataset_matching_loaded_dir_passes(tmp_path: Path) -> None:
+    ds = _lerobot_dataset(tmp_path / "ds", 10)
+    check_declared_dataset(_task(dataset=ds), _effective(repo_id="ds", dataset_dir=ds.ref))
+
+
+def test_declared_dataset_other_dir_raises(tmp_path: Path) -> None:
+    declared = _lerobot_dataset(tmp_path / "declared", 10)
+    actual = _lerobot_dataset(tmp_path / "actual", 30)
+    with pytest.raises(DatasetMismatchError, match="training loads"):
+        check_declared_dataset(
+            _task(dataset=declared), _effective(repo_id="actual", dataset_dir=actual.ref)
+        )
+
+
+def test_declared_hub_dataset_must_be_loaded_repo_id() -> None:
+    hub = DatasetRef(source=DatasetSource.HUGGINGFACE, ref="org/a")
+    check_declared_dataset(_task(dataset=hub), _effective(repo_id="org/a"))
+    with pytest.raises(DatasetMismatchError, match="'org/b'"):
+        check_declared_dataset(_task(dataset=hub), _effective(repo_id="org/b"))
+
+
+@pytest.mark.parametrize(
+    "effective",
+    [_effective(repo_id=None), _effective(repo_id="x", dataset_dir="/elsewhere/x")],
+)
+def test_declared_dataset_unknown_or_other_source_skips(
+    effective: OpenpiTrainingConfig,
+) -> None:
+    oxe = DatasetRef(source=DatasetSource.OXE, ref="bridge_orig")
+    check_declared_dataset(_task(dataset=oxe), effective)
+    check_declared_dataset(_task(), effective)
+
+
+# A stand-in openpi + lerobot, importable by the REAL probe subprocess: the
+# probe runs ``python -c`` in the caller's cwd, so a package dir as cwd is on
+# its sys.path. ``cli()`` mimics openpi's: <config_name> + tyro overrides.
+_FAKE_OPENPI_CONFIG = """
+import sys
+from types import SimpleNamespace
+
+def cli():
+    args = sys.argv[1:]
+    flags = dict(zip(args[1::2], args[2::2]))
+    return SimpleNamespace(
+        data=SimpleNamespace(repo_id=flags.get("--data.repo-id", "declared")),
+        model=SimpleNamespace(action_horizon=int(flags.get("--model.action-horizon", 10))),
+    )
+"""
+_FAKE_LEROBOT_CONSTANTS = """
+import os
+from pathlib import Path
+HF_LEROBOT_HOME = Path(os.environ["HF_LEROBOT_HOME"])
+"""
+
+
+def _fake_openpi_on_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pkgs = tmp_path / "pkgs"
+    for mod, body in [
+        ("openpi/__init__.py", ""),
+        ("openpi/training/__init__.py", ""),
+        ("openpi/training/config.py", _FAKE_OPENPI_CONFIG),
+        ("lerobot/__init__.py", ""),
+        ("lerobot/common/__init__.py", ""),
+        ("lerobot/common/constants.py", _FAKE_LEROBOT_CONSTANTS),
+    ]:
+        (pkgs / mod).parent.mkdir(parents=True, exist_ok=True)
+        (pkgs / mod).write_text(body, encoding="utf-8")
+    monkeypatch.chdir(pkgs)
+
+
+def _sibling_datasets(tmp_path: Path) -> DatasetRef:
+    """``declared`` at 10 fps (the spec's dataset) next to ``actual`` at 30 fps."""
+    declared = _lerobot_dataset(tmp_path / "data" / "declared", 10)
+    _lerobot_dataset(tmp_path / "data" / "actual", 30)
+    return declared
+
+
+def test_pi05_preflight_rejects_repo_id_selecting_another_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: dataset.ref → declared (10 fps), data.repo_id → actual (30 fps).
+
+    control_hz=10 matches the DECLARED dataset, but training loads the other
+    one. Real env builder, real overrides, real probe subprocess.
+    """
+    _fake_openpi_on_cwd(tmp_path, monkeypatch)
+    task = _task(
+        control_hz=10,
+        dataset=_sibling_datasets(tmp_path),
+        config={"config_name": "cfg", "data": {"repo_id": "actual"}},
+    )
+    env = pi05._lerobot_env_for_dataset(task)
+    with pytest.raises(DatasetMismatchError, match=r"training loads .*actual"):
+        asyncio.run(pi05.check_pi05_policy_timing(task, env, "e"))
+
+
+def test_pi05_preflight_checks_fps_of_the_loaded_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same path end to end when they agree: the loaded dataset's fps is checked."""
+    _fake_openpi_on_cwd(tmp_path, monkeypatch)
+    declared = _sibling_datasets(tmp_path)
+    ok = _task(control_hz=10, dataset=declared, config={"config_name": "cfg"})
+    asyncio.run(pi05.check_pi05_policy_timing(ok, pi05._lerobot_env_for_dataset(ok), "e"))
+    wrong = _task(control_hz=30, dataset=declared, config={"config_name": "cfg"})
+    with pytest.raises(PolicyTimingError, match=r"control_hz=30.*recorded at 10"):
+        asyncio.run(
+            pi05.check_pi05_policy_timing(wrong, pi05._lerobot_env_for_dataset(wrong), "e")
+        )
+
+
+# ---------------------------------------------------------------------------
+# The probe subprocess
+# ---------------------------------------------------------------------------
+
+def test_probe_reports_unreadable_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real subprocess: a probe that fails surfaces as OpenpiProbeError."""
+    monkeypatch.setattr(openpi_dataset, "_TRAINING_CONFIG_PROBE", "import sys; sys.exit(3)")
+    with pytest.raises(OpenpiProbeError, match="exit 3"):
+        asyncio.run(openpi_dataset.probe_openpi_training_config("cfg", "e", [], {}))
+
+
+def test_probe_parses_last_json_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        openpi_dataset,
+        "_TRAINING_CONFIG_PROBE",
+        "print('loading...'); "
+        "print('{\"action_horizon\": 16, \"repo_id\": \"r\", \"dataset_dir\": \"/h/r\"}')",
+    )
+    assert asyncio.run(
+        openpi_dataset.probe_openpi_training_config("cfg", "e", [], {})
+    ) == OpenpiTrainingConfig(16, "r", "/h/r")
 
 
 # ---------------------------------------------------------------------------
@@ -427,9 +575,11 @@ def test_pi05_run_fails_before_any_subprocess(
 
     monkeypatch.setattr(pi05, "run_training_subprocess", _no_subprocess)
     monkeypatch.setattr(pi05.Path, "home", lambda: tmp_path)
+    dataset = _dataset(tmp_path, fps=10)
+    _fake_probe(monkeypatch, _effective(repo_id="my_dataset", dataset_dir=dataset.ref))
     train = _task(
         control_hz=30,
-        dataset=_dataset(tmp_path, fps=10),
+        dataset=dataset,
         config={"runner": "pi05", "config_name": "cfg"},
     )
     mission = _mission([train], {})
@@ -449,12 +599,12 @@ def test_pi05_run_fails_before_any_subprocess(
 # The probe child never outlives an interrupted pre-flight
 # ---------------------------------------------------------------------------
 
-_SLEEPING_PROBE = "import time; time.sleep(60); print(16)"
+_SLEEPING_PROBE = "import time; time.sleep(60)"
 
 
 def _capture_probe_proc(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.subprocess.Process]:
     """Run the real probe subprocess, but sleeping, and record its handle."""
-    monkeypatch.setattr(pi05, "_ACTION_HORIZON_PROBE", _SLEEPING_PROBE)
+    monkeypatch.setattr(openpi_dataset, "_TRAINING_CONFIG_PROBE", _SLEEPING_PROBE)
     procs: list[asyncio.subprocess.Process] = []
     real_exec = asyncio.create_subprocess_exec
 
@@ -463,7 +613,7 @@ def _capture_probe_proc(monkeypatch: pytest.MonkeyPatch) -> list[asyncio.subproc
         procs.append(proc)
         return proc
 
-    monkeypatch.setattr(pi05.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(openpi_dataset.asyncio, "create_subprocess_exec", _exec)
     return procs
 
 
@@ -476,7 +626,7 @@ def test_pi05_probe_reaped_when_coroutine_cancelled(monkeypatch: pytest.MonkeyPa
     procs = _capture_probe_proc(monkeypatch)
 
     async def _scenario() -> None:
-        probe = asyncio.create_task(pi05.probe_openpi_action_horizon("cfg", {}))
+        probe = asyncio.create_task(openpi_dataset.probe_openpi_training_config("cfg", "e", [], {}))
         await _until_started(procs)
         probe.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -493,7 +643,7 @@ def test_pi05_probe_stops_on_mission_cancel(monkeypatch: pytest.MonkeyPatch) -> 
     async def _scenario() -> int | None:
         cancel_event = asyncio.Event()
         probe = asyncio.create_task(
-            pi05.probe_openpi_action_horizon("cfg", {}, cancel_event)
+            openpi_dataset.probe_openpi_training_config("cfg", "e", [], {}, cancel_event)
         )
         await _until_started(procs)
         cancel_event.set()
@@ -505,9 +655,9 @@ def test_pi05_probe_stops_on_mission_cancel(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_pi05_probe_reaped_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     procs = _capture_probe_proc(monkeypatch)
-    monkeypatch.setattr(pi05, "_PROBE_TIMEOUT_S", 0.5)
-    with pytest.raises(PolicyTimingError, match="timed out"):
-        asyncio.run(pi05.probe_openpi_action_horizon("cfg", {}))
+    monkeypatch.setattr(openpi_dataset, "_PROBE_TIMEOUT_S", 0.5)
+    with pytest.raises(OpenpiProbeError, match="timed out"):
+        asyncio.run(openpi_dataset.probe_openpi_training_config("cfg", "e", [], {}))
     assert procs[0].returncode is not None
 
 

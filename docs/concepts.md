@@ -90,10 +90,18 @@ Both are optional. When declared:
 
 - They are recorded on the mission and in the training result, so the
   deployment contract travels with the checkpoint.
-- The runner checks them before training. `control_hz` must equal the fps in
-  a local LeRobot dataset's `meta/info.json`. For π0.5, `action_horizon` must
-  equal the openpi config's (or the `config.model.action_horizon` override). A
-  mismatch fails the task before any GPU work. A value the runner cannot
+- The runner checks them before training, against what training will
+  actually use. For π0.5 that is the openpi config built the way `train.py`
+  builds it, with the mission's overrides applied:
+  - `control_hz` must equal the fps in `meta/info.json` of the dataset
+    training loads (`HF_LEROBOT_HOME / data.repo_id`).
+  - That dataset must be the declared `dataset`. A `config.data.repo_id` that
+    selects another directory fails the task instead of passing the check on
+    the wrong data.
+  - `action_horizon` must equal the config's `model.action_horizon`,
+    overrides included.
+
+  A mismatch fails the task before any GPU work. A value the runner cannot
   read, such as a hub dataset that isn't on disk, is skipped with a log line,
   never guessed.
 - The `custom` eval receives them as `--control_hz` / `--action_horizon`,

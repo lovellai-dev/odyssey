@@ -54,8 +54,6 @@ import asyncio
 import logging
 import os
 import re
-import sys
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +61,11 @@ from odyssey.runners.base import (
     WILDCARD_TYPE,
     Runner,
     TaskContext,
+)
+from odyssey.runners.models.openpi_dataset import (
+    OpenpiProbeError,
+    check_declared_dataset,
+    probe_openpi_training_config,
 )
 
 # Shared flatten helper (dotted keys for nested dicts).
@@ -185,115 +188,43 @@ def _tyro_overrides(config: dict[str, Any]) -> list[str]:
     return argv
 
 
-def configured_action_horizon(config: dict[str, Any]) -> int | None:
-    """``model.action_horizon`` when the mission overrides it in ``config``.
-
-    That override is forwarded to ``train.py`` as ``--model.action-horizon``,
-    so when present it is the value training uses.
-    """
-    for key, value in _flatten_config(config):
-        if key == "model.action_horizon":
-            return int(value)
-    return None
-
-
-# Prints the registered TrainConfig's action_horizon. Runs under the same
-# interpreter as train.py, so it sees the same openpi checkout and configs.
-_ACTION_HORIZON_PROBE = (
-    "import sys\n"
-    "from openpi.training import config as c\n"
-    "print(c.get_config(sys.argv[1]).model.action_horizon)\n"
-)
-_PROBE_TIMEOUT_S = 300.0
-
-
-async def probe_openpi_action_horizon(
-    config_name: str,
-    env: dict[str, str],
-    cancel_event: asyncio.Event | None = None,
-) -> int | None:
-    """The ``action_horizon`` of openpi's registered ``config_name``.
-
-    Raises ``PolicyTimingError`` when it cannot be read: the task declared an
-    action_horizon, so running without verifying it would defeat the check.
-    Returns None when ``cancel_event`` (the mission's cancellation) trips
-    first. The child is killed and reaped on EVERY interrupted path —
-    mission cancellation, timeout, or this coroutine being cancelled — so
-    no probe outlives the task.
-    """
-    child_env = {**os.environ, **env}
-    child_env.pop("PYTHONPATH", None)
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-c", _ACTION_HORIZON_PROBE, config_name,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=child_env,
-    )
-    communicate = asyncio.ensure_future(proc.communicate())
-    waiters: set[asyncio.Future[Any]] = {communicate}
-    if cancel_event is not None:
-        waiters.add(asyncio.ensure_future(cancel_event.wait()))
-    try:
-        done, _ = await asyncio.wait(
-            waiters, timeout=_PROBE_TIMEOUT_S, return_when=asyncio.FIRST_COMPLETED
-        )
-        if communicate not in done:
-            if done:  # the cancel_event waiter
-                return None
-            raise PolicyTimingError(
-                f"could not read action_horizon of openpi config {config_name!r}: "
-                f"probe timed out after {_PROBE_TIMEOUT_S:.0f}s"
-            )
-        out, err = communicate.result()
-    finally:
-        for waiter in waiters:
-            waiter.cancel()
-        if proc.returncode is None:
-            with suppress(ProcessLookupError):
-                proc.kill()
-            # Shield the reap so a cancellation arriving now can't abort it
-            # (the killed child still gets reaped), but let that
-            # CancelledError propagate: it is BaseException, not Exception.
-            with suppress(Exception):
-                await asyncio.shield(proc.wait())
-    lines = out.decode().strip().splitlines()
-    if proc.returncode != 0 or not lines or not lines[-1].strip().isdigit():
-        tail = err.decode().strip().splitlines()[-3:]
-        raise PolicyTimingError(
-            f"could not read action_horizon of openpi config {config_name!r} "
-            f"(exit {proc.returncode}): {' | '.join(tail) or 'no output'}"
-        )
-    return int(lines[-1].strip())
-
-
 async def check_pi05_policy_timing(
     task: TrainingTask,
     env: dict[str, str],
+    exp_name: str,
     cancel_event: asyncio.Event | None = None,
 ) -> None:
     """Pre-flight: declared control_hz / action_horizon must match reality.
 
     Runs before norm stats and training, so a mismatch costs seconds, not a
-    GPU run. The chunk length is the mission's ``model.action_horizon``
-    override when present, otherwise the registered openpi config's value.
-    Returns early, unchecked, when ``cancel_event`` trips during the probe;
-    the caller checks ``context.cancelled()`` right after.
+    GPU run. Both values are checked against the config ``train.py`` will
+    build — the registered openpi config WITH the mission's overrides — so
+    ``control_hz`` is compared with the fps of the dataset training actually
+    loads (``HF_LEROBOT_HOME / data.repo_id``), and that dataset must be the
+    declared one. Returns early, unchecked, when ``cancel_event`` trips during
+    the probe; the caller checks ``context.cancelled()`` right after.
     """
-    check_control_hz(task)
-    if task.action_horizon is None:
+    if task.control_hz is None and task.action_horizon is None:
         return
     config = task.config or {}
-    override = configured_action_horizon(config)
-    if override is not None:
-        check_action_horizon(task, override, "config model.action_horizon")
-        return
     config_name = str(config.get("config_name") or "")
     if not config_name:
         return  # the argv builders raise the actionable "config_name required"
-    effective = await probe_openpi_action_horizon(config_name, env, cancel_event)
+    try:
+        effective = await probe_openpi_training_config(
+            config_name, exp_name, _tyro_overrides(config), env, cancel_event
+        )
+    except OpenpiProbeError as e:
+        # Timing was declared, so running unverified would defeat the check.
+        raise PolicyTimingError(f"task {task.name!r}: {e}") from e
     if effective is None:
         return  # cancelled mid-probe
-    check_action_horizon(task, effective, f"openpi config {config_name!r}")
+    if task.control_hz is not None:
+        check_declared_dataset(task, effective)
+    check_control_hz(task, effective.dataset_dir)
+    check_action_horizon(
+        task, effective.action_horizon, f"openpi config {config_name!r} with overrides"
+    )
 
 
 def build_pi05_train_argv(*, task: TrainingTask, exp_name: str) -> list[str]:
@@ -512,7 +443,7 @@ class Pi05Runner(Runner):
 
         # Step 0: the declared timing contract must match the data and the
         # openpi config before anything heavy starts.
-        await check_pi05_policy_timing(spec, child_env, context.cancel_event)
+        await check_pi05_policy_timing(spec, child_env, exp_name, context.cancel_event)
         if context.cancelled():
             logger.info("π0.5 task %s cancelled during the timing pre-flight", context.task.id)
             return {"cancelled": True}
