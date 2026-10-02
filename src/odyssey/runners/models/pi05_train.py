@@ -308,6 +308,43 @@ def build_pi05_norm_stats_argv(*, task: TrainingTask) -> list[str]:
     return ["--config-name", str(config_name)]
 
 
+# Runs compute_norm_stats.py against the config train.py will build (see the
+# module docstring of openpi_bootstrap.py for why the direct call can't).
+_OPENPI_BOOTSTRAP = str(Path(__file__).with_name("openpi_bootstrap.py"))
+
+
+def build_pi05_norm_stats_launch(
+    *, task: TrainingTask, exp_name: str, norm_stats_script: str
+) -> tuple[str, list[str]]:
+    """``(script_path, argv)`` for the norm-stats step.
+
+    Without tyro overrides the registered config IS what train.py uses, so
+    ``compute_norm_stats.py`` runs directly (unchanged behaviour). With
+    overrides (``data.repo_id``, ``model.action_horizon``, …) it runs through
+    ``openpi_bootstrap.py``, which applies the SAME overrides with the SAME
+    parser as train.py. Both steps then see one config and one dataset.
+    """
+    config = task.config or {}
+    overrides = _tyro_overrides(config)
+    if not overrides:
+        return norm_stats_script, build_pi05_norm_stats_argv(task=task)
+    config_name = config.get("config_name")
+    if not config_name:
+        raise RuntimeError(
+            "π0.5 runner: config['config_name'] is required for norm-stats."
+        )
+    # openpi's CLI requires --exp-name (TrainConfig.exp_name is MISSING); pass
+    # train.py's so the parsed config is identical. It doesn't affect stats.
+    return _OPENPI_BOOTSTRAP, [
+        norm_stats_script,
+        str(config_name),
+        "--",
+        *overrides,
+        "--exp-name",
+        exp_name,
+    ]
+
+
 def _lerobot_env_for_dataset(task: TrainingTask) -> dict[str, str]:
     """Env overlay so openpi's LeRobot loader finds a LOCAL dataset.
 
@@ -504,10 +541,15 @@ class Pi05Runner(Runner):
             await context.emit_progress(
                 "dataset_loading", step="compute_norm_stats", step_label=exp_name
             )
+            norm_script, norm_argv = build_pi05_norm_stats_launch(
+                task=spec,
+                exp_name=exp_name,
+                norm_stats_script=_resolve_openpi_script(_NORM_STATS_SCRIPT_REL),
+            )
             norm_spec = TrainingProcessSpec(
                 timeout_seconds=timeout,
-                script_path=_resolve_openpi_script(_NORM_STATS_SCRIPT_REL),
-                argv_extra=build_pi05_norm_stats_argv(task=spec),
+                script_path=norm_script,
+                argv_extra=norm_argv,
                 env=child_env,
                 cwd=str(output_dir),
                 line_parser=parse_pi05_train_line,

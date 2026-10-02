@@ -70,15 +70,20 @@ odyssey run mission.yaml
 
 The runner executes, in order:
 
-1. `python scripts/compute_norm_stats.py --config-name pi05_ur10e_drugsort`
-   (skip with `config: {compute_norm_stats: false}` if `./assets` already holds them)
+1. `python <odyssey>/runners/models/openpi_bootstrap.py scripts/compute_norm_stats.py \
+      pi05_ur10e_drugsort -- --data.repo-id ur10e_partial_cond_aug --num-train-steps 30000 \
+      --batch-size 32 --exp-name finetune-pi05-ur10e`
+   (this mission sets overrides, so norm stats see the same config as step 2; skip the
+   step with `config: {compute_norm_stats: false}` if `./assets` already holds them)
 2. `python scripts/train.py pi05_ur10e_drugsort --exp-name finetune-pi05-ur10e --overwrite \
       --data.repo-id ur10e_partial_cond_aug --num-train-steps 30000 --batch-size 32`
 
-> The norm-stats step takes no `data.*` overrides — it reads the dataset fixed by
-> the config's `data` factory. So the mission's `data.repo_id` **must equal** the
-> registered config's default `repo_id`, or step 1 writes norm stats under one
-> `repo_id` and step 2 reads another and fails (loudly, after the full dataset scan).
+> openpi's `compute_norm_stats.py` only accepts `--config-name`; it can't take the
+> mission's overrides the way `train.py` does. So when the mission sets any override
+> (e.g. `data.repo_id`), step 1 runs through Odyssey's `openpi_bootstrap.py`. It
+> builds the config with the same parser and overrides as `train.py`, and runs the
+> script against it. The norm stats are then computed for the dataset that training
+> reads. Without overrides, step 1 calls the script directly, as before.
 
 > Norm stats are cached across runs at `~/.odyssey/pi05_assets/<config_name>/<config_name>/<repo_id>/`
 > and step 1 is skipped on a hit. The hit is keyed on `config_name` + `repo_id`
