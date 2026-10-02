@@ -18,8 +18,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from odyssey.spec._base import SpecModel
 from odyssey.spec.refs import ModelRef
 
 _AGENT_ID_PATTERN = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
@@ -30,7 +31,7 @@ class AgentRole(str, Enum):
     SPECIALIST = "SPECIALIST"
 
 
-class AgentSpec(BaseModel):
+class AgentSpec(SpecModel):
     """One agent on a robot.
 
     ``model`` is the agent's base checkpoint — what a training task

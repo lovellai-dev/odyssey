@@ -66,10 +66,12 @@ from odyssey.runners.evals._common import (
     build_eval_summary,
     resolve_eval_checkpoint,
 )
+from odyssey.runners.policy_timing import eval_timing_defaults
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     run_training_subprocess,
 )
+from odyssey.spec.agents import AgentRole
 from odyssey.spec.tasks import EvaluationTask, EvaluationType, TaskKind
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,19 @@ def build_custom_argv(
             continue
         argv += [f"--{key}", str(value)]
     return argv
+
+
+def eval_config_with_timing(context: TaskContext, config: dict[str, Any]) -> dict[str, Any]:
+    """``config`` plus the PILOT's trained ``control_hz`` / ``action_horizon``.
+
+    The values come from the training task that produced the checkpoint
+    under evaluation, so the script runs the policy at the rate and chunk
+    length it was trained for. A key already set in the eval ``config``
+    wins: an eval may deliberately probe a different rate.
+    """
+    pilot = next((a.id for a in context.agents if a.role == AgentRole.PILOT), None)
+    defaults = eval_timing_defaults(context.mission.spec, pilot)
+    return {**defaults, **config}
 
 
 def read_metrics(out_json: Path) -> dict[str, Any]:
@@ -221,7 +236,7 @@ class CustomEvalRunner(Runner):
                 f"CustomEvalRunner expects EvaluationTask, got {type(spec).__name__}"
             )
 
-        config = spec.config or {}
+        config = eval_config_with_timing(context, spec.config or {})
         checkpoint = resolve_eval_checkpoint(context)
         eval_script = resolve_eval_script(config)
         interpreter = resolve_interpreter(config)

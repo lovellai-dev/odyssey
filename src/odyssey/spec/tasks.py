@@ -15,7 +15,10 @@ Two task kinds: TRAINING and EVALUATION.
     multi-agent runtime.
 
 ML hyperparameters live in ``config: dict``. The framework spec stays
-open; runners validate their own config schemas.
+open; runners validate their own config schemas. The exceptions are the
+values that outlive training and bind deployment (``control_hz``,
+``action_horizon``): they are typed fields, so they are validated and
+recorded rather than buried in a runner-specific map.
 """
 
 from __future__ import annotations
@@ -23,8 +26,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from odyssey.spec._base import SpecModel
 from odyssey.spec.refs import DatasetRef
 
 _TASK_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
@@ -66,7 +70,7 @@ class EvaluationType(str, Enum):
 # Task models
 # ---------------------------------------------------------------------------
 
-class TrainingTask(BaseModel):
+class TrainingTask(SpecModel):
     name: Annotated[str, Field(pattern=_TASK_NAME_PATTERN, max_length=64)]
     kind: Literal["training"] = "training"
     description: str | None = None
@@ -78,13 +82,24 @@ class TrainingTask(BaseModel):
     # model directly.
     agent_id: str
     dataset: DatasetRef | None = None
+    # Policy timing contract. Training fixes these two values and the
+    # checkpoint inherits them, so a deployment that runs the policy at a
+    # different rate or chunk length silently degrades it. Declaring them
+    # here records them on the mission and turns a mismatch into an error:
+    # runners that know their framework check them before training starts.
+    #
+    # control_hz: rate the policy's actions are spaced at and executed at
+    # on the robot. For a LeRobot dataset it must equal meta/info.json fps.
+    # action_horizon: actions the policy predicts per call (chunk length).
+    control_hz: float | None = Field(default=None, gt=0)
+    action_horizon: int | None = Field(default=None, ge=1)
     config: dict[str, Any] = Field(default_factory=dict)
     execution_order: int = 0
     timeout_seconds: int | None = Field(default=None, ge=1)
     retries: int = Field(default=0, ge=0)
 
 
-class EvaluationTask(BaseModel):
+class EvaluationTask(SpecModel):
     name: Annotated[str, Field(pattern=_TASK_NAME_PATTERN, max_length=64)]
     kind: Literal["evaluation"] = "evaluation"
     description: str | None = None

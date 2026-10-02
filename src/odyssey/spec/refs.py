@@ -15,13 +15,15 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from odyssey.spec._base import SpecModel
 
 # ---------------------------------------------------------------------------
 # Model references
 # ---------------------------------------------------------------------------
 
-class HFModelRef(BaseModel):
+class HFModelRef(SpecModel):
     source: Literal["huggingface"] = "huggingface"
     base: str
     revision: str | None = None
@@ -35,7 +37,7 @@ class HFModelRef(BaseModel):
     modality: Literal["text", "multimodal"] = "multimodal"
 
 
-class LovellModelRef(BaseModel):
+class LovellModelRef(SpecModel):
     source: Literal["lovell"] = "lovell"
     model_id: str
     version: str
@@ -66,7 +68,7 @@ class DatasetFormat(str, Enum):
     PARQUET = "parquet"
 
 
-class DatasetRef(BaseModel):
+class DatasetRef(SpecModel):
     source: DatasetSource
     ref: str
     split: str | None = None
