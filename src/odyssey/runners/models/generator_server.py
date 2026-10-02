@@ -8,11 +8,14 @@ advisories — the caller sends fully-composed messages, the server returns text
 
 JSON-lines stdin/stdout protocol:
 
-    <- {"ready": true}                              (once, after the model loads)
-    -> {"messages": [...], "image": "<base64 PNG>"} (one request per line)
-    <- {"text": "<generated text>"}                 (one response per line)
-    <- {"error": "..."}                             (on failure; client falls back)
-    -> {"shutdown": true}                           (client asks the server to exit)
+    <- {"ready": true}                                      (once, after the model loads)
+    -> {"id": 1, "messages": [...], "image": "<base64 PNG>"} (one request per line)
+    <- {"id": 1, "text": "<generated text>"}                (one response per line)
+    <- {"id": 1, "error": "..."}                            (on failure; client falls back)
+    -> {"shutdown": true}                                   (client asks the server to exit)
+
+The request ``id`` is echoed on its response so the client can discard a late
+reply to a request it already gave up on.
 
 **stdout carries ONLY protocol JSON.** Model-loading / log noise is forced to
 stderr. Heavy imports are deferred into ``main()`` so this module imports
@@ -75,9 +78,10 @@ def serve(
             continue
         if req.get("shutdown"):
             break
+        echo = {"id": req["id"]} if "id" in req else {}
         messages = req.get("messages")
         if not isinstance(messages, list):
-            _emit(outstream, {"error": "missing 'messages' list"})
+            _emit(outstream, {**echo, "error": "missing 'messages' list"})
             continue
         try:
             raw_image = req.get("image")
@@ -85,9 +89,9 @@ def serve(
                 text = generator.generate(messages, image=_decode_image(raw_image))  # type: ignore[call-arg]
             else:
                 text = generator.generate(messages)
-            _emit(outstream, {"text": str(text)})
+            _emit(outstream, {**echo, "text": str(text)})
         except BaseException as e:
-            _emit(outstream, {"error": f"generate failed: {type(e).__name__}: {e}"})
+            _emit(outstream, {**echo, "error": f"generate failed: {type(e).__name__}: {e}"})
 
 
 def main() -> None:

@@ -76,6 +76,15 @@ def test_serve_missing_messages() -> None:
     assert any("error" in m for m in out)
 
 
+def test_serve_echoes_request_id() -> None:
+    out = _run_serve(
+        _FakeGen("ok"),
+        [{"id": 7, "messages": []}, {"id": 8, "foo": "bar"}, {"shutdown": True}],
+    )
+    assert out[1] == {"id": 7, "text": "ok"}
+    assert out[2]["id"] == 8 and "error" in out[2]
+
+
 def test_serve_decodes_image_and_passes_to_generator() -> None:
     from PIL import Image
 
@@ -112,7 +121,7 @@ for line in sys.stdin:
         break
     has_img = isinstance(req.get("image"), str) and len(req["image"]) > 0
     n = len(req.get("messages", []))
-    sys.stdout.write(json.dumps({"text": "msgs=%d image=%s" % (n, has_img)}) + "\\n")
+    sys.stdout.write(json.dumps({"id": req["id"], "text": "msgs=%d image=%s" % (n, has_img)}) + "\\n")
     sys.stdout.flush()
 """
 
@@ -125,7 +134,49 @@ import json, sys
 sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
 for line in sys.stdin:
     if line.strip():
-        sys.stdout.write(json.dumps({"text": None}) + "\\n"); sys.stdout.flush()
+        req = json.loads(line)
+        sys.stdout.write(json.dumps({"id": req["id"], "text": None}) + "\\n"); sys.stdout.flush()
+"""
+
+
+# Answers with the scene named in the last message; the FIRST reply is late.
+_FAKE_SERVER_SLOW_FIRST = """
+import json, sys, time
+sys.stdout.write(json.dumps({"ready": True}) + "\\n"); sys.stdout.flush()
+first = True
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    if first:
+        time.sleep(0.3)
+        first = False
+    scene = req["messages"][-1]["content"]
+    sys.stdout.write(json.dumps({"id": req["id"], "text": scene}) + "\\n"); sys.stdout.flush()
+"""
+
+# First launch reports a model-load error and exits; later launches are healthy.
+_FAKE_SERVER_FAILS_ONCE = """
+import json, os, sys
+marker = {marker!r}
+if not os.path.exists(marker):
+    open(marker, "w").close()
+    sys.stdout.write(json.dumps({{"error": "generator load failed: transient"}}) + "\\n")
+    sys.stdout.flush()
+    sys.exit(1)
+sys.stdout.write(json.dumps({{"ready": True}}) + "\\n"); sys.stdout.flush()
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    req = json.loads(line)
+    if req.get("shutdown"):
+        break
+    sys.stdout.write(json.dumps({{"id": req["id"], "text": "healthy"}}) + "\\n")
+    sys.stdout.flush()
 """
 
 
@@ -179,6 +230,32 @@ def test_remote_generator_falls_back_on_bad_response(tmp_path: Path) -> None:
     gen = _generator_for(_FAKE_SERVER_BAD, tmp_path)
     try:
         assert gen.generate([{"role": "user", "content": "x"}]) == ""
+    finally:
+        gen.close()
+
+
+def test_remote_generator_discards_late_reply_after_timeout(tmp_path: Path) -> None:
+    gen = _generator_for(_FAKE_SERVER_SLOW_FIRST, tmp_path)
+    try:
+        gen._request_timeout = 0.05
+        assert gen.generate([{"role": "user", "content": "scene A"}]) == ""
+        # The late "scene A" reply must not be read as the answer for scene B.
+        gen._request_timeout = 30.0
+        assert gen.generate([{"role": "user", "content": "scene B"}]) == "scene B"
+        assert gen.generate([{"role": "user", "content": "scene C"}]) == "scene C"
+    finally:
+        gen.close()
+
+
+def test_remote_generator_restarts_after_startup_failure(tmp_path: Path) -> None:
+    script = _FAKE_SERVER_FAILS_ONCE.format(marker=str(tmp_path / "failed_once"))
+    gen = _generator_for(script, tmp_path)
+    try:
+        msgs = [{"role": "user", "content": "x"}]
+        assert gen.generate(msgs) == ""
+        # The dead process's EOF must not close the healthy replacement.
+        assert gen.generate(msgs) == "healthy"
+        assert gen.generate(msgs) == "healthy"
     finally:
         gen.close()
 

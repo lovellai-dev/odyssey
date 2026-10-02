@@ -15,6 +15,11 @@ Communicates over the JSON-lines stdin/stdout protocol documented in
 ``generate`` call and is reused across calls. Robust by design: non-JSON stdout
 lines are skipped, and any failure returns ``""`` so an advisory turn degrades
 gracefully rather than crashing the rollout.
+
+Each request carries an ``id`` that the server echoes back; responses with any
+other ``id`` are discarded, so a late reply to a timed-out request is never read
+as the answer to the next one. Each server process gets its own stdout queue,
+so a dead process's EOF sentinel cannot leak into its replacement.
 """
 
 from __future__ import annotations
@@ -109,6 +114,7 @@ class RemoteGenerator:
         self._proc: subprocess.Popen[str] | None = None
         self._lines: queue.Queue[str | None] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self._next_id = 0
         atexit.register(self.close)
 
     def _ensure_started(self) -> None:
@@ -127,8 +133,11 @@ class RemoteGenerator:
             **_popen_creation_kwargs(),
         )
         assert self._proc.stdout is not None
+        # A fresh queue per process generation: a previous process's reader can
+        # still deposit its EOF sentinel, and it must not reach this process.
+        self._lines = queue.Queue()
         self._reader = threading.Thread(
-            target=self._drain_stdout, args=(self._proc.stdout,), daemon=True
+            target=self._drain_stdout, args=(self._proc.stdout, self._lines), daemon=True
         )
         self._reader.start()
         msg = self._read_message(self._startup_timeout)
@@ -137,13 +146,27 @@ class RemoteGenerator:
             self.close()
             raise RuntimeError(f"specialist generator failed to start: {err}")
 
-    def _drain_stdout(self, stdout: IO[str]) -> None:
-        """Reader thread: push each stdout line onto the queue; None on EOF."""
+    @staticmethod
+    def _drain_stdout(stdout: IO[str], lines: queue.Queue[str | None]) -> None:
+        """Reader thread: push each stdout line onto its queue; None on EOF."""
         try:
             for line in stdout:
-                self._lines.put(line)
+                lines.put(line)
         finally:
-            self._lines.put(None)
+            lines.put(None)
+
+    def _read_response(self, request_id: int, timeout: float) -> dict[str, Any] | None:
+        """Return the response for ``request_id``, discarding stale replies."""
+        deadline = time.monotonic() + timeout
+        while True:
+            msg = self._read_message(deadline - time.monotonic())
+            if msg is None or msg.get("id") == request_id:
+                return msg
+            logger.warning(
+                "RemoteGenerator: discarding stale response (id=%r, expected %d)",
+                msg.get("id"),
+                request_id,
+            )
 
     def _read_message(self, timeout: float) -> dict[str, Any] | None:
         """Return the next protocol JSON object, skipping noise. None on timeout/EOF."""
@@ -182,12 +205,14 @@ class RemoteGenerator:
             self._ensure_started()
             proc = self._proc
             assert proc is not None and proc.stdin is not None
-            request: dict[str, Any] = {"messages": messages}
+            self._next_id += 1
+            request_id = self._next_id
+            request: dict[str, Any] = {"id": request_id, "messages": messages}
             if image is not None:
                 request["image"] = _encode_image(image)
             proc.stdin.write(json.dumps(request) + "\n")
             proc.stdin.flush()
-            msg = self._read_message(self._request_timeout)
+            msg = self._read_response(request_id, self._request_timeout)
             text = (msg or {}).get("text")
             if isinstance(text, str):
                 return text
@@ -215,3 +240,7 @@ class RemoteGenerator:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     _terminate_process(proc, _SIGKILL)
+        # Let the old reader hit EOF and finish before any restart.
+        reader, self._reader = self._reader, None
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=5)
