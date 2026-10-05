@@ -54,6 +54,8 @@ import asyncio
 import logging
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -434,6 +436,11 @@ def _link_norm_stats_cache(
     was verified on disk (see ``_norm_stats_cache_root``). Without a revision two versions of a dataset
     published under one repo_id are indistinguishable and share a cache entry.
 
+    Only a HIT is linked. On a miss ``./assets`` stays a private per-run
+    directory: the stats are computed there and reach the shared cache only
+    through ``_publish_norm_stats``, after the run has validated them. A
+    failed, cancelled or revision-invalid run never writes into the cache.
+
     Returns ``(cache_dir, already_has_norm_stats)``; ``(None, False)`` when there
     is no config_name to key the cache on.
     """
@@ -441,13 +448,42 @@ def _link_norm_stats_cache(
         return None, False
     cache = _norm_stats_cache_root(config_name, revision)
     cache.mkdir(parents=True, exist_ok=True)
-    link = output_dir / "assets"
-    if not link.is_symlink() and not link.exists():
-        link.symlink_to(cache, target_is_directory=True)
     cached = bool(repo_id) and (
         cache / config_name / repo_id / "norm_stats.json"
     ).is_file()
+    link = output_dir / "assets"
+    if cached and not link.is_symlink() and not link.exists():
+        link.symlink_to(cache, target_is_directory=True)
     return cache, cached
+
+
+def _publish_norm_stats(
+    output_dir: Path, cache: Path, config_name: str, repo_id: str
+) -> bool:
+    """Publish this run's freshly computed stats into the shared cache.
+
+    Called only once the stats are validated: ``compute_norm_stats`` exited 0
+    and the pinned revision (if any) was re-verified. The entry is copied
+    into a staging dir next to its target and renamed into place, so readers
+    never see a partial entry. If another run published the same entry
+    first, the rename fails and that entry is kept. Nothing is ever deleted
+    from the cache, so a concurrent run's valid entry can't be removed.
+
+    Returns True when this run published the entry.
+    """
+    src = output_dir / "assets" / config_name / repo_id
+    if not repo_id or src.is_symlink() or not (src / "norm_stats.json").is_file():
+        return False
+    target = cache / config_name / repo_id
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=target.parent))
+    try:
+        shutil.copytree(src, staging, dirs_exist_ok=True)
+        os.rename(staging, target)
+    except OSError:  # another run published first: keep its entry
+        shutil.rmtree(staging, ignore_errors=True)
+        return False
+    return True
 
 
 class Pi05Runner(Runner):
@@ -540,7 +576,10 @@ class Pi05Runner(Runner):
             assets_cache, norm_cached = None, False
 
         # Step 1: normalization statistics (openpi requires them before training).
-        # Skip when a prior run already cached them for this config.
+        # Skip when a prior run already cached them for this config. Fresh stats
+        # are computed into this run's own ./assets and published to the shared
+        # cache only after step 2's revision re-check passes.
+        computed = False
         if config.get("compute_norm_stats", True) and not norm_cached:
             await context.emit_progress(
                 "dataset_loading", step="compute_norm_stats", step_label=exp_name
@@ -566,6 +605,7 @@ class Pi05Runner(Runner):
                 raise RuntimeError(
                     f"openpi compute_norm_stats exited with code {rc}"
                 )
+            computed = True
         elif norm_cached:
             logger.info(
                 "π0.5 task %s: reusing cached norm stats at %s",
@@ -586,6 +626,8 @@ class Pi05Runner(Runner):
                     f"π0.5 task {spec.name!r}: {loaded_dir} changed from commit "
                     f"{verified_sha} to {again} during norm stats; not training on it."
                 )
+        if computed and assets_cache is not None:
+            _publish_norm_stats(output_dir, assets_cache, config_name, _dataset_repo_id(spec))
         train_spec = TrainingProcessSpec(
             timeout_seconds=timeout,
             script_path=_resolve_openpi_script(_TRAIN_SCRIPT_REL),

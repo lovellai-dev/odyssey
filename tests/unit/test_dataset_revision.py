@@ -644,6 +644,8 @@ def fake_openpi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
     async def _fake_subprocess(ctx: TaskContext, spec: Any) -> int:
         launched.append(spec)
+        if Path(spec.script_path).name == "compute_norm_stats.py":
+            _write(Path(spec.cwd), f"assets/{_CFG}/my_dataset/norm_stats.json", "{}")
         (Path(spec.cwd) / "checkpoints" / _CFG / "exp" / "100").mkdir(parents=True,
                                                                       exist_ok=True)
         return 0
@@ -651,6 +653,12 @@ def fake_openpi(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
     monkeypatch.setattr(pi05, "probe_openpi_training_config", _probe)
     monkeypatch.setattr(pi05, "run_training_subprocess", _fake_subprocess)
     return launched
+
+
+def _cached_stats(tmp_path: Path, cache_dir: str) -> Path:
+    """Where a published norm-stats entry lives in the shared cache."""
+    return (tmp_path / "home" / ".odyssey" / "pi05_assets" / cache_dir / _CFG
+            / "my_dataset" / "norm_stats.json")
 
 
 def _scripts(launched: list[Any]) -> list[str]:
@@ -668,8 +676,7 @@ def test_runner_records_verified_revision(tmp_path: Path, fake_openpi: list[Any]
     assert result["dataset_revision"] == SHA_A
     assert result["dataset_revision_verified"] is True
     assert _scripts(fake_openpi) == ["compute_norm_stats.py", "train.py"]
-    cache = tmp_path / "home" / ".odyssey" / "pi05_assets" / f"{_CFG}@{SHA_A}"
-    assert (tmp_path / "out" / "assets").resolve() == cache.resolve()
+    assert _cached_stats(tmp_path, f"{_CFG}@{SHA_A}").is_file()  # published after re-check
 
 
 @pytest.mark.parametrize("declared", [SHA_A[:7], SHA_A[:7].upper()])
@@ -680,8 +687,7 @@ def test_runner_records_and_caches_by_the_full_sha(
     root = _local_download(tmp_path / "my_dataset", SHA_A)
     result = _run(_context(tmp_path, _local_ref(root, declared)))
     assert result["dataset_revision"] == SHA_A
-    cache = tmp_path / "home" / ".odyssey" / "pi05_assets" / f"{_CFG}@{SHA_A}"
-    assert (tmp_path / "out" / "assets").resolve() == cache.resolve()
+    assert _cached_stats(tmp_path, f"{_CFG}@{SHA_A}").is_file()
 
 
 def test_runner_reverifies_before_train(
@@ -700,6 +706,75 @@ def test_runner_reverifies_before_train(
     with pytest.raises(DatasetRevisionError, match=r"episode_000000\.parquet"):
         _run(_context(tmp_path, _local_ref(root, SHA_A)))
     assert launched == ["compute_norm_stats.py"]  # train.py never started
+
+
+def test_rejected_run_publishes_no_stats_for_the_next_run(
+    tmp_path: Path, fake_openpi: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: stats computed on swapped data must not be reused under A's key.
+
+    Run 1 passes preflight at A; during norm stats the data becomes B and B's
+    stats are written. The re-check refuses run 1. Run 2, on a restored A
+    snapshot, must recompute rather than hit B's stats cached as A.
+    """
+    root = _local_download(tmp_path / "my_dataset", SHA_A)
+    launched: list[str] = []
+    norm_runs: list[int] = []
+
+    async def _swap_then_write_b_stats(ctx: TaskContext, spec: Any) -> int:
+        launched.append(Path(spec.script_path).name)
+        if launched[-1] == "compute_norm_stats.py" and not norm_runs:
+            norm_runs.append(1)
+            _hub_metadata(root, _EPISODE, SHA_B)
+            _write(Path(spec.cwd), f"assets/{_CFG}/my_dataset/norm_stats.json", "B")
+        elif launched[-1] == "compute_norm_stats.py":
+            _write(Path(spec.cwd), f"assets/{_CFG}/my_dataset/norm_stats.json", "A")
+        else:
+            (Path(spec.cwd) / "checkpoints" / _CFG / "exp" / "100").mkdir(parents=True)
+        return 0
+
+    monkeypatch.setattr(pi05, "run_training_subprocess", _swap_then_write_b_stats)
+    with pytest.raises(DatasetRevisionError):
+        _run(_context(tmp_path, _local_ref(root, SHA_A)))
+    assert not _cached_stats(tmp_path, f"{_CFG}@{SHA_A}").exists()
+
+    _hub_metadata(root, _EPISODE, SHA_A)  # a clean A snapshot is restored
+    launched.clear()
+    ctx = _context(tmp_path, _local_ref(root, SHA_A))
+    ctx.output_dir = tmp_path / "out2"
+    result = _run(ctx)
+    assert launched == ["compute_norm_stats.py", "train.py"]  # recomputed, no stale hit
+    assert result["dataset_revision_verified"] is True
+    assert _cached_stats(tmp_path, f"{_CFG}@{SHA_A}").read_text() == "A"
+
+
+def test_failed_norm_stats_publish_nothing(
+    tmp_path: Path, fake_openpi: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _local_download(tmp_path / "my_dataset", SHA_A)
+
+    async def _writes_then_fails(ctx: TaskContext, spec: Any) -> int:
+        _write(Path(spec.cwd), f"assets/{_CFG}/my_dataset/norm_stats.json", "partial")
+        return 1
+
+    monkeypatch.setattr(pi05, "run_training_subprocess", _writes_then_fails)
+    with pytest.raises(RuntimeError, match="compute_norm_stats exited with code 1"):
+        _run(_context(tmp_path, _local_ref(root, SHA_A)))
+    assert not _cached_stats(tmp_path, f"{_CFG}@{SHA_A}").exists()
+
+
+def test_publish_keeps_an_entry_another_run_published_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrent writers: the first published entry wins and is never removed."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    cache = pi05._norm_stats_cache_root(_CFG, SHA_A)
+    for run, stats in (("r1", "first"), ("r2", "second")):
+        _write(tmp_path / run, f"assets/{_CFG}/my_dataset/norm_stats.json", stats)
+    assert pi05._publish_norm_stats(tmp_path / "r1", cache, _CFG, "my_dataset") is True
+    assert pi05._publish_norm_stats(tmp_path / "r2", cache, _CFG, "my_dataset") is False
+    assert (cache / _CFG / "my_dataset" / "norm_stats.json").read_text() == "first"
+    assert [p.name for p in (cache / _CFG).iterdir()] == ["my_dataset"]  # no staging left
 
 
 def _gr00t_or_openvla_context(tmp_path: Path, runner: str, revision: str) -> TaskContext:
@@ -825,8 +900,7 @@ def test_runner_branch_pin_is_unverified_and_not_a_cache_key(
     result = _run(_context(tmp_path, _local_ref(root, "main")))
     assert result["dataset_revision"] == "main"
     assert result["dataset_revision_verified"] is False
-    cache = tmp_path / "home" / ".odyssey" / "pi05_assets" / _CFG
-    assert (tmp_path / "out" / "assets").resolve() == cache.resolve()
+    assert _cached_stats(tmp_path, _CFG).is_file()  # the shared, unkeyed entry
 
 
 def test_runner_rejects_pinned_hub_dataset(tmp_path: Path, fake_openpi: list[Any]) -> None:
