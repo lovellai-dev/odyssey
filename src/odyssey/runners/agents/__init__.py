@@ -15,6 +15,14 @@ Model loading (``VLARuntime``, ``GemmaVLMGenerator``) lives in
 ``runners/models/``.
 """
 
+from odyssey.runners.agents.brain import (
+    Advisory,
+    BrainContext,
+    DeterministicBrain,
+    SafetyBoundary,
+    SpecialistTurn,
+    select_specialists,
+)
 from odyssey.runners.agents.openai_judge import OpenAICompatCompletionJudge
 from odyssey.runners.agents.planned import (
     PhaseConfig,
@@ -26,6 +34,9 @@ from odyssey.runners.agents.remote_planner import RemotePlanner
 from odyssey.runners.agents.runtime import PilotRuntime, PlannerRuntime, TextGenerator
 
 __all__ = [
+    "Advisory",
+    "BrainContext",
+    "DeterministicBrain",
     "LLMPlanner",
     "OpenAICompatCompletionJudge",
     "PhaseConfig",
@@ -34,5 +45,8 @@ __all__ = [
     "PlannedEvalRuntime",
     "PlannerRuntime",
     "RemotePlanner",
+    "SafetyBoundary",
+    "SpecialistTurn",
     "TextGenerator",
+    "select_specialists",
 ]
