@@ -64,6 +64,52 @@ deadlines, instruction prefixes injected into VLA prompts). Write them like
 you mean it — future-you will reread them in leaderboard submissions and
 graph queries.
 
+Unknown keys are errors. A misspelled or misplaced field (`control_hzz`,
+`dataset.revison`) fails `odyssey run` before any task starts instead of
+being silently dropped. `config:` maps stay free-form: runners validate
+their own keys.
+
+### Policy timing: `control_hz` and `action_horizon`
+
+Two values are fixed by training and bind every deployment of the
+checkpoint: the rate the policy's actions are executed at, and the number
+of actions it predicts per call. Declare them on the training task:
+
+```yaml
+  - name: finetune
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    control_hz: 10        # = the dataset's recorded fps
+    action_horizon: 16    # actions per predicted chunk
+    dataset: { source: local, ref: /data/my_lerobot_dataset, format: lerobot }
+    config: { runner: pi05, config_name: my_pi05_config }
+```
+
+Both are optional. When declared:
+
+- They are recorded on the mission and in the training result, so the
+  deployment contract travels with the checkpoint.
+- The runner checks them before training, against what training will
+  actually use. For π0.5 that is the openpi config built the way `train.py`
+  builds it, with the mission's overrides applied:
+  - `control_hz` must equal the fps in `meta/info.json` of the dataset
+    training loads (`HF_LEROBOT_HOME / data.repo_id`).
+  - That dataset must be the declared `dataset`. A `config.data.repo_id` that
+    selects another directory fails the task instead of passing the check on
+    the wrong data.
+  - `action_horizon` must equal the config's `model.action_horizon`,
+    overrides included.
+
+  A mismatch fails the task before any GPU work. A value the runner cannot
+  read, such as a hub dataset that isn't on disk, is skipped with a log line,
+  never guessed.
+- The `custom` eval receives them as `--control_hz` / `--action_horizon`,
+  taken from the completed training task that produced the checkpoint under
+  evaluation (a failed later training doesn't count). A key set in the eval's
+  own `config` wins. An explicit `config.checkpoint` that no task in the
+  mission produced inherits nothing: set its timing in the eval's `config`.
+
 ### Evaluation types
 
 `evaluation_type` selects the eval runner:

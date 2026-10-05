@@ -7,10 +7,10 @@ no-op at runtime until the leaderboard backend exists.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from odyssey.spec._base import SpecModel
 
 
-class LeaderboardSpec(BaseModel):
+class LeaderboardSpec(SpecModel):
     publish: bool = False
     endpoint: str = "https://odyssey.lovell.ai"
     category: str | None = None
