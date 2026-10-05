@@ -1,4 +1,4 @@
-# GR00T NEW_EMBODIMENT modality config for the Hiwonder JetRover arm
+# GR00T N1.7 NEW_EMBODIMENT modality config for the Hiwonder JetRover arm
 # (marketed "6DOF": 5 positional joints + gripper).
 #
 # HOW TO USE: copy this file into your Isaac-GR00T checkout as
@@ -8,111 +8,76 @@
 # (relative paths resolve against $ISAAC_GR00T_REPO_PATH — see
 # src/odyssey/runners/models/gr00t_train.py).
 #
-# It is modeled 1:1 on the upstream examples/SO100/so100_config.py (the other
-# single-arm + gripper NEW_EMBODIMENT example). Upstream transform/import names
-# drift between GR00T releases — before training, diff this file against the
-# so100 config in YOUR checkout and align the imports/class shape if they differ.
+# N1.7's launch_finetune.py *imports* this file for its side effect: the
+# register_modality_config() call at the bottom is what makes NEW_EMBODIMENT
+# resolvable to these keys. A module that only defines a config object is never
+# picked up. Modeled 1:1 on upstream examples/SO100/so100_config.py at
+# NVIDIA/Isaac-GR00T@51d4c89 (the single-arm + gripper NEW_EMBODIMENT example).
+# Serving needs no copy of it: like upstream's SO100 recipe, run_gr00t_server
+# takes only --model-path and --embodiment-tag NEW_EMBODIMENT.
 #
-# The matching LeRobot dataset must carry, per frame (see this example's README):
-#   state.single_arm  (5,)  arm joint positions, rad
-#   state.gripper     (1,)  gripper position
-#   action.single_arm (5,)  target joint positions, rad
-#   action.gripper    (1,)  target gripper position
-#   video.front       front RGB camera (the depth cam's RGB stream)
-#   annotation.human.task_description
-# declared in the dataset's meta/modality.json.
+# Keys are the meta/modality.json group names (no "state." / "video." prefix)
+# and must match both the dataset and the eval client's wire keys
+# (eval_jetrover.py: VIDEO_KEY="front", state "single_arm" + "gripper"):
+#   state  : single_arm (5) arm joint positions, rad   gripper (1)
+#   action : single_arm (5) target joint positions, rad gripper (1)
+#   video  : front — the depth cam's RGB stream
+#   language: annotation.human.task_description
+#
+# Action representation follows SO100: the arm is learned RELATIVE to the
+# current state (N1.7's launcher sets use_relative_action=True) and the gripper
+# ABSOLUTE. The policy server decodes relative chunks back to absolute targets
+# with the observed state, so the eval client always receives absolute joint
+# positions — which is what its rate-limit clamp assumes.
 #
 # DoF note: Hiwonder markets the JetRover arm as "6DOF" *counting the gripper* —
 # the vendor docs enumerate servo IDs 1-5 for the arm (pan-tilt base + 3 body
-# joints + wrist) and ID 10 for the gripper. Hence 5-D single_arm here. If your
-# unit differs, adjust the dims consistently here, in the dataset, and via the
-# eval script's --arm_dof flag.
+# joints + wrist) and ID 10 for the gripper. Hence 5-D single_arm. If your unit
+# differs, adjust the dims consistently in the dataset's modality.json and via
+# the eval script's --arm_dof flag.
 
-from typing import ClassVar
-
-from gr00t.data.dataset import ModalityConfig
-from gr00t.data.transform.base import ComposedModalityTransform
-from gr00t.data.transform.concat import ConcatTransform
-from gr00t.data.transform.state_action import (
-    StateActionToTensor,
-    StateActionTransform,
+from gr00t.configs.data.embodiment_configs import register_modality_config
+from gr00t.data.embodiment_tags import EmbodimentTag
+from gr00t.data.types import (
+    ActionConfig,
+    ActionFormat,
+    ActionRepresentation,
+    ActionType,
+    ModalityConfig,
 )
-from gr00t.data.transform.video import VideoColorJitter, VideoCrop, VideoResize, VideoToTensor
-from gr00t.experiment.data.data_config import BaseDataConfig
-from gr00t.model.transforms import GR00TTransform
 
+jetrover_config = {
+    # Video: current frame only
+    "video": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["front"],
+    ),
+    # State: current proprioceptive reading
+    "state": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["single_arm", "gripper"],
+    ),
+    # Action: 16-step chunk (the GR00T default); one ActionConfig per key
+    "action": ModalityConfig(
+        delta_indices=list(range(0, 16)),
+        modality_keys=["single_arm", "gripper"],
+        action_configs=[
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+            ActionConfig(
+                rep=ActionRepresentation.ABSOLUTE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+            ),
+        ],
+    ),
+    "language": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["annotation.human.task_description"],
+    ),
+}
 
-class JetroverDataConfig(BaseDataConfig):
-    """JetRover arm (5 joints) + gripper, front camera — GR00T NEW_EMBODIMENT."""
-
-    video_keys: ClassVar[list[str]] = ["video.front"]
-    state_keys: ClassVar[list[str]] = ["state.single_arm", "state.gripper"]
-    action_keys: ClassVar[list[str]] = ["action.single_arm", "action.gripper"]
-    language_keys: ClassVar[list[str]] = ["annotation.human.task_description"]
-
-    observation_indices: ClassVar[list[int]] = [0]
-    # 16-step action chunks, the GR00T default
-    action_indices: ClassVar[list[int]] = list(range(16))
-
-    def modality_config(self) -> dict[str, ModalityConfig]:
-        return {
-            "video": ModalityConfig(
-                delta_indices=self.observation_indices,
-                modality_keys=self.video_keys,
-            ),
-            "state": ModalityConfig(
-                delta_indices=self.observation_indices,
-                modality_keys=self.state_keys,
-            ),
-            "action": ModalityConfig(
-                delta_indices=self.action_indices,
-                modality_keys=self.action_keys,
-            ),
-            "language": ModalityConfig(
-                delta_indices=self.observation_indices,
-                modality_keys=self.language_keys,
-            ),
-        }
-
-    def transform(self) -> ComposedModalityTransform:
-        transforms = [
-            # video
-            VideoToTensor(apply_to=self.video_keys),
-            VideoCrop(apply_to=self.video_keys, scale=0.95),
-            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
-            VideoColorJitter(
-                apply_to=self.video_keys,
-                brightness=0.3,
-                contrast=0.4,
-                saturation=0.5,
-                hue=0.08,
-            ),
-            # state: normalize to the dataset's min/max stats
-            StateActionToTensor(apply_to=self.state_keys),
-            StateActionTransform(
-                apply_to=self.state_keys,
-                normalization_modes={key: "min_max" for key in self.state_keys},
-            ),
-            # action
-            StateActionToTensor(apply_to=self.action_keys),
-            StateActionTransform(
-                apply_to=self.action_keys,
-                normalization_modes={key: "min_max" for key in self.action_keys},
-            ),
-            # concat + model-side packing
-            ConcatTransform(
-                video_concat_order=self.video_keys,
-                state_concat_order=self.state_keys,
-                action_concat_order=self.action_keys,
-            ),
-            GR00TTransform(
-                state_horizon=len(self.observation_indices),
-                action_horizon=len(self.action_indices),
-                max_state_dim=64,
-                max_action_dim=32,
-            ),
-        ]
-        return ComposedModalityTransform(transforms=transforms)
-
-
-DATA_CONFIG = JetroverDataConfig()
+register_modality_config(jetrover_config, embodiment_tag=EmbodimentTag.NEW_EMBODIMENT)

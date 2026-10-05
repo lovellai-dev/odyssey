@@ -46,6 +46,8 @@ def _load_module() -> Any:
     spec = importlib.util.spec_from_file_location("eval_jetrover", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # @dataclass resolves the defining module through sys.modules.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -178,6 +180,49 @@ def test_auto_timeout_scores_failure(jetrover: Any, tmp_path: Path) -> None:
     assert payload["metrics"]["episodes"][0]["success"] is False
 
 
+def test_timed_out_prompt_does_not_consume_next_answer(jetrover: Any) -> None:
+    # Review #101: the orphaned read of an expired prompt used to take the
+    # answer typed for the next prompt. Simulate a shared terminal: input_fn
+    # blocks until the "operator" types a line.
+    import queue
+    import threading
+
+    stdin: queue.Queue[str] = queue.Queue()
+    console = jetrover.OperatorConsole(lambda prompt: stdin.get())
+
+    assert jetrover.prompt_operator(0, 0.05, console) is False  # nobody answered
+
+    # The operator answers episode 1 only after its prompt is up.
+    threading.Timer(0.1, stdin.put, args=("y",)).start()
+    assert jetrover.prompt_operator(1, 5.0, console) is True
+
+
+def test_answer_typed_between_prompts_is_discarded(jetrover: Any) -> None:
+    # A late answer to an expired prompt must not leak into the next one.
+    import queue
+    import threading
+
+    stdin: queue.Queue[str] = queue.Queue()
+    console = jetrover.OperatorConsole(lambda prompt: stdin.get())
+
+    assert jetrover.prompt_operator(0, 0.05, console) is False
+    stdin.put("y")  # too late for episode 0, typed while no prompt is open
+    time.sleep(0.05)
+    threading.Timer(0.1, stdin.put, args=("n",)).start()
+    assert jetrover.prompt_operator(1, 5.0, console) is False
+
+
+def test_closed_stdin_fails_loudly(jetrover: Any) -> None:
+    def closed(prompt: str) -> str:
+        raise EOFError
+
+    console = jetrover.OperatorConsole(closed)
+    with pytest.raises(RuntimeError, match="stdin closed"):
+        console.ask("? ", timeout=1.0)
+    with pytest.raises(RuntimeError, match="stdin is closed"):
+        console.ask("? ", timeout=1.0)
+
+
 def test_clamp_action_rate_limits_joints(jetrover: Any) -> None:
     # 5 joints + gripper (the JetRover default)
     current = [0.0] * 6
@@ -187,6 +232,441 @@ def test_clamp_action_rate_limits_joints(jetrover: Any) -> None:
     assert clamped[1] == pytest.approx(-0.1)   # capped downward
     assert clamped[2] == pytest.approx(0.05)   # within limit: untouched
     assert clamped[5] == pytest.approx(0.8)    # gripper passes through
+
+
+# ---------------------------------------------------------------------------
+# Episode reset (review #101 P1: reset bypassed the motion limit)
+# ---------------------------------------------------------------------------
+
+class _FakeBoard:
+    """Stand-in for ros_robot_controller_sdk.Board: servos jump to commands."""
+
+    def __init__(self, pulses: dict[int, int], stuck: set[int] | None = None) -> None:
+        self.pulses = dict(pulses)
+        self.stuck = stuck or set()
+        self.commands: list[tuple[float, list[list[int]]]] = []
+
+    def bus_servo_set_position(self, duration: float, targets: list[list[int]]) -> None:
+        self.commands.append((duration, [list(t) for t in targets]))
+        for servo_id, pulse in targets:
+            if servo_id not in self.stuck:
+                self.pulses[servo_id] = pulse
+
+    def bus_servo_read_position(self, servo_id: int) -> list[int]:
+        return [self.pulses[servo_id]]
+
+
+def _hiwonder_arm_at(jetrover: Any, radians: float, **board_kwargs: Any) -> tuple[Any, Any]:
+    arm = jetrover.HiwonderArm(5)
+    pulse = arm._to_pulse(radians)
+    board = _FakeBoard({i: pulse for i in [1, 2, 3, 4, 5, 10]}, **board_kwargs)
+    arm._board = board
+    return arm, board
+
+
+def test_reset_from_nonzero_pose_is_rate_limited(jetrover: Any) -> None:
+    # The reviewer's repro: arm at 1.2 rad, max_steps=0. Before the fix the
+    # board received a single all-zero target (a full 1.2 rad jump).
+    arm, board = _hiwonder_arm_at(jetrover, 1.2)
+    homing = jetrover.HomingConfig(max_joint_delta=0.05)
+
+    steps = jetrover.run_episode(
+        arm,
+        jetrover.MockPolicy(),
+        task_description="t",
+        max_steps=0,
+        action_horizon=8,
+        max_joint_delta=0.01,
+        step_delay=0.0,
+        homing=homing,
+    )
+
+    assert steps == 0
+    assert len(board.commands) > 1  # walked home, not jumped
+    one_pulse = 1 / arm.PULSE_PER_RAD
+    previous = {i: 1.2 for i in [1, 2, 3, 4, 5, 10]}
+    for _duration, targets in board.commands:
+        for servo_id, pulse in targets:
+            rad = (pulse - arm.PULSE_CENTER) / arm.PULSE_PER_RAD
+            # every axis, gripper included, moves at most one homing step
+            assert abs(rad - previous[servo_id]) <= 0.05 + 2 * one_pulse
+            previous[servo_id] = rad
+    obs = arm.get_observation()
+    assert max(abs(v) for v in [*obs["joints"], obs["gripper"]]) <= homing.tolerance
+
+
+def test_reset_gives_up_on_a_stalled_servo(jetrover: Any) -> None:
+    arm, board = _hiwonder_arm_at(jetrover, 0.6, stuck={3})
+    homing = jetrover.HomingConfig(max_joint_delta=0.1, max_steps=20)
+
+    with pytest.raises(RuntimeError, match="did not reach the home pose"):
+        jetrover.home_arm(arm, homing, step_delay=0.0, console=None)
+    assert len(board.commands) == 20  # bounded, then stopped
+
+
+def test_operator_reset_sends_no_motion_and_needs_explicit_token(jetrover: Any) -> None:
+    # A bare Enter or a stray "y" (e.g. a late answer to an expired score
+    # prompt) must not confirm that the arm has been placed.
+    arm, board = _hiwonder_arm_at(jetrover, 1.2)
+    lines = iter(["", "y", "READY"])
+    console = jetrover.OperatorConsole(lambda prompt: next(lines))
+
+    sent = jetrover.home_arm(
+        arm, jetrover.HomingConfig(mode="operator"), step_delay=0.0, console=console
+    )
+
+    assert sent == 0
+    assert board.commands == []
+    assert next(lines, None) is None  # all three lines were needed
+
+
+def test_non_finite_policy_action_aborts_before_sending(jetrover: Any) -> None:
+    class NanPolicy(jetrover.PolicyClient):  # type: ignore[name-defined]
+        def get_action(self, obs: dict[str, Any], task_description: str) -> list[list[float]]:
+            return [[float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0]]
+
+    arm = jetrover.MockArm(5)
+    with pytest.raises(RuntimeError, match="non-finite"):
+        jetrover.run_episode(
+            arm,
+            NanPolicy(),
+            task_description="t",
+            max_steps=5,
+            action_horizon=8,
+            max_joint_delta=0.1,
+            step_delay=0.0,
+        )
+    assert arm.actions_received == []
+
+
+def test_aborted_run_still_writes_completed_episodes(
+    jetrover: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_run_episode = jetrover.run_episode
+    calls = {"n": 0}
+
+    def flaky_run_episode(*args: Any, **kwargs: Any) -> int:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("Arm did not reach the home pose")
+        return int(real_run_episode(*args, **kwargs))
+
+    monkeypatch.setattr(jetrover, "run_episode", flaky_run_episode)
+    out_json = tmp_path / "metrics.json"
+    with pytest.raises(RuntimeError, match="home pose"):
+        jetrover.main(
+            [
+                "--checkpoint", "/c", "--out-json", str(out_json),
+                "--arm_backend", "mock", "--policy_backend", "mock",
+                "--num_episodes", "3", "--max_steps", "4", "--scorer", "none",
+            ]
+        )
+    payload = json.loads(out_json.read_text())
+    assert len(payload["metrics"]["episodes"]) == 1
+    assert "home pose" in payload["metrics"]["aborted"]
+
+
+def test_hiwonder_gripper_is_measured_not_remembered(jetrover: Any) -> None:
+    arm, _board = _hiwonder_arm_at(jetrover, 0.4)
+    assert arm.get_observation()["gripper"] == pytest.approx(0.4, abs=0.01)
+
+
+@pytest.mark.parametrize(
+    "flag, value",
+    [
+        ("--max_joint_delta", "0"),
+        ("--max_joint_delta", "15"),
+        ("--home_max_joint_delta", "-0.1"),
+        ("--home_max_joint_delta", "1.0"),
+        ("--home_tolerance", "0"),
+        ("--home_max_steps", "0"),
+        ("--control_hz", "0"),
+        ("--action_horizon", "0"),  # would re-query the policy forever
+        ("--arm_dof", "0"),
+        ("--num_episodes", "0"),
+        ("--max_steps", "-1"),
+    ],
+)
+def test_motion_limits_are_validated(jetrover: Any, flag: str, value: str) -> None:
+    with pytest.raises(SystemExit):
+        jetrover.parse_args(["--checkpoint", "/c", "--out-json", "/o", flag, value])
+
+
+# ---------------------------------------------------------------------------
+# ROS 2 backend wire contract (review #101 P1: wrong message type)
+# ---------------------------------------------------------------------------
+
+class _Msg:
+    """Attribute bag standing in for a generated ROS message class."""
+
+
+class _ServoPosition(_Msg):
+    pass
+
+
+class _ServosPosition(_Msg):
+    pass
+
+
+class _JointState(_Msg):
+    pass
+
+
+class _FakeNode:
+    def __init__(self, name: str) -> None:
+        self.publishers: list[tuple[Any, str, _FakePublisher]] = []
+        self.subscriptions: dict[str, tuple[Any, Any]] = {}
+
+    def create_publisher(self, msg_type: Any, topic: str, qos: int) -> _FakePublisher:
+        pub = _FakePublisher()
+        self.publishers.append((msg_type, topic, pub))
+        return pub
+
+    def create_subscription(self, msg_type: Any, topic: str, cb: Any, qos: int) -> None:
+        self.subscriptions[topic] = (msg_type, cb)
+
+    def destroy_node(self) -> None:
+        pass
+
+
+class _FakePublisher:
+    def __init__(self) -> None:
+        self.published: list[Any] = []
+
+    def publish(self, msg: Any) -> None:
+        self.published.append(msg)
+
+
+@pytest.fixture
+def fake_ros(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    import types
+
+    state: dict[str, Any] = {"on_spin": None}
+
+    rclpy = types.ModuleType("rclpy")
+    rclpy.init = lambda: None  # type: ignore[attr-defined]
+    rclpy.shutdown = lambda: None  # type: ignore[attr-defined]
+
+    def spin_once(node: Any, timeout_sec: float = 0.0) -> None:
+        if state["on_spin"] is not None:
+            state["on_spin"]()
+
+    rclpy.spin_once = spin_once  # type: ignore[attr-defined]
+    rclpy_node = types.ModuleType("rclpy.node")
+    rclpy_node.Node = _FakeNode  # type: ignore[attr-defined]
+    sensor = types.ModuleType("sensor_msgs")
+    sensor_msg = types.ModuleType("sensor_msgs.msg")
+    sensor_msg.Image = type("Image", (_Msg,), {})  # type: ignore[attr-defined]
+    sensor_msg.JointState = _JointState  # type: ignore[attr-defined]
+    servo = types.ModuleType("servo_controller_msgs")
+    servo_msg = types.ModuleType("servo_controller_msgs.msg")
+    servo_msg.ServoPosition = _ServoPosition  # type: ignore[attr-defined]
+    servo_msg.ServosPosition = _ServosPosition  # type: ignore[attr-defined]
+    for name, module in {
+        "rclpy": rclpy,
+        "rclpy.node": rclpy_node,
+        "sensor_msgs": sensor,
+        "sensor_msgs.msg": sensor_msg,
+        "servo_controller_msgs": servo,
+        "servo_controller_msgs.msg": servo_msg,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return state
+
+
+def test_ros2_publishes_vendor_servos_position(jetrover: Any, fake_ros: Any) -> None:
+    arm = jetrover.Ros2Arm(5)
+    arm.command_duration = 0.2
+    arm.connect()
+
+    msg_type, topic, pub = arm._node.publishers[0]
+    assert msg_type is _ServosPosition  # what the stock controller_manager subscribes to
+    assert topic == "/servo_controller"
+    assert arm._node.subscriptions["/controller_manager/joint_states"][0] is _JointState
+
+    arm.send_action([0.1, -0.2, 0.3, -0.4, 0.5, 0.6])
+
+    (msg,) = pub.published
+    assert isinstance(msg, _ServosPosition)
+    assert msg.position_unit == "rad"
+    assert msg.duration == pytest.approx(0.2)
+    assert [(p.id, p.position) for p in msg.position] == [
+        (1, pytest.approx(0.1)),
+        (2, pytest.approx(-0.2)),
+        (3, pytest.approx(0.3)),
+        (4, pytest.approx(-0.4)),
+        (5, pytest.approx(0.5)),
+        (10, pytest.approx(0.6)),  # gripper servo
+    ]
+    assert all(isinstance(p, _ServoPosition) for p in msg.position)
+
+
+def test_ros2_reads_measured_joint_state(jetrover: Any, fake_ros: Any) -> None:
+    arm = jetrover.Ros2Arm(5)
+    arm.connect()
+    _, callback = arm._node.subscriptions["/controller_manager/joint_states"]
+
+    def publish_state() -> None:
+        msg = _JointState()
+        msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
+        msg.position = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        callback(msg)
+
+    fake_ros["on_spin"] = publish_state
+    obs = arm.get_observation()
+    assert obs["joints"] == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5])
+    assert obs["gripper"] == pytest.approx(0.6)
+
+
+def test_ros2_requires_a_fresh_joint_state_per_observation(
+    jetrover: Any, fake_ros: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Measured state must postdate the previous command: a cached message is
+    # not accepted as the arm's current pose.
+    arm = jetrover.Ros2Arm(5)
+    arm.connect()
+    _, callback = arm._node.subscriptions["/controller_manager/joint_states"]
+    monkeypatch.setattr(arm, "FRESH_STATE_TIMEOUT_S", 0.05)
+    poses = iter([0.1, 0.2])
+
+    def publish_next() -> None:
+        value = next(poses, None)
+        if value is None:
+            return  # the controller went silent
+        msg = _JointState()
+        msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
+        msg.position = [value] * 6
+        callback(msg)
+
+    fake_ros["on_spin"] = publish_next
+    assert arm.get_observation()["joints"][0] == pytest.approx(0.1)
+    assert arm.get_observation()["joints"][0] == pytest.approx(0.2)
+    with pytest.raises(RuntimeError, match="No fresh joint state"):
+        arm.get_observation()
+
+
+def test_ros2_rejects_missing_joint(jetrover: Any, fake_ros: Any) -> None:
+    arm = jetrover.Ros2Arm(5)
+    arm.connect()
+    _, callback = arm._node.subscriptions["/controller_manager/joint_states"]
+
+    def publish_partial() -> None:
+        msg = _JointState()
+        msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5"]  # no gripper
+        msg.position = [0.0] * 5
+        callback(msg)
+
+    fake_ros["on_spin"] = publish_partial
+    with pytest.raises(RuntimeError, match="r_joint"):
+        arm.get_observation()
+
+
+# ---------------------------------------------------------------------------
+# GR00T N1.7 modality config (review #101 P1: old API, no registration)
+# ---------------------------------------------------------------------------
+
+MODALITY_CONFIG = REPO_ROOT / "examples" / "quickstart-jetrover" / "jetrover_modality_config.py"
+
+
+def _install_fake_gr00t(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub exactly the N1.7 names so100_config.py imports (Isaac-GR00T@51d4c89).
+
+    Any import of a name N1.7 does not export (e.g. the old
+    ``gr00t.data.dataset.ModalityConfig``) fails here as it would upstream.
+    """
+    import dataclasses
+    import enum
+    import types
+
+    registry: dict[str, Any] = {}
+
+    @dataclasses.dataclass
+    class ModalityConfig:
+        delta_indices: list[int]
+        modality_keys: list[str]
+        action_configs: list[Any] | None = None
+
+    @dataclasses.dataclass
+    class ActionConfig:
+        rep: Any
+        type: Any
+        format: Any
+
+    class EmbodimentTag(enum.Enum):
+        NEW_EMBODIMENT = "new_embodiment"
+
+    def register_modality_config(config: dict, embodiment_tag: Any) -> None:
+        assert embodiment_tag.value not in registry
+        registry[embodiment_tag.value] = config
+
+    types_mod = types.ModuleType("gr00t.data.types")
+    types_mod.ModalityConfig = ModalityConfig  # type: ignore[attr-defined]
+    types_mod.ActionConfig = ActionConfig  # type: ignore[attr-defined]
+    types_mod.ActionRepresentation = enum.Enum(  # type: ignore[attr-defined]
+        "ActionRepresentation", "RELATIVE ABSOLUTE"
+    )
+    types_mod.ActionType = enum.Enum("ActionType", "NON_EEF EEF")  # type: ignore[attr-defined]
+    types_mod.ActionFormat = enum.Enum("ActionFormat", "DEFAULT")  # type: ignore[attr-defined]
+    tags_mod = types.ModuleType("gr00t.data.embodiment_tags")
+    tags_mod.EmbodimentTag = EmbodimentTag  # type: ignore[attr-defined]
+    emb_mod = types.ModuleType("gr00t.configs.data.embodiment_configs")
+    emb_mod.register_modality_config = register_modality_config  # type: ignore[attr-defined]
+    dataset_mod = types.ModuleType("gr00t.data.dataset")  # N1.7: empty package
+    for name, module in {
+        "gr00t": types.ModuleType("gr00t"),
+        "gr00t.data": types.ModuleType("gr00t.data"),
+        "gr00t.data.dataset": dataset_mod,
+        "gr00t.data.types": types_mod,
+        "gr00t.data.embodiment_tags": tags_mod,
+        "gr00t.configs": types.ModuleType("gr00t.configs"),
+        "gr00t.configs.data": types.ModuleType("gr00t.configs.data"),
+        "gr00t.configs.data.embodiment_configs": emb_mod,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return registry
+
+
+def _import_like_launch_finetune(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    # gr00t/experiment/launch_finetune.py: sys.path.append(parent);
+    # importlib.import_module(stem) — imported for its registration side effect.
+    import importlib
+
+    monkeypatch.syspath_prepend(str(path.parent))
+    monkeypatch.delitem(sys.modules, path.stem, raising=False)
+    importlib.import_module(path.stem)
+    monkeypatch.delitem(sys.modules, path.stem, raising=False)
+
+
+def test_modality_config_registers_new_embodiment(
+    jetrover: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = _install_fake_gr00t(monkeypatch)
+
+    _import_like_launch_finetune(monkeypatch, MODALITY_CONFIG)
+
+    config = registry["new_embodiment"]
+    # Keys must line up with what the eval client sends to the policy server.
+    assert config["video"].modality_keys == [jetrover.VIDEO_KEY]
+    assert config["state"].modality_keys == ["single_arm", "gripper"]
+    assert config["action"].modality_keys == ["single_arm", "gripper"]
+    assert config["language"].modality_keys == [jetrover.LANGUAGE_KEY]
+    assert len(config["action"].action_configs) == 2  # one per action key
+    assert config["action"].delta_indices == list(range(16))
+
+
+@pytest.mark.skipif(
+    not __import__("os").getenv("ISAAC_GR00T_REPO_PATH"),
+    reason="ISAAC_GR00T_REPO_PATH not set — real GR00T registration skipped",
+)
+def test_modality_config_registers_against_real_gr00t(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("gr00t.configs.data.embodiment_configs")
+    from gr00t.configs.data import embodiment_configs
+
+    monkeypatch.setattr(embodiment_configs, "MODALITY_CONFIGS", {})
+    _import_like_launch_finetune(monkeypatch, MODALITY_CONFIG)
+    assert "new_embodiment" in embodiment_configs.MODALITY_CONFIGS
 
 
 # ---------------------------------------------------------------------------

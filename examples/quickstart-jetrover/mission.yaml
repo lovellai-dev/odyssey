@@ -93,6 +93,8 @@ tasks:
       max_steps: 300
       control_hz: 5
       max_joint_delta: 0.15      # rad/step safety clamp
+      reset_mode: bounded        # bounded = rate-limited walk home | operator = no motion
+      home_max_joint_delta: 0.05 # rad/step during the reset walk
 
 leaderboard:
   publish: false   # Backend not live yet.
