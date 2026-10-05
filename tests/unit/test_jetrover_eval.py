@@ -11,9 +11,13 @@ these tests run under the ``dev`` extra alone.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import json
+import queue
+import struct
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -238,13 +242,34 @@ def test_clamp_action_rate_limits_joints(jetrover: Any) -> None:
 # Episode reset (review #101 P1: reset bypassed the motion limit)
 # ---------------------------------------------------------------------------
 
-class _FakeBoard:
-    """Stand-in for ros_robot_controller_sdk.Board: servos jump to commands."""
+BUS_SERVO_FUNC = 5  # ros_robot_controller_sdk.PacketFunction.PACKET_FUNC_BUS_SERVO
 
-    def __init__(self, pulses: dict[int, int], stuck: set[int] | None = None) -> None:
+
+class _FakeBoard:
+    """Stand-in for ros_robot_controller_sdk.Board: servos jump to commands.
+
+    Models the SDK's receive path (Hiwonder/JetRover@ef96538): reception starts
+    disabled, a read request is answered through a 1-slot ``bus_servo_queue``
+    only once ``enable_reception()`` was called, and reads share
+    ``servo_read_lock``. ``silent`` servos never answer.
+    """
+
+    def __init__(
+        self,
+        pulses: dict[int, int],
+        stuck: set[int] | None = None,
+        silent: set[int] | None = None,
+    ) -> None:
         self.pulses = dict(pulses)
         self.stuck = stuck or set()
+        self.silent = silent or set()
         self.commands: list[tuple[float, list[list[int]]]] = []
+        self.enable_recv = False
+        self.servo_read_lock = threading.Lock()
+        self.bus_servo_queue: queue.Queue[bytes] = queue.Queue(maxsize=1)
+
+    def enable_reception(self, enable: bool = True) -> None:
+        self.enable_recv = enable
 
     def bus_servo_set_position(self, duration: float, targets: list[list[int]]) -> None:
         self.commands.append((duration, [list(t) for t in targets]))
@@ -252,15 +277,23 @@ class _FakeBoard:
             if servo_id not in self.stuck:
                 self.pulses[servo_id] = pulse
 
-    def bus_servo_read_position(self, servo_id: int) -> list[int]:
-        return [self.pulses[servo_id]]
+    def buf_write(self, func: int, data: list[int]) -> None:
+        assert func == BUS_SERVO_FUNC
+        cmd, servo_id = data
+        if not self.enable_recv or servo_id in self.silent:
+            return  # the SDK's receive thread drops the reply
+        reply = struct.pack("<BBbh", servo_id, cmd, 0, self.pulses[servo_id])
+        with contextlib.suppress(queue.Full):  # as packet_report_serial_servo does
+            self.bus_servo_queue.put_nowait(reply)
 
 
 def _hiwonder_arm_at(jetrover: Any, radians: float, **board_kwargs: Any) -> tuple[Any, Any]:
     arm = jetrover.HiwonderArm(5)
     pulse = arm._to_pulse(radians)
     board = _FakeBoard({i: pulse for i in [1, 2, 3, 4, 5, 10]}, **board_kwargs)
+    board.enable_reception()
     arm._board = board
+    arm._bus_servo_func = BUS_SERVO_FUNC
     return arm, board
 
 
@@ -371,6 +404,89 @@ def test_hiwonder_gripper_is_measured_not_remembered(jetrover: Any) -> None:
     assert arm.get_observation()["gripper"] == pytest.approx(0.4, abs=0.01)
 
 
+# ---------------------------------------------------------------------------
+# Hiwonder SDK receive path (review #101 P1: reception disabled, unbounded read)
+# ---------------------------------------------------------------------------
+
+def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch, board: _FakeBoard) -> None:
+    import types
+
+    sdk = types.ModuleType("ros_robot_controller_sdk")
+    sdk.Board = lambda: board  # type: ignore[attr-defined]
+    sdk.PacketFunction = types.SimpleNamespace(  # type: ignore[attr-defined]
+        PACKET_FUNC_BUS_SERVO=BUS_SERVO_FUNC
+    )
+    monkeypatch.setitem(sys.modules, "ros_robot_controller_sdk", sdk)
+
+
+def test_hiwonder_connect_enables_reception(
+    jetrover: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Board() defaults to reception disabled; without enabling it no read
+    # reply is ever delivered.
+    board = _FakeBoard({i: 500 for i in [1, 2, 3, 4, 5, 10]})
+    _install_fake_sdk(monkeypatch, board)
+    arm = jetrover.HiwonderArm(5)
+
+    arm.connect()
+
+    assert board.enable_recv
+    obs = arm.get_observation()
+    assert obs["joints"] == pytest.approx([0.0] * 5)
+    assert obs["gripper"] == pytest.approx(0.0)
+
+
+def test_hiwonder_read_without_reception_times_out(jetrover: Any) -> None:
+    arm, board = _hiwonder_arm_at(jetrover, 0.0)
+    board.enable_reception(False)  # the SDK default
+    arm.READ_TIMEOUT_S = 0.05
+
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="did not reply"):
+        arm.get_observation()
+    assert time.monotonic() - start < 1.0  # bounded, not an indefinite wait
+
+
+def test_hiwonder_missing_reply_is_bounded_and_releases_the_lock(jetrover: Any) -> None:
+    arm, board = _hiwonder_arm_at(jetrover, 0.2, silent={3})
+    arm.READ_TIMEOUT_S = 0.05
+
+    with pytest.raises(RuntimeError, match="Bus servo 3 did not reply"):
+        arm.get_observation()
+
+    # No thread is left holding the read lock: later reads still work.
+    assert not board.servo_read_lock.locked()
+    assert arm._read_radians(4) == pytest.approx(0.2, abs=0.01)
+
+
+def test_hiwonder_homing_aborts_on_missing_reply(jetrover: Any) -> None:
+    # home_max_steps cannot bound a read that never returns; the read deadline must.
+    arm, board = _hiwonder_arm_at(jetrover, 0.6, silent={10})
+    arm.READ_TIMEOUT_S = 0.05
+
+    with pytest.raises(RuntimeError, match="did not reply"):
+        jetrover.home_arm(arm, jetrover.HomingConfig(), step_delay=0.0, console=None)
+    assert board.commands == []  # never moved from an unread pose
+
+
+def test_hiwonder_discards_stale_and_foreign_replies(jetrover: Any) -> None:
+    # A late reply to an earlier timed-out read must not be taken as this one.
+    arm, board = _hiwonder_arm_at(jetrover, 0.3)
+    board.bus_servo_queue.put_nowait(struct.pack("<BBbh", 2, 0x05, 0, 0))
+
+    assert arm._read_radians(1) == pytest.approx(0.3, abs=0.01)
+
+
+def test_hiwonder_read_error_status_is_not_a_position(jetrover: Any) -> None:
+    arm, board = _hiwonder_arm_at(jetrover, 0.3)
+    board.buf_write = lambda func, data: board.bus_servo_queue.put_nowait(  # type: ignore[method-assign]
+        struct.pack("<BBbh", data[1], data[0], -1, 0)
+    )
+
+    with pytest.raises(RuntimeError, match="read error"):
+        arm._read_radians(1)
+
+
 @pytest.mark.parametrize(
     "flag, value",
     [
@@ -412,18 +528,36 @@ class _JointState(_Msg):
     pass
 
 
+class _Image(_Msg):
+    pass
+
+
+SENSOR_DATA_QOS = object()  # stands in for rclpy.qos.qos_profile_sensor_data
+CAMERA_TOPIC = "/depth_cam/rgb/image_raw"
+
+
+def _publish_image(arm: Any, value: int = 7) -> None:
+    _, callback = arm._node.subscriptions[CAMERA_TOPIC]
+    msg = _Image()
+    msg.height, msg.width = 2, 3
+    msg.data = bytes([value]) * (2 * 3 * 3)
+    callback(msg)
+
+
 class _FakeNode:
     def __init__(self, name: str) -> None:
         self.publishers: list[tuple[Any, str, _FakePublisher]] = []
         self.subscriptions: dict[str, tuple[Any, Any]] = {}
+        self.qos: dict[str, Any] = {}
 
     def create_publisher(self, msg_type: Any, topic: str, qos: int) -> _FakePublisher:
         pub = _FakePublisher()
         self.publishers.append((msg_type, topic, pub))
         return pub
 
-    def create_subscription(self, msg_type: Any, topic: str, cb: Any, qos: int) -> None:
+    def create_subscription(self, msg_type: Any, topic: str, cb: Any, qos: Any) -> None:
         self.subscriptions[topic] = (msg_type, cb)
+        self.qos[topic] = qos
 
     def destroy_node(self) -> None:
         pass
@@ -454,9 +588,11 @@ def fake_ros(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     rclpy.spin_once = spin_once  # type: ignore[attr-defined]
     rclpy_node = types.ModuleType("rclpy.node")
     rclpy_node.Node = _FakeNode  # type: ignore[attr-defined]
+    rclpy_qos = types.ModuleType("rclpy.qos")
+    rclpy_qos.qos_profile_sensor_data = SENSOR_DATA_QOS  # type: ignore[attr-defined]
     sensor = types.ModuleType("sensor_msgs")
     sensor_msg = types.ModuleType("sensor_msgs.msg")
-    sensor_msg.Image = type("Image", (_Msg,), {})  # type: ignore[attr-defined]
+    sensor_msg.Image = _Image  # type: ignore[attr-defined]
     sensor_msg.JointState = _JointState  # type: ignore[attr-defined]
     servo = types.ModuleType("servo_controller_msgs")
     servo_msg = types.ModuleType("servo_controller_msgs.msg")
@@ -465,6 +601,7 @@ def fake_ros(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     for name, module in {
         "rclpy": rclpy,
         "rclpy.node": rclpy_node,
+        "rclpy.qos": rclpy_qos,
         "sensor_msgs": sensor,
         "sensor_msgs.msg": sensor_msg,
         "servo_controller_msgs": servo,
@@ -511,11 +648,13 @@ def test_ros2_reads_measured_joint_state(jetrover: Any, fake_ros: Any) -> None:
         msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
         msg.position = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
         callback(msg)
+        _publish_image(arm)
 
     fake_ros["on_spin"] = publish_state
     obs = arm.get_observation()
     assert obs["joints"] == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5])
     assert obs["gripper"] == pytest.approx(0.6)
+    assert obs["image"].shape == (2, 3, 3)
 
 
 def test_ros2_requires_a_fresh_joint_state_per_observation(
@@ -537,6 +676,7 @@ def test_ros2_requires_a_fresh_joint_state_per_observation(
         msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
         msg.position = [value] * 6
         callback(msg)
+        _publish_image(arm)
 
     fake_ros["on_spin"] = publish_next
     assert arm.get_observation()["joints"][0] == pytest.approx(0.1)
@@ -740,3 +880,83 @@ def test_e2e_through_custom_eval_runner(tmp_path: Path) -> None:
     assert summary["num_episodes"] == 2
     assert len(summary["metrics"]["episodes"]) == 2
     assert summary["metrics"]["arm_backend"] == "mock"
+
+
+# ---------------------------------------------------------------------------
+# ROS 2 camera (review #101: a missing camera fed the policy black frames)
+# ---------------------------------------------------------------------------
+
+def _ros2_arm_with_joint_states(jetrover: Any, fake_ros: Any, *, camera: Any) -> Any:
+    """Ros2Arm whose controller publishes on every spin; ``camera()`` decides
+    whether a frame arrives on that spin."""
+    arm = jetrover.Ros2Arm(5)
+    arm.connect()
+    _, callback = arm._node.subscriptions["/controller_manager/joint_states"]
+
+    def spin() -> None:
+        msg = _JointState()
+        msg.name = ["joint1", "joint2", "joint3", "joint4", "joint5", "r_joint"]
+        msg.position = [0.0] * 6
+        callback(msg)
+        if camera():
+            _publish_image(arm)
+
+    fake_ros["on_spin"] = spin
+    return arm
+
+
+def test_ros2_camera_uses_sensor_data_qos(jetrover: Any, fake_ros: Any) -> None:
+    # Camera drivers publish best-effort; a reliable subscriber never receives.
+    arm = jetrover.Ros2Arm(5)
+    arm.connect()
+    assert arm._node.qos[CAMERA_TOPIC] is SENSOR_DATA_QOS
+
+
+def test_ros2_without_camera_frame_fails_instead_of_going_blind(
+    jetrover: Any, fake_ros: Any
+) -> None:
+    # Wrong/namespaced topic or QoS mismatch: no frame ever arrives.
+    arm = _ros2_arm_with_joint_states(jetrover, fake_ros, camera=lambda: False)
+    arm.FIRST_IMAGE_TIMEOUT_S = 0.05
+
+    with pytest.raises(RuntimeError, match="No live camera frame"):
+        arm.get_observation()
+
+
+def test_ros2_stalled_camera_fails(jetrover: Any, fake_ros: Any) -> None:
+    # A frame that stopped updating is a frozen view, not the arm's camera.
+    frames = iter([True])
+    arm = _ros2_arm_with_joint_states(
+        jetrover, fake_ros, camera=lambda: next(frames, False)
+    )
+    arm.IMAGE_MAX_AGE_S = 0.05
+
+    assert arm.get_observation()["image"] is not None
+    time.sleep(0.1)
+    with pytest.raises(RuntimeError, match="No live camera frame"):
+        arm.get_observation()
+
+
+def test_ros2_eval_never_sends_black_frames(jetrover: Any, fake_ros: Any) -> None:
+    # The policy is only ever queried with a real frame on ros2.
+    arm = _ros2_arm_with_joint_states(jetrover, fake_ros, camera=lambda: False)
+    arm.FIRST_IMAGE_TIMEOUT_S = 0.05
+    queried: list[Any] = []
+
+    class RecordingPolicy(jetrover.PolicyClient):  # type: ignore[name-defined]
+        def get_action(self, obs: dict[str, Any], task_description: str) -> list[list[float]]:
+            queried.append(obs)
+            return [[0.0] * 6]
+
+    with pytest.raises(RuntimeError, match="No live camera frame"):
+        jetrover.run_episode(
+            arm,
+            RecordingPolicy(),
+            task_description="t",
+            max_steps=5,
+            action_horizon=1,
+            max_joint_delta=0.1,
+            step_delay=0.0,
+            homing=jetrover.HomingConfig(mode="bounded"),
+        )
+    assert queried == []

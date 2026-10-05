@@ -1,10 +1,12 @@
 # JetRover quickstart mission — real-hardware arm (marketed "6DOF": 5 joints + gripper).
 #
-# Fine-tunes GR00T N1.7 (3B) as a NEW_EMBODIMENT on a LeRobot-format
-# teleoperation dataset captured on the Hiwonder JetRover's arm, then
-# evaluates the resulting policy ON THE REAL ARM via `evaluation_type: custom`
-# (the built-in Robosuite/LIBERO/Isaac evals are sim-only and ship no JetRover
-# model). See README.md in this directory for the end-to-end recipe.
+# TRAINING (run on the GPU box). Fine-tunes GR00T N1.7 (3B) as a
+# NEW_EMBODIMENT on a LeRobot-format teleoperation dataset captured on the
+# Hiwonder JetRover's arm, then runs a hardware-free mock smoke eval. The
+# real-arm eval lives in eval_mission.yaml and runs on a different machine
+# (the Jetson) after the checkpoint is served: tasks run sequentially in one
+# mission, so a real-arm eval here would start on the GPU box, before the
+# server is up. See README.md.
 #
 # Validate without a GPU or the robot:
 #   odyssey validate mission.yaml
@@ -17,8 +19,7 @@ metadata:
   name: jetrover-arm-pick
   description: >-
     GR00T N1.7 NEW_EMBODIMENT fine-tune on JetRover arm LeRobot demos
-    (5 joints + gripper), evaluated closed-loop on the real arm with
-    operator scoring.
+    (5 joints + gripper). Evaluated on the real arm by eval_mission.yaml.
   tags: [quickstart, jetrover, hiwonder, gr00t, lerobot, real-hardware]
 
 objective: |
@@ -69,32 +70,23 @@ tasks:
       global_batch_size: 32
       max_steps: 2000
 
-  # Closed-loop eval ON THE REAL ARM. The script connects to a pre-started
-  # GR00T policy server (serve the finetuned checkpoint on the GPU box) and
-  # drives the arm over ROS 2; the operator confirms success per episode.
-  - name: eval-jetrover-real-arm
+  # A mission needs exactly one evaluation task. This one is a SMOKE CHECK
+  # that is safe on the GPU box: mock arm + mock policy, no scoring, no
+  # hardware, no server. It confirms the eval script runs against the new
+  # checkpoint path. It is NOT the real-arm result — that is eval_mission.yaml.
+  - name: smoke-eval-jetrover-mock
     kind: evaluation
     evaluation_type: custom
-    benchmark_name: jetrover-real-arm
-    num_episodes: 10
+    benchmark_name: jetrover-mock-smoke
+    num_episodes: 1
     config:
-      # Resolved relative to the odyssey working directory.
       eval_script: examples/quickstart-jetrover/eval_jetrover.py
-      # NOTE: num_episodes must be repeated here — the runner deliberately
-      # forwards only config.* keys to the script, never task-level fields.
-      num_episodes: 10
-      arm_backend: ros2          # mock | ros2 | hiwonder
-      policy_backend: zmq        # zmq (GR00T server) | mock
-      policy_host: 192.168.1.100 # the GPU box serving the checkpoint
-      policy_port: 5555
-      task_description: "pick up the object"
-      arm_dof: 5                 # positional joints, gripper excluded (see README)
-      scorer: operator           # y/n prompt per episode; `none` = metric-only
-      max_steps: 300
-      control_hz: 5
-      max_joint_delta: 0.15      # rad/step safety clamp
-      reset_mode: bounded        # bounded = rate-limited walk home | operator = no motion
-      home_max_joint_delta: 0.05 # rad/step during the reset walk
+      num_episodes: 1
+      arm_backend: mock
+      policy_backend: mock
+      scorer: none               # metric-only: a mock rollout has no success
+      max_steps: 20
+      arm_dof: 5
 
 leaderboard:
   publish: false   # Backend not live yet.

@@ -36,9 +36,11 @@ Hiwonder SDK are imported lazily inside the backends that need them.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import queue
+import struct
 import sys
 import threading
 import time
@@ -149,6 +151,8 @@ class Ros2Arm(ArmBackend):
     GRIPPER_SERVO_ID = 10
     FIRST_STATE_TIMEOUT_S = 5.0
     FRESH_STATE_TIMEOUT_S = 1.0  # the vendor node publishes at ~50 Hz
+    FIRST_IMAGE_TIMEOUT_S = 5.0
+    IMAGE_MAX_AGE_S = 1.0  # older than this = camera stalled, not a live view
 
     def __init__(self, arm_dof: int) -> None:
         super().__init__(arm_dof)
@@ -158,10 +162,12 @@ class Ros2Arm(ArmBackend):
         self._last_joint_state: Any = None
         self._joint_state_count = 0
         self._last_image: Any = None
+        self._last_image_time = 0.0
 
     def connect(self) -> None:
         import rclpy
         from rclpy.node import Node
+        from rclpy.qos import qos_profile_sensor_data
         from sensor_msgs.msg import Image, JointState
         from servo_controller_msgs.msg import ServoPosition, ServosPosition
 
@@ -174,7 +180,11 @@ class Ros2Arm(ArmBackend):
         self._node.create_subscription(
             JointState, self.JOINT_STATE_TOPIC, self._on_joint_state, 1
         )
-        self._node.create_subscription(Image, self.CAMERA_TOPIC, self._on_image, 1)
+        # Camera drivers publish best-effort (sensor-data QoS); a default
+        # reliable subscription would silently never receive from them.
+        self._node.create_subscription(
+            Image, self.CAMERA_TOPIC, self._on_image, qos_profile_sensor_data
+        )
 
     def _on_joint_state(self, msg: Any) -> None:
         self._last_joint_state = msg
@@ -182,6 +192,29 @@ class Ros2Arm(ArmBackend):
 
     def _on_image(self, msg: Any) -> None:
         self._last_image = msg
+        self._last_image_time = time.monotonic()
+
+    def _image_is_fresh(self) -> bool:
+        return (
+            self._last_image is not None
+            and time.monotonic() - self._last_image_time <= self.IMAGE_MAX_AGE_S
+        )
+
+    def _wait_for_camera_frame(self) -> None:
+        # The policy is visuomotor: running it on no frame (black) or on a frozen
+        # one would score a blind policy as a normal eval. Fail instead.
+        timeout = (
+            self.FIRST_IMAGE_TIMEOUT_S if self._last_image is None else self.IMAGE_MAX_AGE_S
+        )
+        deadline = time.monotonic() + timeout
+        while not self._image_is_fresh() and time.monotonic() < deadline:
+            self._spin()
+        if not self._image_is_fresh():
+            raise RuntimeError(
+                f"No live camera frame on {self.CAMERA_TOPIC} within {timeout}s — "
+                "is the depth camera driver running? Check the topic name with "
+                "`ros2 topic list` (it may be namespaced)."
+            )
 
     def _spin(self, seconds: float = 0.05) -> None:
         self._rclpy.spin_once(self._node, timeout_sec=seconds)
@@ -224,12 +257,11 @@ class Ros2Arm(ArmBackend):
         joints = [float(name_to_pos[n]) for n in self.arm_joint_names]
         gripper = float(name_to_pos[self.GRIPPER_JOINT_NAME])
 
-        image = None
-        if self._last_image is not None:
-            msg = self._last_image
-            image = np.frombuffer(msg.data, dtype=np.uint8).reshape(
-                msg.height, msg.width, -1
-            )[..., :3]
+        self._wait_for_camera_frame()
+        msg = self._last_image
+        image = np.frombuffer(msg.data, dtype=np.uint8).reshape(
+            msg.height, msg.width, -1
+        )[..., :3]
         return {"joints": joints, "gripper": gripper, "image": image}
 
     def send_action(self, action: list[float]) -> None:
@@ -266,26 +298,74 @@ class HiwonderArm(ArmBackend):
     GRIPPER_SERVO_ID = 10
     PULSE_CENTER = 500
     PULSE_PER_RAD = 500 / 2.094  # Hiwonder bus servos: 0..1000 pulses over ±120°
+    # Wire constants of the SDK's own position read (``bus_servo_read_position``):
+    # sub-command 0x05, reply ``(servo_id, cmd, status, pulse)``.
+    READ_POSITION_CMD = 0x05
+    READ_POSITION_REPLY = "<BBbh"
+    READ_TIMEOUT_S = 0.5  # per servo; a healthy bus answers in a few ms
 
     def __init__(self, arm_dof: int) -> None:
         super().__init__(arm_dof)
         self.arm_servo_ids = list(range(1, arm_dof + 1))
         self._board: Any = None
+        self._bus_servo_func: Any = None
 
     def connect(self) -> None:
-        from ros_robot_controller_sdk import Board  # type: ignore[import-not-found]
+        from ros_robot_controller_sdk import (  # type: ignore[import-not-found]
+            Board,
+            PacketFunction,
+        )
 
+        self._bus_servo_func = PacketFunction.PACKET_FUNC_BUS_SERVO
         self._board = Board()
+        # Board() starts with reception disabled: its receive thread drops every
+        # reply, so no servo read could ever complete. The vendor demos enable it.
+        self._board.enable_reception()
 
     def _to_pulse(self, radians: float) -> int:
         pulse = self.PULSE_CENTER + radians * self.PULSE_PER_RAD
         return int(min(1000, max(0, round(pulse))))
 
     def _read_radians(self, servo_id: int) -> float:
-        reading = self._board.bus_servo_read_position(servo_id)
-        pulse = reading[0] if isinstance(reading, (list, tuple)) else reading
-        if pulse is None:
-            raise RuntimeError(f"Bus servo {servo_id} did not report a position")
+        """One position-read transaction with a deadline.
+
+        Mirrors the SDK's ``bus_servo_read_and_unpack`` (same lock, request and
+        reply format) but never blocks indefinitely: the SDK waits on its reply
+        queue with no timeout, so a missing reply would hang the eval — and
+        ``home_max_steps`` cannot bound a read that never returns. Doing the
+        transaction here also means a timeout leaves no thread holding the read
+        lock. A late reply to a timed-out read is drained before the next
+        request, and replies for another servo are ignored.
+        """
+        board = self._board
+        deadline = time.monotonic() + self.READ_TIMEOUT_S
+        if not board.servo_read_lock.acquire(timeout=self.READ_TIMEOUT_S):
+            raise RuntimeError(f"Bus servo read lock busy — servo {servo_id} not read")
+        try:
+            with contextlib.suppress(queue.Empty):
+                board.bus_servo_queue.get_nowait()  # stale reply from a timed-out read
+            board.buf_write(self._bus_servo_func, [self.READ_POSITION_CMD, servo_id])
+            while True:
+                remaining = deadline - time.monotonic()
+                try:
+                    if remaining <= 0:
+                        raise queue.Empty
+                    data = board.bus_servo_queue.get(timeout=remaining)
+                except queue.Empty:
+                    raise RuntimeError(
+                        f"Bus servo {servo_id} did not reply within "
+                        f"{self.READ_TIMEOUT_S}s — check the servo cable and that "
+                        "no other process (e.g. controller_manager) owns the bus"
+                    ) from None
+                if len(data) != struct.calcsize(self.READ_POSITION_REPLY):
+                    continue
+                reply_id, cmd, status, pulse = struct.unpack(self.READ_POSITION_REPLY, data)
+                if reply_id == servo_id and cmd == self.READ_POSITION_CMD:
+                    break
+        finally:
+            board.servo_read_lock.release()
+        if status != 0:
+            raise RuntimeError(f"Bus servo {servo_id} reported a read error ({status})")
         return (float(pulse) - self.PULSE_CENTER) / self.PULSE_PER_RAD
 
     def get_observation(self) -> dict[str, Any]:
@@ -378,9 +458,11 @@ class ZmqGrootPolicy(PolicyClient):
         image = obs.get("image")
         if image is None:
             if not self._warned_no_image:
+                # Only the state-only backends (hiwonder, mock) get here: ros2
+                # refuses to return an observation without a live frame.
                 print(
                     "[warning] no camera frame — sending black frames to the policy "
-                    "(hiwonder backend is state-only; on ros2 check the camera topic)",
+                    "(this arm backend is state-only; use ros2 for a visuomotor eval)",
                     flush=True,
                 )
                 self._warned_no_image = True

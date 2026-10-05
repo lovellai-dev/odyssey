@@ -16,6 +16,15 @@ The built-in eval runners
 eval task uses `evaluation_type: custom` with the `eval_jetrover.py` script in
 this directory.
 
+Training and evaluation are **two missions** because they run on two machines:
+`mission.yaml` trains on the GPU box, `eval_mission.yaml` drives the arm from
+the Jetson. Odyssey runs a mission's tasks in order with no way to pick one, so
+a combined mission would start the eval on the GPU box right after training —
+no arm, and no policy server yet — and re-run training on the Jetson. (A
+mission needs exactly one eval task, so `mission.yaml` ends with a mock-arm,
+mock-policy smoke eval that is safe on the GPU box; it is not the real-arm
+result.)
+
 Out of scope here: dataset-capture tooling (record with LeRobot or your own
 teleop stack) and a sim eval (would need Hiwonder's URDF ported into a sim —
 possible later phase).
@@ -24,7 +33,8 @@ possible later phase).
 
 | File | Purpose |
 | --- | --- |
-| `mission.yaml` | Training (GR00T NEW_EMBODIMENT, LeRobot dataset) + real-arm custom eval |
+| `mission.yaml` | Training (GR00T NEW_EMBODIMENT, LeRobot dataset) + hardware-free mock smoke eval — GPU box |
+| `eval_mission.yaml` | Eval only: real-arm custom eval of the served checkpoint — Jetson |
 | `jetrover_modality_config.py` | GR00T modality config (5-D arm + 1-D gripper, front camera) — copy into your Isaac-GR00T checkout |
 | `eval_jetrover.py` | The custom eval script: GR00T policy server client + arm backends (`mock`/`ros2`/`hiwonder`) + operator scoring |
 
@@ -32,7 +42,9 @@ Validate everything without a GPU or the robot:
 
 ```bash
 odyssey validate examples/quickstart-jetrover/mission.yaml
+odyssey validate examples/quickstart-jetrover/eval_mission.yaml
 odyssey run examples/quickstart-jetrover/mission.yaml --use-mock-runner
+odyssey run examples/quickstart-jetrover/eval_mission.yaml --use-mock-runner
 ```
 
 ## 1. Capture the dataset (~50 episodes, LeRobot layout)
@@ -81,7 +93,8 @@ odyssey run examples/quickstart-jetrover/mission.yaml
 
 The training task maps 1:1 onto `gr00t/experiment/launch_finetune.py` flags
 (`embodiment_tag: new_embodiment`, `modality_config_path`, batch/steps knobs in
-`mission.yaml`). The checkpoint lands under the task's output dir.
+`mission.yaml`). The checkpoint lands under the task's output dir. The
+mission then runs only a mock smoke eval (no arm, no server) and completes.
 
 ## 4. Serve the checkpoint (GPU box)
 
@@ -98,17 +111,19 @@ uv run python gr00t/eval/run_gr00t_server.py \
 
 ## 5. Evaluate on the real arm
 
-Set `policy_host` in `mission.yaml` to the GPU box and run the eval task (on
-whichever machine reaches both the arm and the server — typically the Jetson
-with `arm_backend: ros2`). Sanity-check the wire first without moving anything:
+In `eval_mission.yaml`, set `policy_host` to the GPU box and `checkpoint` to
+the path you served in step 4 (it is recorded in the metrics; the server is
+what loads it). Run it on whichever machine reaches both the arm and the
+server — typically the Jetson with `arm_backend: ros2`. Sanity-check the wire
+first without moving anything:
 
 ```bash
 python eval_jetrover.py --checkpoint <ckpt> --out-json /tmp/m.json \
   --arm_backend mock --policy_backend zmq --policy_host <gpu-box> --num_episodes 1 --scorer none
 ```
 
-Then the real thing via `odyssey run` (or the script directly with
-`--arm_backend ros2`). After each episode the operator answers
+Then the real thing via `odyssey run examples/quickstart-jetrover/eval_mission.yaml`
+(or the script directly with `--arm_backend ros2`). After each episode the operator answers
 `Episode N success? [y/n]`; `--auto_timeout <sec>` scores unanswered prompts as
 failures so unattended runs terminate honestly. All prompts share one stdin
 reader, so an answer typed after a prompt expired is discarded rather than
@@ -121,12 +136,18 @@ Backends:
   `servo_controller` package): publishes `servo_controller_msgs/ServosPosition`
   (`position_unit: rad`, servo IDs 1–5 + 10) on `/servo_controller` and reads
   `/controller_manager/joint_states` + the depth cam RGB topic. The controller
-  applies each joint's calibration and limits. Topic names at the top of
-  `Ros2Arm`; verify with `ros2 topic list` if your image namespaces them.
+  applies each joint's calibration and limits. The camera is required: the
+  run aborts if no frame arrives within 5 s, or if frames stop for more than
+  1 s, rather than feed the policy black frames (the subscription uses
+  sensor-data QoS so a best-effort camera driver is received). Topic names at
+  the top of `Ros2Arm`; verify with `ros2 topic list` if your image
+  namespaces them.
 - `hiwonder` — direct bus-servo control via the on-board
   `ros_robot_controller_sdk` (state-only: no camera frames, the policy sees
-  zeros — prefer `ros2` for visuomotor policies). Don't run it while the
-  `controller_manager` owns the bus.
+  zeros — prefer `ros2` for visuomotor policies). It enables the SDK's
+  receive path on connect, and each position read has a deadline (0.5 s per
+  servo): a servo that doesn't answer aborts the run instead of hanging it.
+  Don't run it while the `controller_manager` owns the bus.
 - `mock` — deterministic, dependency-free; used by CI and for wire checks.
 
 ## Safety on the real arm
