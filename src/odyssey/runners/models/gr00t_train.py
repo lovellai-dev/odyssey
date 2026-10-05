@@ -35,6 +35,7 @@ from odyssey.runners.base import (
     Runner,
     TaskContext,
 )
+from odyssey.runners.dataset_revision import reject_unenforced_revision
 
 # Shared with the OpenVLA runner; extract to a common module when a
 # third runner needs them.
@@ -245,6 +246,7 @@ class GR00TRunner(Runner):
                 "must be invoked through the engine, which resolves the "
                 "agent from spec.robot.agents[task.agent_id]."
             )
+        reject_unenforced_revision("GR00T", spec.name, spec.dataset)
 
         output_dir = output_path(context)
 

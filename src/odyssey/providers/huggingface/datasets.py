@@ -38,12 +38,14 @@ class HFDatasetProvider(DatasetProvider):
     async def resolve(self, ref: DatasetRef) -> ResolvedDataset:
         api = self._get_api()
         info = api.dataset_info(repo_id=ref.ref, revision=ref.revision)
-        sha = getattr(info, "sha", None) or ref.revision
+        # Only a sha the Hub returned is a content identity: a requested branch
+        # or tag is recorded as the revision but never as a content hash.
+        sha = getattr(info, "sha", None)
         return ResolvedDataset(
             provider=self.name,
             source=ref.source.value,
             identifier=ref.ref,
-            revision=sha,
+            revision=sha or ref.revision,
             content_hash=f"hf-sha:{sha}" if sha else None,
             format=ref.format.value if ref.format else None,
             split=ref.split,

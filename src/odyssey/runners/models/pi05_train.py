@@ -512,9 +512,11 @@ class Pi05Runner(Runner):
                 "revision. Download that revision (hf download <repo> --repo-type "
                 "dataset --revision <sha> --local-dir <dir>) and use source: local."
             )
-        revision_verified = check_local_dataset_revision(
-            spec.name, spec.dataset, effective.dataset_dir if effective else None
-        )
+        loaded_dir = effective.dataset_dir if effective else None
+        # The full, lowercase sha the files record (None if unverified): an
+        # abbreviated or upper-case pin keys the cache and the record the same.
+        verified_sha = check_local_dataset_revision(spec.name, spec.dataset, loaded_dir)
+        revision_verified = verified_sha is not None
 
         # Redirect openpi's ./assets at a stable per-config cache so norm stats are
         # computed once and reused, not recomputed on every fresh output_dir. The
@@ -527,7 +529,7 @@ class Pi05Runner(Runner):
         if config.get("norm_stats_cache", True):
             repo_id = _dataset_repo_id(spec)
             assets_cache, norm_cached = _link_norm_stats_cache(
-                output_dir, config_name, repo_id, revision if revision_verified else None
+                output_dir, config_name, repo_id, verified_sha
             )
         else:
             logger.warning(
@@ -574,7 +576,16 @@ class Pi05Runner(Runner):
                 "dataset_loading", step="norm_stats_cached", step_label=exp_name
             )
 
-        # Step 2: fine-tune.
+        # Step 2: fine-tune. Re-verify the pin first: norm stats can take a
+        # while, and "verified" must describe what train.py reads now, not
+        # what was on disk at step 0. Costs one stat + one small read per file.
+        if verified_sha is not None:
+            again = check_local_dataset_revision(spec.name, spec.dataset, loaded_dir)
+            if again != verified_sha:
+                raise DatasetRevisionError(
+                    f"π0.5 task {spec.name!r}: {loaded_dir} changed from commit "
+                    f"{verified_sha} to {again} during norm stats; not training on it."
+                )
         train_spec = TrainingProcessSpec(
             timeout_seconds=timeout,
             script_path=_resolve_openpi_script(_TRAIN_SCRIPT_REL),
@@ -603,7 +614,7 @@ class Pi05Runner(Runner):
             "config_name": config.get("config_name"),
             "training_config": spec.config,
             **declared_timing(spec),
-            "dataset_revision": revision,
+            "dataset_revision": verified_sha or revision,
             "dataset_revision_verified": revision_verified,
             "training_type": (
                 spec.training_type.value

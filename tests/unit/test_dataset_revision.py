@@ -13,12 +13,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import odyssey.runners.models.gr00t_train as gr00t_train
+import odyssey.runners.models.openvla_train as openvla_train
 import odyssey.runners.models.pi05_train as pi05
 from odyssey.engine.records import MissionRun
 from odyssey.providers.huggingface import HFDatasetProvider
@@ -30,10 +33,12 @@ from odyssey.runners.dataset_revision import (
     is_commit_sha,
     verify_local_dataset_revision,
 )
+from odyssey.runners.models.gr00t_train import GR00TRunner
 from odyssey.runners.models.openpi_dataset import (
     DatasetMismatchError,
     OpenpiTrainingConfig,
 )
+from odyssey.runners.models.openvla_train import OpenVLARunner
 from odyssey.spec import (
     AgentRole,
     AgentSpec,
@@ -57,29 +62,50 @@ _CFG = "my_pi05_config"
 
 _EPISODE = "data/chunk-000/episode_000000.parquet"
 _VIDEO = "videos/chunk-000/observation.images.wrist/episode_000000.mp4"
-# A minimal LeRobot v2.x dataset: one episode, one camera.
-_INFO = json.dumps({
-    "codebase_version": "v2.1",
-    "fps": 10,
-    "total_episodes": 1,
-    "chunks_size": 1000,
-    "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
-    "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/"
-    "episode_{episode_index:06d}.mp4",
-    "features": {
-        "observation.images.wrist": {"dtype": "video"},
-        "observation.state": {"dtype": "float32"},
-    },
-})
-_CONTENT = {
-    "meta/info.json": _INFO,
-    "meta/episodes.jsonl": '{"episode_index": 0, "length": 5}\n',
-    "meta/tasks.jsonl": '{"task_index": 0, "task": "pick"}\n',
-    _EPISODE: "x",
-    _VIDEO: "x",
-    ".gitattributes": "x",
+
+
+def _info(version: str = "v2.1", **overrides: Any) -> str:
+    """A minimal LeRobot v2.x ``meta/info.json``: one episode, one camera."""
+    return json.dumps({
+        "codebase_version": version,
+        "fps": 10,
+        "total_episodes": 1,
+        "chunks_size": 1000,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/"
+        "episode_{episode_index:06d}.mp4",
+        "features": {
+            "observation.images.wrist": {"dtype": "video"},
+            "observation.state": {"dtype": "float32"},
+        },
+        **overrides,
+    })
+
+
+# Everything the LeRobot loader reads, per format. v2.0 keeps one aggregate
+# stats.json; v2.1 keeps per-episode stats.
+_STATS_FILE = {"v2.0": "meta/stats.json", "v2.1": "meta/episodes_stats.jsonl"}
+_STATS_CONTENT = {
+    "v2.0": '{"observation.state": {"mean": [0.0]}}',
+    "v2.1": '{"episode_index": 0, "stats": {}}\n',
 }
+
+
+def _content(version: str = "v2.1") -> dict[str, str]:
+    return {
+        "meta/info.json": _info(version),
+        "meta/episodes.jsonl": '{"episode_index": 0, "length": 5}\n',
+        "meta/tasks.jsonl": '{"task_index": 0, "task": "pick"}\n',
+        _STATS_FILE[version]: _STATS_CONTENT[version],
+        _EPISODE: "x",
+        _VIDEO: "x",
+        ".gitattributes": "x",
+    }
+
+
+_CONTENT = _content()
 _FILES = tuple(_CONTENT)
+_N = len(_FILES)
 
 
 def _hub_metadata(root: Path, rel: str, sha: str) -> None:
@@ -102,13 +128,13 @@ def _write(root: Path, rel: str, content: str = "x") -> None:
     (root / rel).write_text(content, encoding="utf-8")
 
 
-def _local_download(root: Path, sha: str | None) -> Path:
-    """A local dataset dir as ``hf download --local-dir`` leaves it.
+def _local_download(root: Path, sha: str | None, version: str = "v2.1") -> Path:
+    """A complete local dataset dir as ``hf download --local-dir`` leaves it.
 
     Every file gets download metadata for ``sha``; ``None`` writes the files
     with no metadata at all (a dataset recorded or copied by hand).
     """
-    for rel, content in _CONTENT.items():
+    for rel, content in _content(version).items():
         _write(root, rel, content)
         if sha is not None:
             _hub_metadata(root, rel, sha)
@@ -172,6 +198,15 @@ async def test_provider_falls_back_to_requested_revision_without_sha() -> None:
     assert resolved.revision == SHA_A
 
 
+async def test_provider_never_records_a_branch_as_content_hash() -> None:
+    """Regression: no Hub sha + a branch request used to give content_hash 'hf-sha:main'."""
+    resolved = await HFDatasetProvider(api=_FakeHfApi(sha=None)).resolve(
+        DatasetRef(source=DatasetSource.HUGGINGFACE, ref="org/name", revision="main")
+    )
+    assert resolved.revision == "main"
+    assert resolved.content_hash is None
+
+
 # ---------------------------------------------------------------------------
 # On-disk verification of a local Hub download
 # ---------------------------------------------------------------------------
@@ -200,7 +235,9 @@ def test_verify_accepts_abbreviated_sha(tmp_path: Path) -> None:
 
 def test_verify_fails_on_different_revision(tmp_path: Path) -> None:
     root = _local_download(tmp_path / "d", SHA_B)
-    with pytest.raises(DatasetRevisionError, match=r"6 problems, 6 files on disk.*downloaded from commit"):
+    with pytest.raises(
+        DatasetRevisionError, match=rf"{_N} problems, {_N} files on disk.*downloaded from commit"
+    ):
         verify_local_dataset_revision(root, SHA_A)
 
 
@@ -209,8 +246,8 @@ def test_verify_fails_on_mixed_revisions(tmp_path: Path) -> None:
     root = _local_download(tmp_path / "d", SHA_A)
     _write(root, _EPISODE, "corrected labels")
     _hub_metadata(root, _EPISODE, SHA_B)
-    with pytest.raises(DatasetRevisionError, match=r"1 problems, 6 files on disk.*episode_000000\.parquet: "
-                       f"downloaded from commit {SHA_B}"):
+    with pytest.raises(DatasetRevisionError, match=rf"1 problems, {_N} files on disk.*"
+                       rf"episode_000000\.parquet: downloaded from commit {SHA_B}"):
         verify_local_dataset_revision(root, SHA_A)
 
 
@@ -250,7 +287,7 @@ def test_verify_fails_without_usable_metadata(tmp_path: Path, sha: str | None) -
                 parents=True, exist_ok=True
             )
             (root / ".cache/huggingface/download" / f"{rel}.metadata").write_text(sha)
-    with pytest.raises(DatasetRevisionError, match="6 problems, 6 files on disk"):
+    with pytest.raises(DatasetRevisionError, match=f"{_N} problems, {_N} files on disk"):
         verify_local_dataset_revision(root, SHA_A)
 
 
@@ -265,7 +302,9 @@ def test_verify_error_caps_the_listed_files(tmp_path: Path) -> None:
     root = _local_download(tmp_path / "d", SHA_A)
     for i in range(8):
         _write(root, f"data/extra_{i}.parquet")
-    with pytest.raises(DatasetRevisionError, match=r"8 problems, 14 files on disk.*and 3 more"):
+    with pytest.raises(
+        DatasetRevisionError, match=rf"8 problems, {_N + 8} files on disk.*and 3 more"
+    ):
         verify_local_dataset_revision(root, SHA_A)
 
 
@@ -305,8 +344,7 @@ def test_verify_reports_broken_symlink(tmp_path: Path) -> None:
 def test_verify_fails_on_partial_download(tmp_path: Path) -> None:
     """Regression: every file present is A's, but a file training reads is absent."""
     root = _local_download(tmp_path / "d", SHA_A)
-    (root / _VIDEO).unlink()
-    (root / ".cache/huggingface/download" / f"{_VIDEO}.metadata").unlink()
+    _remove(root, _VIDEO)
     with pytest.raises(DatasetRevisionError, match=r"episode_000000\.mp4: missing"):
         verify_local_dataset_revision(root, SHA_A)
 
@@ -330,6 +368,100 @@ def test_verify_fails_without_a_lerobot_manifest(tmp_path: Path) -> None:
         verify_local_dataset_revision(root, SHA_A)
 
 
+def _remove(root: Path, rel: str) -> None:
+    """Drop a file and its download metadata, as a partial download leaves it."""
+    (root / rel).unlink()
+    (root / ".cache/huggingface/download" / f"{rel}.metadata").unlink()
+
+
+@pytest.mark.parametrize("version", ["v2.0", "v2.1"])
+def test_verify_passes_on_complete_snapshot_of_each_format(
+    tmp_path: Path, version: str
+) -> None:
+    verify_local_dataset_revision(_local_download(tmp_path / "d", SHA_A, version), SHA_A)
+
+
+@pytest.mark.parametrize(
+    "version, rel",
+    [
+        (version, rel)
+        for version in ("v2.0", "v2.1")
+        for rel in ("meta/tasks.jsonl", "meta/episodes.jsonl", _STATS_FILE[version])
+    ],
+)
+def test_verify_fails_when_loader_metadata_is_missing(
+    tmp_path: Path, version: str, rel: str
+) -> None:
+    """Regression: a missing metadata file makes LeRobot pull meta/ from another revision."""
+    root = _local_download(tmp_path / "d", SHA_A, version)
+    _remove(root, rel)
+    with pytest.raises(DatasetRevisionError, match=rf"{re.escape(rel)}: missing"):
+        verify_local_dataset_revision(root, SHA_A)
+
+
+def test_verify_v20_does_not_require_v21_stats(tmp_path: Path) -> None:
+    """Each format needs its own stats file only, not the other one's."""
+    root = _local_download(tmp_path / "d", SHA_A, "v2.0")
+    assert not (root / _STATS_FILE["v2.1"]).exists()
+    verify_local_dataset_revision(root, SHA_A)
+
+
+def test_verify_requires_every_episode_in_total_episodes(tmp_path: Path) -> None:
+    """Regression: the loader checks range(total_episodes), even if episodes.jsonl lists fewer."""
+    root = _local_download(tmp_path / "d", SHA_A)
+    _write(root, "meta/info.json", _info(total_episodes=2))
+    _hub_metadata(root, "meta/info.json", SHA_A)
+    with pytest.raises(DatasetRevisionError, match=r"episode_000001\.parquet: missing"):
+        verify_local_dataset_revision(root, SHA_A)
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        _info("v3.0"),
+        _info("v1.6"),
+        _info(codebase_version=None),
+        _info(chunks_size=0),
+        _info(data_path="data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"),
+    ],
+    ids=["v3.0", "v1.6", "no-version", "zero-chunks", "v3-template"],
+)
+def test_verify_rejects_non_v2_manifest(tmp_path: Path, info: str) -> None:
+    """Not a v2.x layout: the files training reads are unknown — an error, not a crash."""
+    root = _local_download(tmp_path / "d", SHA_A)
+    _write(root, "meta/info.json", info)
+    _hub_metadata(root, "meta/info.json", SHA_A)
+    with pytest.raises(DatasetRevisionError, match=r"LeRobot v2\.x"):
+        verify_local_dataset_revision(root, SHA_A)
+
+
+def test_verify_rejects_non_dict_features(tmp_path: Path) -> None:
+    """Regression: a malformed features block is a revision error, not an AttributeError."""
+    root = _local_download(tmp_path / "d", SHA_A)
+    _write(root, "meta/info.json", _info(features="x"))
+    _hub_metadata(root, "meta/info.json", SHA_A)
+    with pytest.raises(DatasetRevisionError, match=r"LeRobot v2\.x"):
+        verify_local_dataset_revision(root, SHA_A)
+
+
+@pytest.mark.parametrize("declared", [SHA_A, SHA_A[:7], SHA_A[:7].upper()])
+def test_verify_returns_the_full_lowercase_commit(tmp_path: Path, declared: str) -> None:
+    root = _local_download(tmp_path / "d", SHA_A)
+    assert verify_local_dataset_revision(root, declared) == SHA_A
+
+
+def test_verify_rejects_two_commits_sharing_the_abbreviated_prefix(tmp_path: Path) -> None:
+    """An abbreviated pin must name ONE commit: files from two that share it fail."""
+    sha_a2 = SHA_A[:7] + "0" * 33
+    root = _local_download(tmp_path / "d", SHA_A)
+    _hub_metadata(root, _EPISODE, sha_a2)
+    with pytest.raises(DatasetRevisionError, match="files from 2 commits"):
+        verify_local_dataset_revision(root, SHA_A[:7])
+    # The full sha is contradicted only by the other commit's file.
+    with pytest.raises(DatasetRevisionError, match=r"episode_000000\.parquet"):
+        verify_local_dataset_revision(root, SHA_A)
+
+
 def test_verify_skips_in_tree_symlink_alias(tmp_path: Path) -> None:
     """Regression: an alias (videos_latest -> videos) must not fail a valid copy."""
     root = _local_download(tmp_path / "d", SHA_A)
@@ -340,7 +472,7 @@ def test_verify_skips_in_tree_symlink_alias(tmp_path: Path) -> None:
 
 def test_check_reports_verified_sha(tmp_path: Path) -> None:
     root = _local_download(tmp_path / "d", SHA_A)
-    assert check_local_dataset_revision("t", _local_ref(root, SHA_A), str(root)) is True
+    assert check_local_dataset_revision("t", _local_ref(root, SHA_A), str(root)) == SHA_A
 
 
 def test_check_verifies_the_loaded_dir(tmp_path: Path) -> None:
@@ -381,7 +513,7 @@ def test_check_fails_for_relative_local_ref_with_sha_pin() -> None:
 @pytest.mark.parametrize("revision", [None, "main", "v1.0"])
 def test_check_undeclared_or_branch_is_unverified(tmp_path: Path, revision: str | None) -> None:
     root = _local_download(tmp_path / "d", SHA_B)
-    assert check_local_dataset_revision("t", _local_ref(root, revision), str(root)) is False
+    assert check_local_dataset_revision("t", _local_ref(root, revision), str(root)) is None
 
 
 # ---------------------------------------------------------------------------
@@ -540,9 +672,68 @@ def test_runner_records_verified_revision(tmp_path: Path, fake_openpi: list[Any]
     assert (tmp_path / "out" / "assets").resolve() == cache.resolve()
 
 
+@pytest.mark.parametrize("declared", [SHA_A[:7], SHA_A[:7].upper()])
+def test_runner_records_and_caches_by_the_full_sha(
+    tmp_path: Path, fake_openpi: list[Any], declared: str
+) -> None:
+    """An abbreviated or upper-case pin shares the full sha's cache and record."""
+    root = _local_download(tmp_path / "my_dataset", SHA_A)
+    result = _run(_context(tmp_path, _local_ref(root, declared)))
+    assert result["dataset_revision"] == SHA_A
+    cache = tmp_path / "home" / ".odyssey" / "pi05_assets" / f"{_CFG}@{SHA_A}"
+    assert (tmp_path / "out" / "assets").resolve() == cache.resolve()
+
+
+def test_runner_reverifies_before_train(
+    tmp_path: Path, fake_openpi: list[Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: data replaced while norm stats run must not train as 'verified'."""
+    root = _local_download(tmp_path / "my_dataset", SHA_A)
+    launched: list[str] = []
+
+    async def _swaps_an_episode(ctx: TaskContext, spec: Any) -> int:
+        launched.append(Path(spec.script_path).name)
+        _hub_metadata(root, _EPISODE, SHA_B)  # someone re-downloads mid-run
+        return 0
+
+    monkeypatch.setattr(pi05, "run_training_subprocess", _swaps_an_episode)
+    with pytest.raises(DatasetRevisionError, match=r"episode_000000\.parquet"):
+        _run(_context(tmp_path, _local_ref(root, SHA_A)))
+    assert launched == ["compute_norm_stats.py"]  # train.py never started
+
+
+def _gr00t_or_openvla_context(tmp_path: Path, runner: str, revision: str) -> TaskContext:
+    ctx = _context(tmp_path, _local_ref(tmp_path / "d", revision))
+    spec = ctx.task.spec
+    assert isinstance(spec, TrainingTask)
+    ctx.task.spec = spec.model_copy(update={"config": {"runner": runner}})
+    return ctx
+
+
+@pytest.mark.parametrize("revision", [SHA_A, "main"])
+@pytest.mark.parametrize(
+    "runner_cls, label",
+    [(GR00TRunner, "GR00T"), (OpenVLARunner, "OpenVLA")],
+)
+def test_runners_without_verification_refuse_a_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner_cls: Any, label: str,
+    revision: str,
+) -> None:
+    """Regression: a pin these runners can't enforce is refused, not silently ignored."""
+
+    async def _never(*_: Any, **__: Any) -> int:
+        raise AssertionError("must refuse before launching anything")
+
+    monkeypatch.setattr(gr00t_train, "run_training_subprocess", _never)
+    monkeypatch.setattr(openvla_train, "run_training_subprocess", _never)
+    ctx = _gr00t_or_openvla_context(tmp_path, label.lower(), revision)
+    with pytest.raises(DatasetRevisionError, match=f"the {label} runner does not verify"):
+        asyncio.run(runner_cls().run(ctx))
+
+
 def test_runner_rejects_wrong_local_revision(tmp_path: Path, fake_openpi: list[Any]) -> None:
     root = _local_download(tmp_path / "my_dataset", SHA_B)
-    with pytest.raises(DatasetRevisionError):
+    with pytest.raises(DatasetRevisionError, match=f"downloaded from commit {SHA_B}"):
         _run(_context(tmp_path, _local_ref(root, SHA_A)))
     assert fake_openpi == []  # nothing launched
 
@@ -555,6 +746,24 @@ def test_runner_rejects_mixed_revision_dataset(
     with pytest.raises(DatasetRevisionError, match=r"episode_000000\.parquet"):
         _run(_context(tmp_path, _local_ref(root, SHA_A)))
     assert fake_openpi == []
+
+
+@pytest.mark.parametrize("rel", ["meta/tasks.jsonl", _STATS_FILE["v2.1"]])
+def test_runner_stops_on_incomplete_snapshot_before_norm_stats(
+    tmp_path: Path, fake_openpi: list[Any], rel: str
+) -> None:
+    """Regression: missing loader metadata stops the run before normalization or training.
+
+    Neither norm-stats subprocess nor train.py starts, and the shared
+    revision-keyed norm-stats cache is never linked or created.
+    """
+    root = _local_download(tmp_path / "my_dataset", SHA_A)
+    _remove(root, rel)
+    with pytest.raises(DatasetRevisionError, match=rf"{re.escape(rel)}: missing"):
+        _run(_context(tmp_path, _local_ref(root, SHA_A)))
+    assert fake_openpi == []
+    assert not (tmp_path / "out" / "assets").exists()
+    assert not (tmp_path / "home" / ".odyssey" / "pi05_assets").exists()
 
 
 def test_runner_rejects_unverifiable_sha_pin(tmp_path: Path, fake_openpi: list[Any]) -> None:

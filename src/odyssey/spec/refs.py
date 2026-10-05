@@ -78,6 +78,8 @@ class DatasetRef(SpecModel):
     # For a local copy, a commit sha is verified file by file against the
     # Hub download metadata of the directory training loads; a sha that
     # can't be verified fails the task. A branch or tag is only recorded.
+    # Enforced by the π0.5 training runner; the GR00T and OpenVLA runners
+    # refuse a pinned task instead of training on unverified data.
     revision: str | None = None
     split: str | None = None
     format: DatasetFormat | None = None
