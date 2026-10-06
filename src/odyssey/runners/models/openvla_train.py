@@ -38,6 +38,7 @@ from odyssey.runners.base import (
     Runner,
     TaskContext,
 )
+from odyssey.runners.dataset_revision import reject_unenforced_revision
 from odyssey.runners.subprocess import (
     TrainingProcessSpec,
     output_path,
@@ -276,6 +277,7 @@ class OpenVLARunner(Runner):
                 "must be invoked through the engine, which resolves the "
                 "agent from spec.robot.agents[task.agent_id]."
             )
+        reject_unenforced_revision("OpenVLA", spec.name, spec.dataset)
 
         output_dir = output_path(context)
         script_path = _resolve_finetune_script()

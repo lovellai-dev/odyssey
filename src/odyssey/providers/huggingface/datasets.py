@@ -1,6 +1,8 @@
 """HFDatasetProvider — resolves and streams datasets from the Hub.
 
-``resolve`` pins the dataset revision via ``HfApi.dataset_info``.
+``resolve`` pins the dataset revision via ``HfApi.dataset_info``: the
+spec's ``revision`` when set (a sha, branch or tag), else the current HEAD,
+recorded as the concrete commit sha it resolved to.
 ``stream_episodes`` calls into the ``datasets`` library and yields one
 dict per row, falling back to a streaming-mode load so we never pull
 multi-GB shards into RAM.
@@ -35,17 +37,19 @@ class HFDatasetProvider(DatasetProvider):
 
     async def resolve(self, ref: DatasetRef) -> ResolvedDataset:
         api = self._get_api()
-        info = api.dataset_info(repo_id=ref.ref)
+        info = api.dataset_info(repo_id=ref.ref, revision=ref.revision)
+        # Only a sha the Hub returned is a content identity: a requested branch
+        # or tag is recorded as the revision but never as a content hash.
         sha = getattr(info, "sha", None)
         return ResolvedDataset(
             provider=self.name,
             source=ref.source.value,
             identifier=ref.ref,
-            revision=sha,
+            revision=sha or ref.revision,
             content_hash=f"hf-sha:{sha}" if sha else None,
             format=ref.format.value if ref.format else None,
             split=ref.split,
-            metadata={"hf_repo_id": ref.ref},
+            metadata={"hf_repo_id": ref.ref, "requested_revision": ref.revision},
         )
 
     async def stream_episodes(

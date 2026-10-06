@@ -202,10 +202,9 @@ def test_link_norm_stats_cache_symlinks_and_reuses(
     run1.mkdir()
     cache, cached = _link_norm_stats_cache(run1, _CFG, "ur10e")
     assert cache is not None
-    # ./assets in the run dir is a symlink to the stable per-config cache.
-    assert (run1 / "assets").is_symlink()
-    assert (run1 / "assets").resolve() == cache.resolve()
     assert cached is False  # nothing cached yet
+    # A miss is NOT linked: stats are computed privately, published after validation.
+    assert not (run1 / "assets").is_symlink()
 
     # Simulate openpi writing stats at assets/<config_name>/<repo_id>/; a fresh run
     # for the SAME dataset reuses them.
@@ -215,6 +214,9 @@ def test_link_norm_stats_cache_symlinks_and_reuses(
     run2.mkdir()
     _, cached2 = _link_norm_stats_cache(run2, _CFG, "ur10e")
     assert cached2 is True
+    # ./assets in the run dir is a symlink to the stable per-config cache.
+    assert (run2 / "assets").is_symlink()
+    assert (run2 / "assets").resolve() == cache.resolve()
 
 
 def test_link_norm_stats_cache_hit_is_keyed_by_dataset(
