@@ -1,0 +1,95 @@
+# JetRover quickstart mission — real-hardware arm (marketed "6DOF": 5 joints + gripper).
+#
+# TRAINING (run on the GPU box). Fine-tunes GR00T N1.7 (3B) as a
+# NEW_EMBODIMENT on a LeRobot-format teleoperation dataset captured on the
+# Hiwonder JetRover's arm, then runs a hardware-free mock smoke eval. The
+# real-arm eval lives in eval_mission.yaml and runs on a different machine
+# (the Jetson) after the checkpoint is served: tasks run sequentially in one
+# mission, so a real-arm eval here would start on the GPU box, before the
+# server is up. See README.md.
+#
+# Validate without a GPU or the robot:
+#   odyssey validate mission.yaml
+#   odyssey run mission.yaml --use-mock-runner
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: jetrover-arm-pick
+  description: >-
+    GR00T N1.7 NEW_EMBODIMENT fine-tune on JetRover arm LeRobot demos
+    (5 joints + gripper). Evaluated on the real arm by eval_mission.yaml.
+  tags: [quickstart, jetrover, hiwonder, gr00t, lerobot, real-hardware]
+
+objective: |
+  Fine-tune the GR00T N1.7 3B foundation model on ~50 teleoperated
+  pick-and-place demonstrations recorded on the JetRover's arm, so the
+  policy can pick up the target object on the physical robot.
+
+acceptance_criteria: |
+  At least 3 operator-confirmed successful picks across 10 evaluation
+  episodes on the real arm.
+
+robot:
+  # jetrover is a registered embodiment: GR00T NEW_EMBODIMENT finetune +
+  # real-hardware custom eval — Robosuite eval tasks refuse it loudly.
+  embodiment: jetrover
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  - name: finetune-gr00t-jetrover
+    kind: training
+    training_type: demonstration
+    agent_id: pilot
+    dataset:
+      source: local
+      # ABSOLUTE path to the captured dataset ON THE TRAINING BOX (GPU VM).
+      # LeRobot v2 layout + meta/modality.json with the jetrover keys
+      # (state/action.single_arm 5-D + .gripper 1-D, video.front) — see README.
+      # NOTE: Hiwonder's "6DOF" marketing counts the gripper; the arm chain is
+      # 5 positional joints (servo IDs 1-5) + gripper (ID 10).
+      ref: /data/jetrover_pick_v0/jetrover_pick
+      format: lerobot
+    config:
+      # Routes this wildcard training task to the GR00T runner explicitly.
+      runner: gr00t
+      # Remaining keys mirror gr00t/experiment/launch_finetune.py flags
+      # (underscores become dashes on the CLI).
+      embodiment_tag: new_embodiment
+      # Copy jetrover_modality_config.py (this directory) into your Isaac-GR00T
+      # checkout at this path; relative paths resolve against
+      # $ISAAC_GR00T_REPO_PATH.
+      modality_config_path: examples/JETROVER/jetrover_config.py
+      # Small-data knobs for a ~50-episode set — tune per GPU.
+      global_batch_size: 32
+      max_steps: 2000
+
+  # A mission needs exactly one evaluation task. This one is a SMOKE CHECK
+  # that is safe on the GPU box: mock arm + mock policy, no scoring, no
+  # hardware, no server. It confirms the eval script runs against the new
+  # checkpoint path. It is NOT the real-arm result — that is eval_mission.yaml.
+  - name: smoke-eval-jetrover-mock
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: jetrover-mock-smoke
+    num_episodes: 1
+    config:
+      eval_script: examples/quickstart-jetrover/eval_jetrover.py
+      num_episodes: 1
+      arm_backend: mock
+      policy_backend: mock
+      scorer: none               # metric-only: a mock rollout has no success
+      max_steps: 20
+      arm_dof: 5
+
+leaderboard:
+  publish: false   # Backend not live yet.
+
+graph:
+  contribute: false   # Backend not live yet.

@@ -31,6 +31,10 @@ from odyssey.spec.loader import LoadError
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_MISSION = REPO_ROOT / "examples" / "quickstart-openvla" / "mission.yaml"
 EXAMPLE_MISSION_GR00T = REPO_ROOT / "examples" / "quickstart-gr00t" / "mission.yaml"
+EXAMPLE_MISSION_JETROVER = REPO_ROOT / "examples" / "quickstart-jetrover" / "mission.yaml"
+EXAMPLE_MISSION_JETROVER_EVAL = (
+    REPO_ROOT / "examples" / "quickstart-jetrover" / "eval_mission.yaml"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +135,50 @@ def test_shipped_gr00t_example_loads() -> None:
         evaluation[0].config["eval_script"]
         == "src/odyssey/runners/evals/gr00t_isaac_eval.py"
     )
+
+
+def test_shipped_jetrover_example_loads() -> None:
+    """The JetRover training YAML must always be a valid spec.
+
+    Pins the GPU-box half of the real-hardware recipe: GR00T NEW_EMBODIMENT
+    training on a LeRobot dataset, followed only by a hardware-free smoke
+    eval — tasks run in order, so a real-arm eval here would start on the GPU
+    box (no arm, no policy server yet).
+    """
+    mission = load_mission(EXAMPLE_MISSION_JETROVER)
+    assert mission.metadata.name == "jetrover-arm-pick"
+    assert mission.robot.embodiment == "jetrover"
+    assert [t.kind for t in mission.tasks] == ["training", "evaluation"]
+    smoke = mission.tasks[1].config
+    assert (smoke["arm_backend"], smoke["policy_backend"]) == ("mock", "mock")
+    assert smoke["scorer"] == "none"
+    training = mission.tasks[0]
+    assert training.config["runner"] == "gr00t"
+    assert training.config["embodiment_tag"] == "new_embodiment"
+    assert training.dataset is not None
+    assert training.dataset.format is not None
+    assert training.dataset.format.value == "lerobot"
+
+
+def test_shipped_jetrover_eval_example_loads() -> None:
+    """The JetRover real-arm eval YAML must always be a valid eval-only spec.
+
+    Pins the Jetson half: `evaluation_type: custom` against the shipped
+    eval_jetrover.py (mock/ros2/hiwonder arm backends), with an explicit
+    config.checkpoint since no training task runs before it.
+    """
+    mission = load_mission(EXAMPLE_MISSION_JETROVER_EVAL)
+    assert mission.robot.embodiment == "jetrover"
+    assert [t.kind for t in mission.tasks] == ["evaluation"]
+    evaluation = mission.tasks
+    assert evaluation[0].evaluation_type.value == "custom"
+    assert evaluation[0].config["checkpoint"]
+    assert (
+        evaluation[0].config["eval_script"]
+        == "examples/quickstart-jetrover/eval_jetrover.py"
+    )
+    # the runner only forwards config.* keys, so num_episodes must be repeated
+    assert evaluation[0].config["num_episodes"] == evaluation[0].num_episodes
 
 
 # ---------------------------------------------------------------------------

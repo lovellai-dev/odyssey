@@ -1,0 +1,77 @@
+# JetRover real-arm eval — EVAL ONLY (run on the Jetson, after mission.yaml).
+#
+# Evaluates the checkpoint produced by mission.yaml ON THE REAL ARM via
+# `evaluation_type: custom` (the built-in Robosuite/LIBERO/Isaac evals are
+# sim-only and ship no JetRover model). Kept separate from the training
+# mission because the two run on different machines: training on the GPU box,
+# this eval on the machine that reaches the arm — and only once the GPU box
+# is serving the checkpoint (README step 4). See README.md.
+#
+# Validate without a GPU or the robot:
+#   odyssey validate eval_mission.yaml
+#   odyssey run eval_mission.yaml --use-mock-runner
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: jetrover-arm-pick-eval
+  description: >-
+    Closed-loop eval of the JetRover GR00T NEW_EMBODIMENT checkpoint on the
+    real arm (5 joints + gripper), with operator scoring.
+  tags: [quickstart, jetrover, hiwonder, gr00t, real-hardware, eval-only]
+
+objective: |
+  Measure how often the fine-tuned GR00T policy picks up the target object
+  on the physical JetRover arm.
+
+acceptance_criteria: |
+  At least 3 operator-confirmed successful picks across 10 evaluation
+  episodes on the real arm.
+
+robot:
+  embodiment: jetrover
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: nvidia/GR00T-N1.7-3B
+
+tasks:
+  # The script connects to a pre-started GR00T policy server (serving the
+  # finetuned checkpoint on the GPU box) and drives the arm over ROS 2; the
+  # operator confirms success per episode.
+  - name: eval-jetrover-real-arm
+    kind: evaluation
+    evaluation_type: custom
+    benchmark_name: jetrover-real-arm
+    num_episodes: 10
+    config:
+      # Eval-only: there is no training task here, so name the checkpoint the
+      # GPU box is serving. The script records it in the metrics; the policy
+      # server is what loads it.
+      checkpoint: /data/odyssey/jetrover-arm-pick/finetune-gr00t-jetrover/checkpoint
+      # Resolved relative to the odyssey working directory.
+      eval_script: examples/quickstart-jetrover/eval_jetrover.py
+      # NOTE: num_episodes must be repeated here — the runner deliberately
+      # forwards only config.* keys to the script, never task-level fields.
+      num_episodes: 10
+      arm_backend: ros2          # mock | ros2 | hiwonder
+      policy_backend: zmq        # zmq (GR00T server) | mock
+      policy_host: 192.168.1.100 # the GPU box serving the checkpoint
+      policy_port: 5555
+      task_description: "pick up the object"
+      arm_dof: 5                 # positional joints, gripper excluded (see README)
+      scorer: operator           # y/n prompt per episode; `none` = metric-only
+      max_steps: 300
+      control_hz: 5
+      max_joint_delta: 0.15      # rad/step safety clamp
+      reset_mode: bounded        # bounded = rate-limited walk home | operator = no motion
+      home_max_joint_delta: 0.05 # rad/step during the reset walk
+
+leaderboard:
+  publish: false   # Backend not live yet.
+
+graph:
+  contribute: false   # Backend not live yet.
