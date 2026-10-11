@@ -238,6 +238,13 @@ def build_cosmos3_dcp_argv(
     return ["--checkpoint-path", base_model, "-o", base_checkpoint_path]
 
 
+def _reject_mission_training_entry(config: dict[str, Any]) -> None:
+    if "training_entry_module" in config:
+        raise ValueError(
+            "training_entry_module is constructor-only; mission config cannot select Python code"
+        )
+
+
 def build_cosmos3_train_argv(*, task: TrainingTask) -> list[str]:
     """Build the ``cosmos_framework.scripts.train`` argv (step 2).
 
@@ -247,6 +254,7 @@ def build_cosmos3_train_argv(*, task: TrainingTask) -> list[str]:
     TOML), matching cosmos-framework's ``train.py`` REMAINDER override contract.
     """
     config = task.config or {}
+    _reject_mission_training_entry(config)
     config_name = config.get("config_name")
     if not config_name:
         raise RuntimeError(
@@ -363,7 +371,22 @@ def _resolve_trained_checkpoint(run_dir: Path) -> Path | None:
 class Cosmos3Runner(Runner):
     """Fine-tune a Cosmos 3 action policy. Subprocess-based — actual training
     happens in cosmos-framework's ``convert_model_to_dcp`` → ``train`` →
-    ``export_model`` scripts."""
+    ``export_model`` scripts.
+
+    A trusted worker may supply ``training_entry_module`` to register a custom
+    recipe inside the training child before invoking the native trainer. The
+    module receives the same argv, environment and torchrun launch as the stock
+    entry point. It is not imported here and cannot be chosen in mission config.
+    The worker owns installation and provenance of that module; name validation
+    is not a sandbox for arbitrary Hydra configuration or imported code.
+    """
+
+    def __init__(self, *, training_entry_module: str = _TRAIN_MODULE) -> None:
+        if not isinstance(training_entry_module, str) or re.fullmatch(
+            r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", training_entry_module, flags=re.ASCII
+        ) is None:
+            raise ValueError("training_entry_module must be an absolute Python module name")
+        self._training_entry_module = training_entry_module
 
     @property
     def name(self) -> str:
@@ -392,6 +415,7 @@ class Cosmos3Runner(Runner):
                 "spec.robot.agents[task.agent_id]."
             )
 
+        _reject_mission_training_entry(spec.config)
         output_dir = output_path(context)
         output_dir.mkdir(parents=True, exist_ok=True)
         config = dict(spec.config)
@@ -448,7 +472,7 @@ class Cosmos3Runner(Runner):
         # Step 2: SFT fine-tune (torchrun).
         train_spec = TrainingProcessSpec(
             timeout_seconds=timeout,
-            entry_module=_TRAIN_MODULE,
+            entry_module=self._training_entry_module,
             argv_extra=build_cosmos3_train_argv(task=spec),
             env=child_env,
             cwd=repo_path,
