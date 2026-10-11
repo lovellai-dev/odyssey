@@ -47,6 +47,31 @@ pip install -e /path/to/odyssey
 odyssey run examples/quickstart-cosmos3-train/mission.yaml
 ```
 
+### Worker-owned recipe registration
+
+A recipe registered dynamically in an orchestrator process does not appear in
+the separate `torchrun` child. A worker integrating its own recipe package can
+select a registration bootstrap when it constructs the runner:
+
+```python
+from odyssey.runners import Cosmos3Runner
+
+runner = Cosmos3Runner(training_entry_module="company.training.cosmos3_bootstrap")
+```
+
+That module must be installed in the training environment. It receives the same
+`--sft-toml=<recipe>` and trailing Hydra overrides as the stock entry point, plus
+the existing path environment variables. It registers the recipe in the child,
+validates the resolved configuration, and delegates to the native Cosmos trainer.
+Conversion, cancellation, timeouts and export still use Odyssey's existing path.
+Calling `Cosmos3Runner()` keeps `cosmos_framework.scripts.train` unchanged.
+
+`training_entry_module` is a trusted Python constructor argument, not a mission
+option. Putting it in mission `config` is rejected before any subprocess starts.
+This hook does not establish that the bootstrap, dataset or checkpoint is valid,
+and does not sandbox arbitrary Hydra overrides. The integrating worker must pin
+its dependencies and validate the configuration and artifacts it admits.
+
 ## Why cosmos-framework is config-name-driven (and GR00T isn't)
 
 GR00T / OpenVLA take a flat bag of `--flag value` overrides. cosmos-framework —
