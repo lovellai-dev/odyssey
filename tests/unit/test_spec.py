@@ -456,3 +456,17 @@ def test_timing_fields_parse_from_yaml(tmp_path: Path) -> None:
 def test_timing_fields_reject_non_positive(field: str, value: int) -> None:
     with pytest.raises(ValidationError, match=field):
         _training_task(**{field: value})
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_control_hz_rejects_non_finite(value: float) -> None:
+    with pytest.raises(ValidationError, match="control_hz"):
+        _training_task(control_hz=value)
+
+
+@pytest.mark.parametrize("value", [".inf", "-.inf", ".nan"])
+def test_control_hz_non_finite_fails_to_load(tmp_path: Path, value: str) -> None:
+    """YAML spells infinity ``.inf``; it must stop the mission at load."""
+    path = _write_mission(tmp_path, f"    control_hz: {value}\n")
+    with pytest.raises(LoadError, match="control_hz"):
+        load_mission(path)

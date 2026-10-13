@@ -91,7 +91,10 @@ class TrainingTask(SpecModel):
     # control_hz: rate the policy's actions are spaced at and executed at
     # on the robot. For a LeRobot dataset it must equal meta/info.json fps.
     # action_horizon: actions the policy predicts per call (chunk length).
-    control_hz: float | None = Field(default=None, gt=0)
+    # control_hz must be finite: ``gt=0`` alone accepts ``.inf``, a rate no
+    # robot can run that would also reach the result record as ``Infinity``,
+    # which isn't valid JSON.
+    control_hz: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     action_horizon: int | None = Field(default=None, ge=1)
     config: dict[str, Any] = Field(default_factory=dict)
     execution_order: int = 0
