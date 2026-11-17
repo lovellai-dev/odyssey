@@ -226,7 +226,7 @@ class LiberoRunner(Runner):
         cfg = spec.config or {}
 
         # Pilot backend. Default: the in-process OpenVLA policy / multi-agent
-        # runtime below. ``pilot: gr00t`` and ``pilot: pi05`` both swap to a
+        # runtime below. ``pilot: gr00t`` / ``pi05`` / ``cosmos3`` / ``wall_oss`` swap to a
         # chunk-emitting pilot driven out-of-process via a policy server — each
         # its own subprocess recipe (same pattern as IsaacLabRunner), because
         # that inference is server-based, not in-process. Action chunking + a
@@ -240,6 +240,8 @@ class LiberoRunner(Runner):
             return await self._run_pi05_pilot(context, spec)
         if pilot == "cosmos3":
             return await self._run_cosmos3_pilot(context, spec)
+        if pilot in ("wall_oss", "walloss", "wall-oss"):
+            return await self._run_wall_oss_pilot(context, spec)
 
         suite_name = spec.benchmark_name
         task_id = int(cfg.get("task_id", 0))
@@ -575,6 +577,56 @@ class LiberoRunner(Runner):
             eval_script=script,
         )
 
+    async def _run_wall_oss_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a WALL-OSS (X Square Robot) pilot on LIBERO via the subprocess recipe.
+
+        Mirrors ``_run_cosmos3_pilot`` — same shared bridge (``EvalProtocolCollector``
+        + ``summarize`` + the subprocess helper); only the eval script
+        (``wall_oss_libero_eval.py``, which talks to the wall-x repo's pre-started
+        WebSocket policy server and replays chunks through the pilot-agnostic
+        ``ChunkPilotAdapter``) and the argv builder differ. The checkpoint is
+        whatever the server was started with; this process orchestrates and scores.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "wall_oss_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=wall_oss",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_wall_oss_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(wall_oss) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"wall_oss_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
 
 # Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
 # to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
@@ -665,6 +717,36 @@ def build_cosmos3_libero_argv(
         argv += ["--video_dir", str(video_dir)]
     for key, value in cfg.items():
         if key in _COSMOS3_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
+
+
+# WALL-OSS shares the same handled-keys contract: video is wired via the resolved
+# --video_dir, and pilot/checkpoint/runner are consumed by the runner itself.
+_WALL_OSS_HANDLED_CONFIG_KEYS = _GR00T_HANDLED_CONFIG_KEYS
+
+
+def build_wall_oss_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``wall_oss_libero_eval.py`` argv: contract flags + config passthrough.
+
+    Same contract as ``build_cosmos3_libero_argv``: ``task.config`` keys pass
+    through verbatim as snake_case flags (``host``/``port`` → the wall-x server
+    address, ``n_action_steps`` / ``invert_gripper`` / ``binarize_gripper`` →
+    the WALL-OSS knobs), minus the keys the runner consumes itself.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _WALL_OSS_HANDLED_CONFIG_KEYS:
             continue
         argv += [f"--{key}", str(value)]
     return argv

@@ -103,6 +103,16 @@ gr00t = [
     "msgpack-numpy>=0.4.8",
     "numpy>=1.24",
 ]
+# WALL-OSS (X Square Robot) pilot CLIENT transport: a WebSocket + msgpack client
+# for the wall-x repo's policy server (scripts/run_serving.sh). The WALL-OSS model
+# stack (torch, flash-attn, wall-x CUDA ops) lives in its OWN env and is never
+# co-installed here; arrays are decoded without msgpack-numpy (wall_oss_transforms).
+wall-oss = [
+    "websockets>=12.0",
+    "msgpack>=1.0",
+    "numpy>=1.24",
+    "pillow>=9.0",
+]
 all = [
     "lovell-odyssey[huggingface,openvla,robosuite]",
 ]
@@ -148,7 +158,7 @@ warn_unused_configs = true
 # inline type stubs, and we don't want to make the base install require
 # them. Ignore the missing-imports complaint for these names.
 [[tool.mypy.overrides]]
-module = ["huggingface_hub", "datasets", "robosuite", "libero.*", "gr00t.*", "openpi", "openpi.*", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2"]
+module = ["huggingface_hub", "datasets", "robosuite", "libero.*", "gr00t.*", "openpi", "openpi.*", "transformers", "peft", "torch", "PIL", "numpy", "numpy.typing", "imageio", "imageio.v2", "msgpack", "websockets", "websockets.*"]
 ignore_missing_imports = true
 follow_imports = "skip"
 # Also skip these libs' bundled .pyi stubs. By default mypy follows imports into
@@ -194,6 +204,17 @@ module = [
     "odyssey.runners.evals.cosmos3_transforms",
     "odyssey.runners.evals.cosmos3_libero_eval",
     "odyssey.runners.models.cosmos3",
+]
+ignore_errors = true
+
+# WALL-OSS glue, same category: numpy wire packers/decoders mirroring the wall-x
+# repo's untyped WebSocket policy-server contract, plus the subprocess eval recipe.
+# Pinned by tests/unit/test_wall_oss_*.py.
+[[tool.mypy.overrides]]
+module = [
+    "odyssey.runners.evals.wall_oss_transforms",
+    "odyssey.runners.evals.wall_oss_libero_eval",
+    "odyssey.runners.models.wall_oss",
 ]
 ignore_errors = true
 
