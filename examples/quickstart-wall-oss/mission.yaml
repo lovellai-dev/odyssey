@@ -1,0 +1,75 @@
+# WALL-OSS quickstart mission (LIBERO eval-only, single-agent).
+#
+# Scores an X Square Robot WALL-OSS checkpoint (4B VLA: Qwen2.5-VL-3B backbone +
+# flow-matching action expert, Apache-2.0) on the LIBERO spatial suite — a Franka
+# Panda doing language-conditioned pick-and-place in sim. WALL-OSS is a
+# chunk-emitting pilot: one policy query returns a whole action chunk (10 steps for
+# the LIBERO recipe), replayed open-loop through the shared ChunkPilotAdapter.
+#
+# EVAL-ONLY + EXTERNALLY-SERVED: WALL-OSS runs OUT-OF-PROCESS in the wall-x repo's
+# WebSocket policy server (torch + flash-attn, its own env). Start it yourself and
+# point this mission at its host:port — see examples/quickstart-wall-oss/README.md.
+# `config.checkpoint` is recorded in the run summary but NOT loaded odyssey-side.
+#
+# ⚠️ UNVERIFIED ON GPU as of this PR: the odyssey-side wiring is CPU-tested against
+# the wall-x wire contract, but no end-to-end LIBERO rollout has run on hardware.
+# Confirm gripper polarity (invert_gripper / binarize_gripper) on the first smoke.
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: quickstart-wall-oss-libero-spatial
+  description: >-
+    Eval-only — score a WALL-OSS checkpoint on the LIBERO spatial suite (Franka,
+    sim), driven out-of-process via a pre-started wall-x WebSocket policy server.
+  tags: [wall-oss, wall-x, x-square-robot, libero, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate a LIBERO-finetuned WALL-OSS checkpoint on the LIBERO spatial suite and
+  confirm a real (non-zero) success rate in simulation.
+
+acceptance_criteria: |
+  The wall-x server serves the checkpoint, WALL-OSS action chunks execute in
+  LIBERO, and the run reports a non-trivial success_rate across the episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        # WALL-OSS base weights — documentation of the pilot identity only; the
+        # wall-x SERVER loads the LIBERO-finetuned checkpoint (see README).
+        base: x-square-robot/wall-oss-0.5
+
+tasks:
+  - name: eval-libero-spatial-wall-oss
+    kind: evaluation
+    evaluation_type: libero
+    description: LIBERO spatial task_id=0, WALL-OSS pilot.
+    benchmark_name: libero_spatial       # LIBERO suite (spatial/object/goal/libero_10)
+    num_episodes: 5
+    config:
+      pilot: wall_oss                     # -> wall_oss_libero_eval.py subprocess + ws client
+      # Recorded in the summary only; the wall-x server already holds the weights.
+      checkpoint: /data/wall-oss/libero_ft/checkpoint
+      task_id: 0
+
+      # --- wall-x policy server (EXTERNALLY-SERVED: pre-started by you; see README) ---
+      host: 127.0.0.1
+      port: 32195                         # scripts/run_serving.sh default
+
+      # --- action chunk ---
+      # Steps replayed per chunk before re-querying; must be <= the server's
+      # ACTION_HORIZON (10 for --env LIBERO / workspace/example/libero.yml).
+      n_action_steps: 10
+      # invert_gripper: false             # flip if the gripper closes when it should open
+      # binarize_gripper: false           # snap gripper to ±1 (wall-x WALLX_LIBERO_GRIPPER_BINARIZE)
+      # translation_only: true            # de-risk knob: zero rotation + force gripper open
+
+      capture_video: true                 # one MP4 per episode
+
+leaderboard:
+  publish: false   # Backend not live yet.
