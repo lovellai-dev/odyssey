@@ -1,0 +1,73 @@
+# MolmoAct2 quickstart mission (LIBERO eval-only, single-agent).
+#
+# Scores Ai2's MolmoAct2-LIBERO (Molmo2-ER backbone + flow-matching action expert,
+# Apache-2.0; fine-tuned on Spatial+Object+Goal+Long) on the LIBERO spatial suite —
+# a Franka Panda doing language-conditioned pick-and-place in sim. MolmoAct2 is a
+# chunk-emitting pilot: one query returns a 10-step action chunk, replayed
+# open-loop through the shared ChunkPilotAdapter.
+#
+# EVAL-ONLY + EXTERNALLY-SERVED: MolmoAct2 runs OUT-OF-PROCESS in a FastAPI /act
+# server (torch + transformers, its own GPU env). Start it yourself with
+# examples/quickstart-molmoact2/host_server_libero.py and point this mission at
+# its host:port — see the README. `config.checkpoint` is recorded in the run
+# summary but NOT loaded odyssey-side.
+#
+# ⚠️ UNVERIFIED ON GPU as of this PR: the odyssey-side wiring is CPU-tested against
+# the /act wire contract, but no end-to-end LIBERO rollout has run on hardware.
+# Confirm gripper polarity on the first smoke (invert_gripper is the escape hatch).
+
+odysseyVersion: "0.1"
+kind: Mission
+
+metadata:
+  name: quickstart-molmoact2-libero-spatial
+  description: >-
+    Eval-only — score allenai/MolmoAct2-LIBERO on the LIBERO spatial suite
+    (Franka, sim), driven out-of-process via a pre-started MolmoAct2 /act server.
+  tags: [molmoact2, ai2, allenai, libero, robosuite, franka, eval-only]
+
+objective: |
+  Evaluate MolmoAct2-LIBERO on the LIBERO spatial suite and confirm a real
+  (non-zero) success rate in simulation.
+
+acceptance_criteria: |
+  The /act server serves the checkpoint, MolmoAct2 action chunks execute in
+  LIBERO, and the run reports a non-trivial success_rate across the episodes.
+
+robot:
+  embodiment: franka_panda
+  agents:
+    - id: pilot
+      role: PILOT
+      model:
+        source: huggingface
+        base: allenai/MolmoAct2-LIBERO
+
+tasks:
+  - name: eval-libero-spatial-molmoact2
+    kind: evaluation
+    evaluation_type: libero
+    description: LIBERO spatial task_id=0, MolmoAct2 pilot.
+    benchmark_name: libero_spatial       # LIBERO suite (spatial/object/goal/libero_10)
+    num_episodes: 5
+    config:
+      pilot: molmoact2                    # -> molmoact2_libero_eval.py subprocess + /act client
+      # Recorded in the summary only; the /act server already holds the weights.
+      checkpoint: allenai/MolmoAct2-LIBERO
+      task_id: 0
+
+      # --- MolmoAct2 /act server (EXTERNALLY-SERVED: pre-started by you; see README) ---
+      host: 127.0.0.1
+      port: 8000                          # host_server_libero.py default
+
+      # --- action chunk ---
+      # 0 / omitted adopts the server's action_horizon (10 for MolmoAct2-LIBERO).
+      # n_action_steps: 10
+      # num_steps: 10                     # flow-matching solver steps per query
+      # invert_gripper: false             # flip if the gripper closes when it should open
+      # translation_only: true            # de-risk knob: zero rotation + force gripper open
+
+      capture_video: true                 # one MP4 per episode
+
+leaderboard:
+  publish: false   # Backend not live yet.

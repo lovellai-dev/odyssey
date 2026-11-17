@@ -15,6 +15,11 @@
       "id": "openvla/openvla-7b",
       "sha": "47a0ec7fc4ec123775a391911046cf33cf9ed83f",
       "note": "OpenVLA-7B pilot base — training/eval base in examples/quickstart-openvla, franka-pickplace, multiagent-openvla-gemma."
+    },
+    {
+      "id": "allenai/MolmoAct2-LIBERO",
+      "sha": "0d24a92bd1faf321ef497c3bbd5681af97c65aa2",
+      "note": "MolmoAct2 (Ai2) fine-tuned on full LIBERO — eval pilot target in examples/quickstart-molmoact2 (pilot: molmoact2)."
     }
   ]
 }

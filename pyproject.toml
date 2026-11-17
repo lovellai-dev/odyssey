@@ -197,6 +197,17 @@ module = [
 ]
 ignore_errors = true
 
+# MolmoAct2 (Ai2) glue, same category: numpy json_numpy wire codec + packers
+# mirroring Ai2's untyped FastAPI /act policy-server contract, plus the subprocess
+# eval recipe. Pinned by tests/unit/test_molmoact2_*.py.
+[[tool.mypy.overrides]]
+module = [
+    "odyssey.runners.evals.molmoact2_transforms",
+    "odyssey.runners.evals.molmoact2_libero_eval",
+    "odyssey.runners.models.molmoact2",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
