@@ -197,14 +197,13 @@ module = [
 ]
 ignore_errors = true
 
-# MolmoAct2 (Ai2) glue, same category: numpy json_numpy wire codec + packers
-# mirroring Ai2's untyped FastAPI /act policy-server contract, plus the subprocess
-# eval recipe. Pinned by tests/unit/test_molmoact2_*.py.
+# The MolmoAct2 (Ai2) LIBERO eval recipe is a standalone subprocess script (same
+# category as the pi05 / cosmos3 recipes above). Its wire codec
+# (molmoact2_transforms) and stdlib HTTP client (models.molmoact2) wrap no
+# untyped SDK, so they stay strict-clean.
 [[tool.mypy.overrides]]
 module = [
-    "odyssey.runners.evals.molmoact2_transforms",
     "odyssey.runners.evals.molmoact2_libero_eval",
-    "odyssey.runners.models.molmoact2",
 ]
 ignore_errors = true
 

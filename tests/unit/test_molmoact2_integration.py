@@ -299,6 +299,34 @@ def test_molmoact2_integration_server_error_fails_episode_not_sweep(
     assert [a[0] for a in env.actions[1][2:]] == [100, 101, 102, 103]
 
 
+def test_molmoact2_integration_server_down_fails_fast(monkeypatch, capsys) -> None:
+    # Forgot to start host_server_libero.py: the recipe must raise (rc != 0 -> task
+    # FAILED), NOT sweep every episode as a "fail" and report a fake 0% success.
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]  # closed on exit -> nothing listening
+
+    with pytest.raises(RuntimeError, match=r"unreachable.*host_server_libero\.py"):
+        _run(monkeypatch, capsys, _ActServer(host="127.0.0.1", port=dead_port),
+             solve_at=[3, 3])
+    assert not [ln for ln in capsys.readouterr().out.splitlines()
+                if ln.startswith("ODYSSEY_")]
+
+
+def test_molmoact2_integration_all_episodes_aborted_fails_task(
+    monkeypatch, capsys, act_server
+) -> None:
+    # Server passes the startup probe, then every POST /act errors: that is an
+    # infra failure, not a 0% policy — no ODYSSEY_RESULT, and the recipe raises.
+    act_server.fail_queries = set(range(100))
+    with pytest.raises(RuntimeError, match=r"all 2 episodes aborted.*CUDA OOM"):
+        _run(monkeypatch, capsys, act_server, solve_at=[3, 3])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("ODYSSEY_")]
+    assert [ln.split(" ", 1)[0] for ln in lines] == ["ODYSSEY_EPISODE", "ODYSSEY_EPISODE"]
+
+
 def test_molmoact2_integration_config_knobs_reach_env(monkeypatch, capsys, act_server) -> None:
     summary, env, _ = _run(
         monkeypatch, capsys, act_server, solve_at=[None], max_steps=12,

@@ -40,6 +40,7 @@ import json_numpy
 import numpy as np
 import torch
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from huggingface_hub import snapshot_download
 from PIL import Image
@@ -197,7 +198,8 @@ def _to_pil(arr: Any) -> Image.Image:
         raise ValueError(f"image must be HxWx3, got shape {a.shape}")
     if a.dtype != np.uint8:
         a = np.clip(a, 0, 255).astype(np.uint8)
-    return Image.fromarray(a, mode="RGB")
+    # No ``mode=``: deprecated in Pillow 11.3 (removed in 13); uint8 HxWx3 is RGB.
+    return Image.fromarray(a)
 
 
 def _error(status: int, message: str) -> Response:
@@ -239,8 +241,12 @@ def build_app(policy: Policy) -> FastAPI:
 
         t0 = time.perf_counter()
         try:
-            actions = policy.predict(image, wrist, instruction, state,
-                                     num_steps=num_steps, enable_cuda_graph=cuda_graph)
+            # Off the event loop: a blocking GPU predict here would stall GET /act
+            # and /healthz for the whole inference. Policy._lock still serializes.
+            actions = await run_in_threadpool(
+                policy.predict, image, wrist, instruction, state,
+                num_steps=num_steps, enable_cuda_graph=cuda_graph,
+            )
         except Exception as e:
             log.exception("inference failed")
             return _error(500, f"inference failed: {e}")

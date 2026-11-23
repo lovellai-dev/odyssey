@@ -173,7 +173,7 @@ def run_eval(args: argparse.Namespace) -> dict:
         _make_libero_env,
         _resolve_libero_instruction,
     )
-    from odyssey.runners.models.molmoact2 import make_molmoact2_pilot
+    from odyssey.runners.models.molmoact2 import MolmoAct2HttpClient, make_molmoact2_pilot
     from odyssey.runners.video import save_rollout_video, to_uint8_frame
 
     cfg = {
@@ -196,9 +196,14 @@ def run_eval(args: argparse.Namespace) -> dict:
     # ChunkPilotAdapter (n_action_steps=None -> adopt the server's action_horizon).
     log.info("connecting to MolmoAct2 policy server at %s:%d (checkpoint=%r served externally)",
              args.host, args.port, args.checkpoint)
+    # Fail fast if the server isn't up: without this probe every episode would
+    # swallow the connection error as a plain "fail" and the sweep would exit 0
+    # with a misleading 0% success_rate. Raises with the serve hint.
+    client = MolmoAct2HttpClient(host=args.host, port=args.port)
+    server_info = client.info()
+    log.info("MolmoAct2 server info: %s", server_info)
     pilot = make_molmoact2_pilot(
-        host=args.host,
-        port=args.port,
+        client=client,
         n_action_steps=args.n_action_steps or None,
         num_steps=args.num_steps,
         invert_gripper=args.invert_gripper,
@@ -207,6 +212,7 @@ def run_eval(args: argparse.Namespace) -> dict:
     log.info("chunk replay horizon: %d steps", pilot.n_action_steps)
 
     successes, returns = 0, []
+    aborted: list[str] = []  # per-episode exceptions (flaky /act, env.step errors)
     video_dir = args.video_dir or None
     dummy = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]  # no-op, gripper open (physics settle)
 
@@ -250,6 +256,7 @@ def run_eval(args: argparse.Namespace) -> dict:
             # would drop the remaining episodes AND the final ODYSSEY_RESULT line).
             log.warning("episode %d/%d aborted (%s) — recording as fail, continuing.",
                         ep, args.num_episodes, ep_exc, exc_info=True)
+            aborted.append(f"{type(ep_exc).__name__}: {ep_exc}")
 
         successes += int(success)
         returns.append(ep_return)
@@ -263,6 +270,12 @@ def run_eval(args: argparse.Namespace) -> dict:
             save_rollout_video(frames, Path(video_dir) / f"episode_{ep:02d}_{tag}.mp4", 24)
 
     env.close()
+    if args.num_episodes > 0 and len(aborted) == args.num_episodes:
+        # Not a 0% policy: the pilot never got to act (e.g. the server died after
+        # the startup probe). Exit non-zero so the task FAILS instead of scoring.
+        raise RuntimeError(
+            f"all {args.num_episodes} episodes aborted with errors; last: {aborted[-1]}"
+        )
     n = max(args.num_episodes, 1)
     success_rate = successes / n
     summary = {
