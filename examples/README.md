@@ -7,6 +7,7 @@
 | `multiagent-openvla-gemma/` | Multi-agent eval: OpenVLA **PILOT** + an out-of-process multimodal Gemma 4 **SPECIALIST** planner, on Robosuite Lift. Needs extra setup — [see its README →](multiagent-openvla-gemma/README.md). | 24 GB GPU (PILOT + SPECIALIST share it) |
 | `franka-libero/` | **Eval-only**: score a published OpenVLA-7B checkpoint on the LIBERO sim benchmark (Franka pick-and-place), single- **or** multi-agent (Gemma planner). Needs a dedicated venv — [see its README →](franka-libero/README.md). | 24 GB GPU |
 | `quickstart-pi05/` | **Eval-only**: score a Physical Intelligence **π0.5** checkpoint on the LIBERO object suite (Franka), driven out-of-process via a pre-started openpi policy server. Chunk-emitting pilot (issue #74). **Wiring done; GPU smoke pending** — [see its README →](quickstart-pi05/README.md). | 24 GB GPU (+ an openpi/JAX server) |
+| `quickstart-molmoact2/` | **Eval-only**: score Ai2's **MolmoAct2-LIBERO** on the LIBERO spatial suite (Franka), driven out-of-process via a FastAPI `/act` server (included). Chunk-emitting pilot (`pilot: molmoact2`). **Wiring done; GPU smoke pending** — [see its README →](quickstart-molmoact2/README.md). | 24 GB GPU (+ a MolmoAct2 server) |
 
 More quickstarts (Octo) arrive in later releases. See the publication plan for
 the cadence.

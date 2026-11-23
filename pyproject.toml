@@ -197,6 +197,16 @@ module = [
 ]
 ignore_errors = true
 
+# The MolmoAct2 (Ai2) LIBERO eval recipe is a standalone subprocess script (same
+# category as the pi05 / cosmos3 recipes above). Its wire codec
+# (molmoact2_transforms) and stdlib HTTP client (models.molmoact2) wrap no
+# untyped SDK, so they stay strict-clean.
+[[tool.mypy.overrides]]
+module = [
+    "odyssey.runners.evals.molmoact2_libero_eval",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -226,7 +226,7 @@ class LiberoRunner(Runner):
         cfg = spec.config or {}
 
         # Pilot backend. Default: the in-process OpenVLA policy / multi-agent
-        # runtime below. ``pilot: gr00t`` and ``pilot: pi05`` both swap to a
+        # runtime below. ``pilot: gr00t`` / ``pi05`` / ``cosmos3`` / ``molmoact2`` swap to a
         # chunk-emitting pilot driven out-of-process via a policy server — each
         # its own subprocess recipe (same pattern as IsaacLabRunner), because
         # that inference is server-based, not in-process. Action chunking + a
@@ -240,6 +240,8 @@ class LiberoRunner(Runner):
             return await self._run_pi05_pilot(context, spec)
         if pilot == "cosmos3":
             return await self._run_cosmos3_pilot(context, spec)
+        if pilot in ("molmoact2", "molmoact-2", "molmo_act2"):
+            return await self._run_molmoact2_pilot(context, spec)
 
         suite_name = spec.benchmark_name
         task_id = int(cfg.get("task_id", 0))
@@ -576,6 +578,55 @@ class LiberoRunner(Runner):
         )
 
 
+    async def _run_molmoact2_pilot(
+        self, context: TaskContext, spec: EvaluationTask
+    ) -> dict[str, Any]:
+        """Evaluate a MolmoAct2 (Ai2) pilot on LIBERO via the subprocess recipe.
+
+        Mirrors ``_run_cosmos3_pilot`` — same shared bridge (``EvalProtocolCollector``
+        + ``summarize`` + the subprocess helper); only the eval script
+        (``molmoact2_libero_eval.py``, which talks to a pre-started MolmoAct2
+        FastAPI ``/act`` server and replays chunks through the pilot-agnostic
+        ``ChunkPilotAdapter``) and the argv builder differ.
+        """
+        cfg = spec.config or {}
+        checkpoint = resolve_eval_checkpoint(context)
+        script = str(Path(__file__).parent / "molmoact2_libero_eval.py")
+
+        video_dir: Path | None = None
+        if bool(cfg.get("capture_video", False)) and context.output_dir is not None:
+            video_dir = context.output_dir / "videos"
+
+        await context.emit_progress(
+            "executing",
+            step="env_construct",
+            step_label=f"suite={spec.benchmark_name} pilot=molmoact2",
+        )
+
+        collector = EvalProtocolCollector()
+        process_spec = TrainingProcessSpec(
+            timeout_seconds=getattr(spec, "timeout_seconds", None),
+            script_path=script,
+            argv_extra=build_molmoact2_libero_argv(
+                spec=spec, checkpoint=checkpoint, video_dir=video_dir
+            ),
+            line_parser=collector.parse,
+        )
+
+        rc = await run_training_subprocess(context, process_spec)
+        if context.cancelled():
+            logger.info("LIBERO(molmoact2) task %s cancelled by user", context.task.id)
+            return {"cancelled": True}
+        if rc != 0:
+            raise RuntimeError(f"molmoact2_libero_eval exited with code {rc}")
+
+        return summarize(
+            collector=collector,
+            spec=spec,
+            checkpoint=checkpoint,
+            eval_script=script,
+        )
+
 # Config keys the GR00T-LIBERO runner consumes itself — never forwarded as flags
 # to the eval script (mirrors isaac_lab._HANDLED_CONFIG_KEYS). Video is wired via
 # the resolved --video_dir, not the raw capture_video/*_fps/*_format keys.
@@ -669,6 +720,36 @@ def build_cosmos3_libero_argv(
         argv += [f"--{key}", str(value)]
     return argv
 
+
+
+# MolmoAct2 shares the same handled-keys contract: video is wired via the resolved
+# --video_dir, and pilot/checkpoint/runner are consumed by the runner itself.
+_MOLMOACT2_HANDLED_CONFIG_KEYS = _GR00T_HANDLED_CONFIG_KEYS
+
+
+def build_molmoact2_libero_argv(
+    *, spec: EvaluationTask, checkpoint: Path, video_dir: Path | None
+) -> list[str]:
+    """Build ``molmoact2_libero_eval.py`` argv: contract flags + config passthrough.
+
+    Same contract as ``build_cosmos3_libero_argv``: ``task.config`` keys pass
+    through verbatim as snake_case flags (``host``/``port`` → the ``/act`` server
+    address, ``n_action_steps`` / ``num_steps`` / ``invert_gripper`` → the
+    MolmoAct2 knobs), minus the keys the runner consumes itself.
+    """
+    cfg = spec.config or {}
+    argv: list[str] = [
+        "--task", spec.benchmark_name,
+        "--num_episodes", str(spec.num_episodes),
+        "--checkpoint", str(checkpoint),
+    ]
+    if video_dir is not None:
+        argv += ["--video_dir", str(video_dir)]
+    for key, value in cfg.items():
+        if key in _MOLMOACT2_HANDLED_CONFIG_KEYS:
+            continue
+        argv += [f"--{key}", str(value)]
+    return argv
 
 # ---------------------------------------------------------------------------
 # Multi-agent helpers.
